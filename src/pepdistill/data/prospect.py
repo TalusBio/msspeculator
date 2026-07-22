@@ -16,10 +16,12 @@ listing, read, and acquisition-factor extraction below need no such assumption.
 from __future__ import annotations
 
 import io
+import os
 import re
 import zipfile
 from dataclasses import dataclass
 
+import fsspec
 import numpy as np
 import pandas as pd
 
@@ -196,6 +198,44 @@ class ProspectSource:
         if not frames:
             raise ValueError(f"no parquet members in {zip_filename}")
         return pd.concat(frames, ignore_index=True)
+
+    def annotation_shards(self, zip_filename: str) -> list[str]:
+        """List parquet shard names inside an annotation zip WITHOUT downloading it.
+
+        Reads only the zip central directory via HTTP range requests (a few KB), so a
+        multi-GB pool can be inspected — and a subset chosen — before pulling any spectra.
+        """
+        with self._open_remote_zip(zip_filename) as z:
+            return [n for n in z.namelist() if n.endswith(".parquet")]
+
+    def read_annotation_streaming(
+        self, zip_filename: str, members: list[str] | None = None, max_members: int | None = None
+    ) -> pd.DataFrame:
+        """Read chosen annotation shards by RANGE-streaming the remote zip.
+
+        Unlike :meth:`read_annotation`, this never materializes the whole zip locally: the
+        central directory plus only the requested members' bytes are fetched. Use it to train
+        on a slice of a huge pool (e.g. one 90 MB shard of a 1.5 GB zip) without the full pull.
+        ``members`` selects shards by name; else the first ``max_members`` (or all) are read.
+        """
+        frames = []
+        with self._open_remote_zip(zip_filename) as z:
+            names = [n for n in z.namelist() if n.endswith(".parquet")]
+            chosen = members if members is not None else (names[:max_members] if max_members else names)
+            for name in chosen:
+                frames.append(pd.read_parquet(io.BytesIO(z.read(name))))
+        if not frames:
+            raise ValueError(f"no parquet members read from {zip_filename}")
+        return pd.concat(frames, ignore_index=True)
+
+    def _open_remote_zip(self, zip_filename: str) -> zipfile.ZipFile:
+        """Open the record's zip as a seekable remote file (range requests), or local if cached."""
+        local = self.cache._local_path(f"zenodo/{self.record_id}/{zip_filename}")
+        if os.path.exists(local):
+            return zipfile.ZipFile(local)
+        entry = self._catalog.get(zip_filename)
+        url = entry["url"] if entry else self.zenodo.file_url(zip_filename)
+        return zipfile.ZipFile(fsspec.open(url, "rb").open())
 
     def to_labels(
         self, meta_df: pd.DataFrame, ann_df: pd.DataFrame, split: SplitConfig | None = None

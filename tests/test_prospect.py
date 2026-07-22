@@ -159,3 +159,25 @@ def test_read_annotation_from_zip(tmp_path):
     src = ProspectSource("test_ptm", cache=FileCache([str(tmp_path / "local")], write_through=False))
     df = src.read_annotation("TMT_TUM_perm_pT.zip")
     assert len(df) == len(ann) and "ion_type" in df.columns
+
+
+def test_streaming_reads_cached_zip_by_member(tmp_path):
+    # A cached zip is opened locally (no network); streaming member-selection still applies.
+    rid = RECORDS["test_ptm"]
+    root = tmp_path / "local" / "zenodo" / rid
+    os.makedirs(root, exist_ok=True)
+    _, ann = _meta_ann()
+    buf = io.BytesIO()
+    ann.to_parquet(buf)
+    with zipfile.ZipFile(root / "TMT_TUM_perm_pT.zip", "w") as z:
+        z.writestr("pool/a_annotation.parquet", buf.getvalue())
+        z.writestr("pool/b_annotation.parquet", buf.getvalue())
+
+    src = ProspectSource("test_ptm", cache=FileCache([str(tmp_path / "local")], write_through=False))
+    assert src.annotation_shards("TMT_TUM_perm_pT.zip") == [
+        "pool/a_annotation.parquet", "pool/b_annotation.parquet"
+    ]
+    one = src.read_annotation_streaming("TMT_TUM_perm_pT.zip", max_members=1)
+    assert len(one) == len(ann)  # only the first shard read
+    both = src.read_annotation_streaming("TMT_TUM_perm_pT.zip", members=["pool/b_annotation.parquet"])
+    assert len(both) == len(ann)

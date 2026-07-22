@@ -32,6 +32,13 @@ class ZenodoRecord:
             out[f["key"]] = links.get("content") or links.get("self", "")
         return out
 
+    def file_url(self, filename: str) -> str:
+        """Download URL for one record file (no fetch)."""
+        files = self.list_files()
+        if filename not in files:
+            raise KeyError(f"{filename!r} not in record {self.record_id}; have {sorted(files)}")
+        return files[filename]
+
     def resolve_file(self, filename: str) -> str:
         """Local path for one record file, fetched via cache tiers then Zenodo."""
         files = self.list_files()
