@@ -11,10 +11,21 @@ is standalone inference: generate a spectral library from an already-trained mod
 from __future__ import annotations
 
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Optional
 
+import pandas as pd
 import typer
+
+from .data.config import DigestConfig, SplitConfig
+from .data.digest import digest_fasta
+from .data.precursors import enumerate_precursors, frame_to_precursors
+from .distill.pipeline import RunConfig, run_pipeline
+from .models.registry import load_checkpoint
+from .predict.fast import TorchRunner, predict_library_fast
+from .predict.library import write_library
+from .util import resolve_device
 
 app = typer.Typer(add_completion=False, help="Distill AlphaPeptDeep into fast spectral libraries.")
 
@@ -28,10 +39,6 @@ def run(
     no_train: bool = typer.Option(False, help="Disable the real-speclib train stage."),
 ) -> None:
     """Run the training pipeline described by a TOML config."""
-    from dataclasses import replace
-
-    from .distill.pipeline import RunConfig, run_pipeline
-
     cfg = RunConfig.from_toml(config)
     if out is not None:
         cfg = replace(cfg, out=str(out))
@@ -42,9 +49,8 @@ def run(
     if no_train:
         cfg = replace(cfg, train=replace(cfg.train, enabled=False))
 
-    summary = run_pipeline(cfg, log=typer.echo)
+    run_pipeline(cfg, log=typer.echo)
     typer.echo(f"done -> {cfg.out}/summary.json")
-    _ = summary
 
 
 @app.command()
@@ -66,15 +72,6 @@ def predict(
     max_var_mods: int = 1,
 ) -> None:
     """Predict a spectral library from a trained student (vectorized, length-bucketed)."""
-    import pandas as pd
-
-    from .data.config import DigestConfig, SplitConfig
-    from .data.digest import digest_fasta
-    from .data.precursors import enumerate_precursors, frame_to_precursors
-    from .predict.fast import TorchRunner, predict_library_fast
-    from .predict.library import write_library
-    from .util import resolve_device
-
     if (fasta is None) == (precursors is None):
         raise typer.BadParameter("provide exactly one of --fasta or --precursors")
 
@@ -88,12 +85,10 @@ def predict(
         precs = frame_to_precursors(pd.read_parquet(precursors))
 
     if runtime == "onnx" or str(model).endswith(".onnx"):
-        from .predict.onnx import OnnxRunner
+        from .predict.onnx import OnnxRunner  # optional [onnx] extra — import only if used
 
         runner = OnnxRunner(model)
     else:
-        from .models.registry import load_checkpoint
-
         runner = TorchRunner(load_checkpoint(model), resolve_device(device))
 
     t0 = time.perf_counter()

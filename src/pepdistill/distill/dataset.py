@@ -18,6 +18,7 @@ class LabeledBatch:
     ms2_target: torch.Tensor  # (B, L-1, n_ion)
     rt_target: torch.Tensor  # (B,)
     ccs_target: torch.Tensor  # (B,)
+    ce: torch.Tensor | None = None  # (B,) collision energy, set by streaming NCE-sweep pretrain
 
     def to(self, device: torch.device | str) -> "LabeledBatch":
         return LabeledBatch(
@@ -25,6 +26,7 @@ class LabeledBatch:
             self.ms2_target.to(device),
             self.rt_target.to(device),
             self.ccs_target.to(device),
+            None if self.ce is None else self.ce.to(device),
         )
 
 

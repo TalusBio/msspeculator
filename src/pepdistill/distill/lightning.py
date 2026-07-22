@@ -31,7 +31,7 @@ class DistillModule(L.LightningModule):
         weight_decay: float = 1e-5,
         loss_weights: tuple[float, float, float] = (1.0, 1.0, 1.0),
         context_encoder=None,
-        distill_ce: float = 30.0,
+        distill_fallback_ce: float = 30.0,
     ) -> None:
         super().__init__()
         self.model = model  # shared backbone; NOT a hyperparameter
@@ -39,7 +39,9 @@ class DistillModule(L.LightningModule):
         # ContextEncoder, so the teacher's collision energy is a factor rather than baked into
         # the base. None -> context-free warmup (base = teacher condition).
         self.context_encoder = context_encoder
-        self.distill_ce = distill_ce
+        # Fallback CE for the encoder when a batch carries no per-example CE (cached distill,
+        # whose labels are all at one teacher NCE). Streaming supplies per-batch CE instead.
+        self.distill_fallback_ce = distill_fallback_ce
         self.lr = lr
         self.weight_decay = weight_decay
         self.loss_weights = loss_weights
@@ -50,7 +52,10 @@ class DistillModule(L.LightningModule):
     def _predict(self, batch: LabeledBatch) -> dict:
         if self.context_encoder is None:
             return self.model(batch.inputs)
-        ce = torch.full((batch.inputs.tokens.shape[0],), self.distill_ce, device=self.device)
+        # Per-batch CE (streaming NCE sweep) if provided, else the constant fallback.
+        ce = batch.ce if batch.ce is not None else torch.full(
+            (batch.inputs.tokens.shape[0],), self.distill_fallback_ce, device=self.device
+        )
         return self.model.forward_context(batch.inputs, ctx_acq=self.context_encoder(ce), ctx_lc=None)
 
     def training_step(self, batch: LabeledBatch, batch_idx: int) -> torch.Tensor:
@@ -139,20 +144,21 @@ def fit_distill(
     seed: int = 0,
     accelerator: str = "auto",
     context_encoder=None,
-    distill_ce: float = 30.0,
+    distill_fallback_ce: float = 30.0,
     **trainer_kwargs,
 ) -> DistillModule:
     """Set target norm from ``train_ds`` and run a Lightning distillation fit in place.
 
     Returns the LightningModule (its ``.model`` is the trained shared backbone). Pass a
     ``context_encoder`` to give the teacher its own CE-driven acquisition context (shared with
-    a later real-speclib sink), so the teacher's ``distill_ce`` becomes a factor, not the base.
+    a later real-speclib sink); ``distill_fallback_ce`` is the fixed NCE those cached labels
+    were generated at, fed to the encoder for every batch.
     """
     L.seed_everything(seed, verbose=False)
     model.set_norm(*train_ds.rt_ccs_stats())
     module = DistillModule(
         model, lr=lr, weight_decay=weight_decay, loss_weights=loss_weights,
-        context_encoder=context_encoder, distill_ce=distill_ce,
+        context_encoder=context_encoder, distill_fallback_ce=distill_fallback_ce,
     )
     dm = DistillDataModule(train_ds, val_ds, batch_size=batch_size, seed=seed)
     trainer = L.Trainer(

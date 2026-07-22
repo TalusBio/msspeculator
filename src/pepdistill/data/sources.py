@@ -52,6 +52,27 @@ def fasta_peptide_stream(
             return
 
 
+def unspecific_window_stream(
+    path: str | Path, rng: np.random.Generator, min_len: int = 8, max_len: int = 11
+) -> Iterator[str]:
+    """Infinite stream of random protein sub-sequences (immunopeptidome-like, no enzyme).
+
+    Samples a random protein then a random window — never enumerates the (combinatorially
+    huge) full substring set, so it stays truly online. Length range defaults to the classic
+    HLA class-I window (8-11).
+    """
+    prots = [seq for _h, seq in parse_fasta(path) if len(seq) >= min_len]
+    if not prots:
+        raise ValueError(f"no proteins >= {min_len} residues in {path}")
+    prots = np.array(prots, dtype=object)
+    while True:
+        p = str(prots[rng.integers(len(prots))])
+        upper = min(max_len, len(p))
+        length = int(rng.integers(min_len, upper + 1))
+        start = int(rng.integers(0, len(p) - length + 1))
+        yield p[start : start + length]
+
+
 def precursors_from_sequences(
     sequences: list[str], cfg: DigestConfig, rng: np.random.Generator
 ) -> list[Precursor]:
