@@ -1,0 +1,75 @@
+"""Sequence sources for streaming distillation: random generator and FASTA digests.
+
+Both yield bare (unmodified) peptide sequences forever. :func:`precursors_from_sequences`
+turns a batch of sequences into concrete precursors by sampling one mod-form + charge per
+sequence, maximizing sequence diversity per (slow) teacher call.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Iterator
+from pathlib import Path
+
+import numpy as np
+
+from ..chem import Peptide
+from .config import DigestConfig
+from .digest import cleave_protein, parse_fasta
+from .precursors import Precursor, _fixed_mod_sites, _mod_target
+
+_AA = "ACDEFGHIKLMNPQRSTVWY"
+# Rough natural abundances so random peptides are not uniform noise.
+_AA_W = np.array(
+    [8, 1.4, 5.5, 6.8, 4, 7, 2.3, 6, 5.8, 10, 2.4, 4, 4.7, 4, 5.5, 6.6, 5.4, 7, 1, 3],
+    dtype=np.float64,
+)
+_AA_W /= _AA_W.sum()
+
+
+def random_peptide_stream(
+    rng: np.random.Generator, min_len: int = 7, max_len: int = 30
+) -> Iterator[str]:
+    """Infinite stream of tryptic-looking random peptides (C-terminal K/R)."""
+    aa = np.array(list(_AA))
+    while True:
+        n = int(rng.integers(min_len, max_len + 1))
+        body = "".join(rng.choice(aa, size=n - 1, p=_AA_W))
+        yield body + ("K" if rng.random() < 0.5 else "R")
+
+
+def fasta_peptide_stream(
+    path: str | Path, cfg: DigestConfig, rng: np.random.Generator, loop: bool = True
+) -> Iterator[str]:
+    """Stream digested peptides from a FASTA, shuffled per pass, optionally looping."""
+    peptides = sorted({p for _h, seq in parse_fasta(path) for p in cleave_protein(seq, cfg)})
+    if not peptides:
+        raise ValueError(f"no peptides digested from {path}")
+    peptides = np.array(peptides)
+    while True:
+        for i in rng.permutation(len(peptides)):
+            yield str(peptides[i])
+        if not loop:
+            return
+
+
+def precursors_from_sequences(
+    sequences: list[str], cfg: DigestConfig, rng: np.random.Generator
+) -> list[Precursor]:
+    """One precursor per sequence: fixed mods always, one sampled variable-mod form + charge."""
+    charges = list(cfg.charges)
+    out: list[Precursor] = []
+    for seq in sequences:
+        fixed = _fixed_mod_sites(seq, cfg.fixed_mods)
+        var_sites: list[tuple[int, str]] = []
+        for name in cfg.variable_mods:
+            target = _mod_target(name)
+            var_sites += [(i, name) for i, a in enumerate(seq) if a == target]
+        chosen: list[tuple[int, str]] = []
+        if var_sites and cfg.max_variable_mods > 0:
+            k = int(rng.integers(0, min(cfg.max_variable_mods, len(var_sites)) + 1))
+            if k:
+                idx = rng.choice(len(var_sites), size=k, replace=False)
+                chosen = [var_sites[i] for i in idx]
+        charge = int(charges[rng.integers(0, len(charges))])
+        out.append(Precursor(Peptide(seq, tuple(fixed + chosen)), charge, "train"))
+    return out

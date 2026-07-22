@@ -1,0 +1,55 @@
+[project]
+name = "pepdistill"
+version = "0.1.0"
+description = "Fast spectral-library generation by distilling AlphaPeptDeep into small, hardware-friendly student models."
+readme = "README.md"
+authors = [
+    { name = "J. Sebastian Paez", email = "spaez@talus.bio" }
+]
+requires-python = ">=3.11"
+dependencies = [
+    "fsspec>=2024.0",
+    "lightning>=2.6.5",
+    "numpy>=1.26",
+    "pandas>=2.0",
+    "pyarrow>=15.0",
+    "torch>=2.2",
+    "typer>=0.12",
+]
+
+[project.optional-dependencies]
+# Teacher models (AlphaPeptDeep) live behind an extra so plain inference stays lean.
+teacher = [
+    "peptdeep>=1.2",
+]
+# ONNX export + fast CPU inference runtime.
+# onnx is capped: >=1.18 pulls ml_dtypes>=0.5 which needs numpy>=2, conflicting with the
+# numpy<2 pin from the teacher (peptdeep) tree.
+onnx = [
+    "onnx>=1.16,<1.18",
+    "onnxruntime>=1.18",
+]
+# PROSPECT (real experimental spectra) loading with an S3-backed cache. fsspec is core;
+# s3fs is only needed to use an s3:// cache tier at runtime (lazily loaded by fsspec).
+prospect = [
+    "s3fs>=2024.0",
+]
+
+[project.scripts]
+pepdistill = "pepdistill.cli:app"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+]
+
+[build-system]
+requires = ["uv_build>=0.11.28,<0.12.0"]
+build-backend = "uv_build"
+
+[tool.ruff]
+line-length = 100
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

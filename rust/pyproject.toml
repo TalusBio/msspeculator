@@ -1,0 +1,17 @@
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+# Standalone build config for the Rust accelerator. It is NOT part of the pepdistill
+# distribution (the root pyproject uses uv_build for the pure-Python package); this exists
+# only so `maturin develop` builds the crate as the `pepdistill_rs` extension module instead
+# of walking up to the root pyproject. See rust/README.md.
+[project]
+name = "pepdistill_rs"
+version = "0.1.0"
+description = "Rust tokenizer/batcher accelerator for pepdistill (optional)."
+requires-python = ">=3.11"
+
+[tool.maturin]
+manifest-path = "Cargo.toml"
+module-name = "pepdistill_rs"

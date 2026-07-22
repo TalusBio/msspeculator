@@ -1,0 +1,150 @@
+"""Lightning wrappers for distillation.
+
+Design: the :class:`StudentModel` *is* the shared backbone — a plain ``nn.Module`` holding
+embeds + trunk + heads + norm buffers. Each training *regime* is a thin
+:class:`lightning.LightningModule` that owns a reference to that same StudentModel and
+defines only its loss/data contract. Multiple regimes constructed with the *same* model
+instance share weights, so you can, e.g., pre-train with :class:`DistillModule` (teacher
+soft labels) and then fine-tune the identical backbone with a future ``RealSpeclibModule``
+(experimental spectra) — "pass the backbone around".
+
+The pure-loop :func:`pepdistill.distill.trainer.train` stays as the dependency-light
+reference; this is the scalable path (multi-GPU, callbacks, logging) for the same math.
+"""
+
+from __future__ import annotations
+
+import lightning as L
+import torch
+from torch.utils.data import DataLoader, IterableDataset
+
+from ..models.student import StudentModel
+from .dataset import DistillDataset, LabeledBatch
+from .losses import distill_loss, spectral_angle
+
+
+class DistillModule(L.LightningModule):
+    """Distillation regime: fit the student to teacher soft labels (MS2 + RT + CCS)."""
+
+    def __init__(
+        self,
+        model: StudentModel,
+        lr: float = 1e-3,
+        weight_decay: float = 1e-5,
+        loss_weights: tuple[float, float, float] = (1.0, 1.0, 1.0),
+    ) -> None:
+        super().__init__()
+        self.model = model  # shared backbone; NOT a hyperparameter
+        self.lr = lr
+        self.weight_decay = weight_decay
+        self.loss_weights = loss_weights
+
+    def transfer_batch_to_device(self, batch: LabeledBatch, device, dataloader_idx: int):
+        return batch.to(device)
+
+    def training_step(self, batch: LabeledBatch, batch_idx: int) -> torch.Tensor:
+        out = self.model(batch.inputs)
+        rt_t = (batch.rt_target - self.model.rt_mean) / self.model.rt_std
+        ccs_t = (batch.ccs_target - self.model.ccs_mean) / self.model.ccs_std
+        loss, parts = distill_loss(
+            out, batch.ms2_target, rt_t, ccs_t, batch.inputs.frag_mask, self.loss_weights
+        )
+        self.log_dict({f"train_{k}": v for k, v in parts.items()}, prog_bar=False)
+        return loss
+
+    @torch.no_grad()
+    def validation_step(self, batch: LabeledBatch, batch_idx: int) -> None:
+        out = self.model.denormalize(self.model(batch.inputs))
+        sa = spectral_angle(out["ms2"], batch.ms2_target, batch.inputs.frag_mask).mean()
+        rt_mae = (out["rt"] - batch.rt_target).abs().mean()
+        ccs_mae = (out["ccs"] - batch.ccs_target).abs().mean()
+        bs = batch.rt_target.shape[0]
+        self.log_dict(
+            {"val_spectral_angle": sa, "val_rt_mae": rt_mae, "val_ccs_mae": ccs_mae},
+            prog_bar=True,
+            batch_size=bs,
+        )
+
+    def configure_optimizers(self):
+        return torch.optim.AdamW(self.parameters(), lr=self.lr, weight_decay=self.weight_decay)
+
+
+class _BatchIterable(IterableDataset):
+    """Yields ready-made :class:`LabeledBatch` objects from a DistillDataset.
+
+    Batching/collation already live in ``DistillDataset.batches``; we wrap them as an
+    IterableDataset so a ``DataLoader(batch_size=None)`` passes each LabeledBatch straight
+    through. ``__iter__`` runs per epoch, so training reshuffles each epoch.
+    """
+
+    def __init__(self, ds: DistillDataset, batch_size: int, shuffle: bool, seed: int) -> None:
+        self.ds = ds
+        self.batch_size = batch_size
+        self.shuffle = shuffle
+        self.seed = seed
+        self._epoch = 0
+
+    def __iter__(self):
+        gen = torch.Generator().manual_seed(self.seed + self._epoch)
+        self._epoch += 1
+        yield from self.ds.batches(self.batch_size, self.shuffle, gen)
+
+
+class DistillDataModule(L.LightningDataModule):
+    def __init__(
+        self, train_ds: DistillDataset, val_ds: DistillDataset | None, batch_size: int = 256,
+        seed: int = 0,
+    ) -> None:
+        super().__init__()
+        self.train_ds = train_ds
+        self.val_ds = val_ds
+        self.batch_size = batch_size
+        self.seed = seed
+
+    def train_dataloader(self) -> DataLoader:
+        return DataLoader(
+            _BatchIterable(self.train_ds, self.batch_size, True, self.seed), batch_size=None
+        )
+
+    def val_dataloader(self) -> DataLoader | None:
+        if self.val_ds is None or not len(self.val_ds):
+            return None
+        return DataLoader(
+            _BatchIterable(self.val_ds, self.batch_size, False, self.seed), batch_size=None
+        )
+
+
+def fit_distill(
+    model: StudentModel,
+    train_ds: DistillDataset,
+    val_ds: DistillDataset | None,
+    *,
+    epochs: int = 20,
+    batch_size: int = 256,
+    lr: float = 1e-3,
+    weight_decay: float = 1e-5,
+    loss_weights: tuple[float, float, float] = (1.0, 1.0, 1.0),
+    grad_clip: float = 1.0,
+    seed: int = 0,
+    accelerator: str = "auto",
+    **trainer_kwargs,
+) -> DistillModule:
+    """Set target norm from ``train_ds`` and run a Lightning distillation fit in place.
+
+    Mirrors :func:`pepdistill.distill.trainer.train` but on the Lightning engine. Returns
+    the LightningModule (its ``.model`` is the trained shared backbone).
+    """
+    L.seed_everything(seed, verbose=False)
+    model.set_norm(*train_ds.rt_ccs_stats())
+    module = DistillModule(model, lr=lr, weight_decay=weight_decay, loss_weights=loss_weights)
+    dm = DistillDataModule(train_ds, val_ds, batch_size=batch_size, seed=seed)
+    trainer = L.Trainer(
+        max_epochs=epochs,
+        accelerator=accelerator,
+        gradient_clip_val=grad_clip,
+        enable_checkpointing=trainer_kwargs.pop("enable_checkpointing", False),
+        logger=trainer_kwargs.pop("logger", False),
+        **trainer_kwargs,
+    )
+    trainer.fit(module, datamodule=dm)
+    return module

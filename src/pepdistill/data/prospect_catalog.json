@@ -1,0 +1,800 @@
+{
+ "_note": "PROSPECT file catalog (Zenodo). Regenerate with data/prospect_catalog.py:build_catalog.",
+ "records": {
+  "multi_ptm": {
+   "doi": "10.5281/zenodo.11472525",
+   "files": {
+    "TUM_mod_OGalNAc.zip": {
+     "checksum": "md5:61fc1b1a2f1fa2f0b3afc5727141e182",
+     "size": 818223393,
+     "url": "https://zenodo.org/api/records/11472525/files/TUM_mod_OGalNAc.zip/content"
+    },
+    "TUM_mod_OGalNAc_meta_data.parquet": {
+     "checksum": "md5:52926a9f4a755a211672623053c1fa18",
+     "size": 33778362,
+     "url": "https://zenodo.org/api/records/11472525/files/TUM_mod_OGalNAc_meta_data.parquet/content"
+    },
+    "TUM_mod_OGlcNAc.zip": {
+     "checksum": "md5:fab13c62421ca5d82b227437c520ddc6",
+     "size": 562275356,
+     "url": "https://zenodo.org/api/records/11472525/files/TUM_mod_OGlcNAc.zip/content"
+    },
+    "TUM_mod_OGlcNAc_meta_data.parquet": {
+     "checksum": "md5:87720a88abda6da2cfdf1d85dfa1e008",
+     "size": 33165926,
+     "url": "https://zenodo.org/api/records/11472525/files/TUM_mod_OGlcNAc_meta_data.parquet/content"
+    },
+    "TUM_mod_acetylated.zip": {
+     "checksum": "md5:fba2b6aeb7849bf22aa7f1b5d357c47e",
+     "size": 5386315083,
+     "url": "https://zenodo.org/api/records/11472525/files/TUM_mod_acetylated.zip/content"
+    },
+    "TUM_mod_acetylated_meta_data.parquet": {
+     "checksum": "md5:204788aa4a9794303bc7133a85300124",
+     "size": 95234872,
+     "url": "https://zenodo.org/api/records/11472525/files/TUM_mod_acetylated_meta_data.parquet/content"
+    },
+    "TUM_mod_citrullination.zip": {
+     "checksum": "md5:4ebc1c9506fe14fc68930e93191fd188",
+     "size": 2252184476,
+     "url": "https://zenodo.org/api/records/11472525/files/TUM_mod_citrullination.zip/content"
+    },
+    "TUM_mod_citrullination_meta_data.parquet": {
+     "checksum": "md5:a5056619b43d1ec7d7ef6eeffd911264",
+     "size": 41025017,
+     "url": "https://zenodo.org/api/records/11472525/files/TUM_mod_citrullination_meta_data.parquet/content"
+    },
+    "TUM_mod_imp_pSTY.zip": {
+     "checksum": "md5:9ef66486be1cf515ea5ce493dd18e5e4",
+     "size": 1905798836,
+     "url": "https://zenodo.org/api/records/11472525/files/TUM_mod_imp_pSTY.zip/content"
+    },
+    "TUM_mod_imp_pSTY_meta_data.parquet": {
+     "checksum": "md5:c000af626772494f0e1bba6f41b166fc",
+     "size": 46950922,
+     "url": "https://zenodo.org/api/records/11472525/files/TUM_mod_imp_pSTY_meta_data.parquet/content"
+    },
+    "TUM_mod_monomethyl.zip": {
+     "checksum": "md5:3f441fd02b057a48e931176717ba8ded",
+     "size": 1597597905,
+     "url": "https://zenodo.org/api/records/11472525/files/TUM_mod_monomethyl.zip/content"
+    },
+    "TUM_mod_monomethyl_meta_data.parquet": {
+     "checksum": "md5:1317f5453d10c7bf2c9dfb6e7bc57683",
+     "size": 39826684,
+     "url": "https://zenodo.org/api/records/11472525/files/TUM_mod_monomethyl_meta_data.parquet/content"
+    },
+    "TUM_mod_pS.zip": {
+     "checksum": "md5:797c0c845822722d8f669ff36db66219",
+     "size": 2897616151,
+     "url": "https://zenodo.org/api/records/11472525/files/TUM_mod_pS.zip/content"
+    },
+    "TUM_mod_pS_meta_data.parquet": {
+     "checksum": "md5:6951b49700868db3ca478210bc5f60a0",
+     "size": 68079981,
+     "url": "https://zenodo.org/api/records/11472525/files/TUM_mod_pS_meta_data.parquet/content"
+    },
+    "TUM_mod_pT.zip": {
+     "checksum": "md5:8395ecc9d527ab49228708413e18a54e",
+     "size": 1422099912,
+     "url": "https://zenodo.org/api/records/11472525/files/TUM_mod_pT.zip/content"
+    },
+    "TUM_mod_pT_meta_data.parquet": {
+     "checksum": "md5:0a30cee78315dff85d9f43fe8aa8a79f",
+     "size": 27746790,
+     "url": "https://zenodo.org/api/records/11472525/files/TUM_mod_pT_meta_data.parquet/content"
+    },
+    "TUM_mod_pY.zip": {
+     "checksum": "md5:fd64f136238b24656b2d2f33ff2e0a38",
+     "size": 4918784717,
+     "url": "https://zenodo.org/api/records/11472525/files/TUM_mod_pY.zip/content"
+    },
+    "TUM_mod_pY_meta_data.parquet": {
+     "checksum": "md5:7e9b325e764af2a18173735e3d51ae93",
+     "size": 94795186,
+     "url": "https://zenodo.org/api/records/11472525/files/TUM_mod_pY_meta_data.parquet/content"
+    },
+    "TUM_mod_pyroGlu.zip": {
+     "checksum": "md5:9888b1e01baa4c99f4ffbdc303dd30d9",
+     "size": 1314382810,
+     "url": "https://zenodo.org/api/records/11472525/files/TUM_mod_pyroGlu.zip/content"
+    },
+    "TUM_mod_pyroGlu_meta_data.parquet": {
+     "checksum": "md5:cbc76112256ce2af3136302f04858bc7",
+     "size": 23795635,
+     "url": "https://zenodo.org/api/records/11472525/files/TUM_mod_pyroGlu_meta_data.parquet/content"
+    },
+    "TUM_mod_ubi.zip": {
+     "checksum": "md5:4e38c728eb5a0d34696d151d75a84c4c",
+     "size": 9870755102,
+     "url": "https://zenodo.org/api/records/11472525/files/TUM_mod_ubi.zip/content"
+    },
+    "TUM_mod_ubi_meta_data.parquet": {
+     "checksum": "md5:8e35dd5de4a5040e99b33396f746346c",
+     "size": 127837683,
+     "url": "https://zenodo.org/api/records/11472525/files/TUM_mod_ubi_meta_data.parquet/content"
+    },
+    "TUM_nterm_ac.zip": {
+     "checksum": "md5:1ed269340ce53fd175f0e990e794b01f",
+     "size": 678887277,
+     "url": "https://zenodo.org/api/records/11472525/files/TUM_nterm_ac.zip/content"
+    },
+    "TUM_nterm_ac_meta_data.parquet": {
+     "checksum": "md5:a3cd6a113aa9d564221d904168416593",
+     "size": 11854524,
+     "url": "https://zenodo.org/api/records/11472525/files/TUM_nterm_ac_meta_data.parquet/content"
+    }
+   },
+   "record_id": "11472525"
+  },
+  "prospect": {
+   "doi": "10.5281/zenodo.6602020",
+   "files": {
+    "README.md": {
+     "checksum": "md5:399b8c17068308f9dce64a151a1ae0da",
+     "size": 3221,
+     "url": "https://zenodo.org/api/records/6602020/files/README.md/content"
+    },
+    "TUM_HLA.zip": {
+     "checksum": "md5:0b818429f6768196bd7ab859c64c0542",
+     "size": 13946725779,
+     "url": "https://zenodo.org/api/records/6602020/files/TUM_HLA.zip/content"
+    },
+    "TUM_HLA2_1.zip": {
+     "checksum": "md5:174c22b7a43d9e76741163708a39e0a8",
+     "size": 10076668508,
+     "url": "https://zenodo.org/api/records/6602020/files/TUM_HLA2_1.zip/content"
+    },
+    "TUM_HLA2_2.zip": {
+     "checksum": "md5:d4113f8f000d8655ae9526c6a7d15eb1",
+     "size": 9785137886,
+     "url": "https://zenodo.org/api/records/6602020/files/TUM_HLA2_2.zip/content"
+    },
+    "TUM_HLA2_meta_data.parquet": {
+     "checksum": "md5:ef32a4f5b87d2fb90bd9d3ed8568d2f1",
+     "size": 170299902,
+     "url": "https://zenodo.org/api/records/6602020/files/TUM_HLA2_meta_data.parquet/content"
+    },
+    "TUM_HLA_meta_data.parquet": {
+     "checksum": "md5:31bbf4f40f0b0b9ab5dcb23b6e62803b",
+     "size": 257700861,
+     "url": "https://zenodo.org/api/records/6602020/files/TUM_HLA_meta_data.parquet/content"
+    },
+    "TUM_aspn.zip": {
+     "checksum": "md5:6b3154829f4df588693fb9e1395dab48",
+     "size": 11371968768,
+     "url": "https://zenodo.org/api/records/6602020/files/TUM_aspn.zip/content"
+    },
+    "TUM_aspn_meta_data.parquet": {
+     "checksum": "md5:2b914d4aad0d99dee4888a3788cc033e",
+     "size": 62651860,
+     "url": "https://zenodo.org/api/records/6602020/files/TUM_aspn_meta_data.parquet/content"
+    },
+    "TUM_first_pool_1.zip": {
+     "checksum": "md5:2b8c45bbb25d67ebbe105fa1c57e97c5",
+     "size": 8661958880,
+     "url": "https://zenodo.org/api/records/6602020/files/TUM_first_pool_1.zip/content"
+    },
+    "TUM_first_pool_2.zip": {
+     "checksum": "md5:459e73d52cc3292da5724a06bb70faa2",
+     "size": 9132078808,
+     "url": "https://zenodo.org/api/records/6602020/files/TUM_first_pool_2.zip/content"
+    },
+    "TUM_first_pool_3.zip": {
+     "checksum": "md5:db801238cac201c76debb7f258085a87",
+     "size": 9252990363,
+     "url": "https://zenodo.org/api/records/6602020/files/TUM_first_pool_3.zip/content"
+    },
+    "TUM_first_pool_meta_data.parquet": {
+     "checksum": "md5:e06e23fd13d14b1eab0a695a2f370ec3",
+     "size": 240670120,
+     "url": "https://zenodo.org/api/records/6602020/files/TUM_first_pool_meta_data.parquet/content"
+    },
+    "TUM_isoform_1.zip": {
+     "checksum": "md5:cb9c56a861d8b7664078c14b165337bc",
+     "size": 11272002689,
+     "url": "https://zenodo.org/api/records/6602020/files/TUM_isoform_1.zip/content"
+    },
+    "TUM_isoform_2.zip": {
+     "checksum": "md5:b8548820ca5d61b914a66cf1aefaec94",
+     "size": 11835051802,
+     "url": "https://zenodo.org/api/records/6602020/files/TUM_isoform_2.zip/content"
+    },
+    "TUM_isoform_meta_data.parquet": {
+     "checksum": "md5:b246a3c2a73818ea88b3b61b491df1be",
+     "size": 225223580,
+     "url": "https://zenodo.org/api/records/6602020/files/TUM_isoform_meta_data.parquet/content"
+    },
+    "TUM_lysn.zip": {
+     "checksum": "md5:fcb86674338f687e9427bce0c7f606f1",
+     "size": 10941763444,
+     "url": "https://zenodo.org/api/records/6602020/files/TUM_lysn.zip/content"
+    },
+    "TUM_lysn_meta_data.parquet": {
+     "checksum": "md5:5d8d9da924db633dec7057fd0693d105",
+     "size": 53747057,
+     "url": "https://zenodo.org/api/records/6602020/files/TUM_lysn_meta_data.parquet/content"
+    },
+    "TUM_missing_first.zip": {
+     "checksum": "md5:1318d05d166ca10959beece68664cca3",
+     "size": 1566769603,
+     "url": "https://zenodo.org/api/records/6602020/files/TUM_missing_first.zip/content"
+    },
+    "TUM_missing_first_meta_data.parquet": {
+     "checksum": "md5:200727477fa0377c7fa1367181cfcff3",
+     "size": 10571627,
+     "url": "https://zenodo.org/api/records/6602020/files/TUM_missing_first_meta_data.parquet/content"
+    },
+    "TUM_proteo_TMT.zip": {
+     "checksum": "md5:02c7d5de4baefe9402050d1518065e75",
+     "size": 4385432999,
+     "url": "https://zenodo.org/api/records/6602020/files/TUM_proteo_TMT.zip/content"
+    },
+    "TUM_proteo_TMT_meta_data.parquet": {
+     "checksum": "md5:0ef9ccad3a5ecc7e49f126c0410eadc9",
+     "size": 57703071,
+     "url": "https://zenodo.org/api/records/6602020/files/TUM_proteo_TMT_meta_data.parquet/content"
+    },
+    "TUM_second_addon.zip": {
+     "checksum": "md5:e42a4efbb565a933c0ea28e55695554d",
+     "size": 8290464021,
+     "url": "https://zenodo.org/api/records/6602020/files/TUM_second_addon.zip/content"
+    },
+    "TUM_second_addon_meta_data.parquet": {
+     "checksum": "md5:01ba8590ba57ae7f1bfb07c3c58c2cf0",
+     "size": 92869185,
+     "url": "https://zenodo.org/api/records/6602020/files/TUM_second_addon_meta_data.parquet/content"
+    },
+    "TUM_second_pool_1.zip": {
+     "checksum": "md5:c52913f8fa6caece446f65b6084f9fe9",
+     "size": 9447912353,
+     "url": "https://zenodo.org/api/records/6602020/files/TUM_second_pool_1.zip/content"
+    },
+    "TUM_second_pool_2.zip": {
+     "checksum": "md5:560be62bd1c8b026a648dfc0ee518461",
+     "size": 9283900542,
+     "url": "https://zenodo.org/api/records/6602020/files/TUM_second_pool_2.zip/content"
+    },
+    "TUM_second_pool_3.zip": {
+     "checksum": "md5:1e704adc82f5f9f2dcf2d8c66879ffa1",
+     "size": 9457903137,
+     "url": "https://zenodo.org/api/records/6602020/files/TUM_second_pool_3.zip/content"
+    },
+    "TUM_second_pool_meta_data.parquet": {
+     "checksum": "md5:f8ae60f49411f78a2833dd7a6e2b7254",
+     "size": 146460559,
+     "url": "https://zenodo.org/api/records/6602020/files/TUM_second_pool_meta_data.parquet/content"
+    },
+    "TUM_third_pool.zip": {
+     "checksum": "md5:6b7a1173c450939e025afedb70b3915f",
+     "size": 1498822397,
+     "url": "https://zenodo.org/api/records/6602020/files/TUM_third_pool.zip/content"
+    },
+    "TUM_third_pool_meta_data.parquet": {
+     "checksum": "md5:bb3e7087dcf70741f7c495f407175336",
+     "size": 8173823,
+     "url": "https://zenodo.org/api/records/6602020/files/TUM_third_pool_meta_data.parquet/content"
+    },
+    "Thermo_SRM_Pool.zip": {
+     "checksum": "md5:7c7c10ef95b7d45eb24b4bb80d42f880",
+     "size": 11533113454,
+     "url": "https://zenodo.org/api/records/6602020/files/Thermo_SRM_Pool.zip/content"
+    },
+    "Thermo_SRM_Pool_meta_data.parquet": {
+     "checksum": "md5:82800012ba48611695c7147d009fd5f3",
+     "size": 149754175,
+     "url": "https://zenodo.org/api/records/6602020/files/Thermo_SRM_Pool_meta_data.parquet/content"
+    }
+   },
+   "record_id": "6602020"
+  },
+  "test_ptm": {
+   "doi": "10.5281/zenodo.11477731",
+   "files": {
+    "Kmod_Acetyl.zip": {
+     "checksum": "md5:e7ca9df921f4c4c86590cce28fe81f1b",
+     "size": 97829958,
+     "url": "https://zenodo.org/api/records/11477731/files/Kmod_Acetyl.zip/content"
+    },
+    "Kmod_Acetyl_meta_data.parquet": {
+     "checksum": "md5:5660eceeb42ca6b436811d1f0cee4c03",
+     "size": 2150011,
+     "url": "https://zenodo.org/api/records/11477731/files/Kmod_Acetyl_meta_data.parquet/content"
+    },
+    "Kmod_Biotin.zip": {
+     "checksum": "md5:9988056494e5ab8790d0e154664c24ea",
+     "size": 24905073,
+     "url": "https://zenodo.org/api/records/11477731/files/Kmod_Biotin.zip/content"
+    },
+    "Kmod_Biotin_meta_data.parquet": {
+     "checksum": "md5:3a0143c79e98b8ea79432d7b662506ef",
+     "size": 1284095,
+     "url": "https://zenodo.org/api/records/11477731/files/Kmod_Biotin_meta_data.parquet/content"
+    },
+    "Kmod_Butyryl.zip": {
+     "checksum": "md5:d691b41424b644f9876fa9d318a48b5b",
+     "size": 107473920,
+     "url": "https://zenodo.org/api/records/11477731/files/Kmod_Butyryl.zip/content"
+    },
+    "Kmod_Butyryl_meta_data.parquet": {
+     "checksum": "md5:2ba3ef0d8a03654d12f073960048b6f5",
+     "size": 1896086,
+     "url": "https://zenodo.org/api/records/11477731/files/Kmod_Butyryl_meta_data.parquet/content"
+    },
+    "Kmod_Crotonyl.zip": {
+     "checksum": "md5:9b80bb92738279f77e1080da9b2fb5f1",
+     "size": 107493313,
+     "url": "https://zenodo.org/api/records/11477731/files/Kmod_Crotonyl.zip/content"
+    },
+    "Kmod_Crotonyl_meta_data.parquet": {
+     "checksum": "md5:6e122a1d8f2089b3479aec892fbf42b8",
+     "size": 2169366,
+     "url": "https://zenodo.org/api/records/11477731/files/Kmod_Crotonyl_meta_data.parquet/content"
+    },
+    "Kmod_Dimethyl.zip": {
+     "checksum": "md5:9cf4fce990882da86be428900891fae3",
+     "size": 96806438,
+     "url": "https://zenodo.org/api/records/11477731/files/Kmod_Dimethyl.zip/content"
+    },
+    "Kmod_Dimethyl_meta_data.parquet": {
+     "checksum": "md5:85ed9e5442216b4520de493301170050",
+     "size": 1925081,
+     "url": "https://zenodo.org/api/records/11477731/files/Kmod_Dimethyl_meta_data.parquet/content"
+    },
+    "Kmod_Formyl.zip": {
+     "checksum": "md5:a4844d2d81980bdc679e4a1b7d504f1f",
+     "size": 103850254,
+     "url": "https://zenodo.org/api/records/11477731/files/Kmod_Formyl.zip/content"
+    },
+    "Kmod_Formyl_meta_data.parquet": {
+     "checksum": "md5:b4fad4cbe8458584bd63c6d045266511",
+     "size": 2282884,
+     "url": "https://zenodo.org/api/records/11477731/files/Kmod_Formyl_meta_data.parquet/content"
+    },
+    "Kmod_Glutaryl.zip": {
+     "checksum": "md5:44a5091a4a9f8a4c41bea19c44691f01",
+     "size": 118269364,
+     "url": "https://zenodo.org/api/records/11477731/files/Kmod_Glutaryl.zip/content"
+    },
+    "Kmod_Glutaryl_meta_data.parquet": {
+     "checksum": "md5:76004b2d384a355a1f471d3f2ef260f5",
+     "size": 2647736,
+     "url": "https://zenodo.org/api/records/11477731/files/Kmod_Glutaryl_meta_data.parquet/content"
+    },
+    "Kmod_GlyGly.zip": {
+     "checksum": "md5:1e28bf993ce02360cf40e3ee754894d6",
+     "size": 139551694,
+     "url": "https://zenodo.org/api/records/11477731/files/Kmod_GlyGly.zip/content"
+    },
+    "Kmod_GlyGly_meta_data.parquet": {
+     "checksum": "md5:dac4c5d1d5c2df15532b0a8acf57fab2",
+     "size": 2458426,
+     "url": "https://zenodo.org/api/records/11477731/files/Kmod_GlyGly_meta_data.parquet/content"
+    },
+    "Kmod_Hydroxyisobut.zip": {
+     "checksum": "md5:62f71df57f24ab00f967bba92acb9d42",
+     "size": 103693506,
+     "url": "https://zenodo.org/api/records/11477731/files/Kmod_Hydroxyisobut.zip/content"
+    },
+    "Kmod_Hydroxyisobut_meta_data.parquet": {
+     "checksum": "md5:977be8e42e41868756ca25e14e9bd8d0",
+     "size": 2381011,
+     "url": "https://zenodo.org/api/records/11477731/files/Kmod_Hydroxyisobut_meta_data.parquet/content"
+    },
+    "Kmod_Malonyl.zip": {
+     "checksum": "md5:4dd59edcb67c989b49d38030f7091f6b",
+     "size": 89086150,
+     "url": "https://zenodo.org/api/records/11477731/files/Kmod_Malonyl.zip/content"
+    },
+    "Kmod_Malonyl_meta_data.parquet": {
+     "checksum": "md5:6c931addd8b93ef2eb16dce389572966",
+     "size": 1756292,
+     "url": "https://zenodo.org/api/records/11477731/files/Kmod_Malonyl_meta_data.parquet/content"
+    },
+    "Kmod_Methyl.zip": {
+     "checksum": "md5:e1db63b83a2d3b356c0da269764fb07d",
+     "size": 103647176,
+     "url": "https://zenodo.org/api/records/11477731/files/Kmod_Methyl.zip/content"
+    },
+    "Kmod_Methyl_meta_data.parquet": {
+     "checksum": "md5:5802a87847d43b627f1c302cd00f6a83",
+     "size": 2213219,
+     "url": "https://zenodo.org/api/records/11477731/files/Kmod_Methyl_meta_data.parquet/content"
+    },
+    "Kmod_Propion.zip": {
+     "checksum": "md5:56d03bf1790184afc34eacd89500c681",
+     "size": 116888317,
+     "url": "https://zenodo.org/api/records/11477731/files/Kmod_Propion.zip/content"
+    },
+    "Kmod_Propion_meta_data.parquet": {
+     "checksum": "md5:df756e8fa6feab40357fcc43ea1d5abe",
+     "size": 2359712,
+     "url": "https://zenodo.org/api/records/11477731/files/Kmod_Propion_meta_data.parquet/content"
+    },
+    "Kmod_Succinyl.zip": {
+     "checksum": "md5:6c62a4d8a8fc07b0327019b42252c145",
+     "size": 105147769,
+     "url": "https://zenodo.org/api/records/11477731/files/Kmod_Succinyl.zip/content"
+    },
+    "Kmod_Succinyl_meta_data.parquet": {
+     "checksum": "md5:029131ae3978b2d9c4e61b794cb0403c",
+     "size": 2143611,
+     "url": "https://zenodo.org/api/records/11477731/files/Kmod_Succinyl_meta_data.parquet/content"
+    },
+    "Kmod_Trimethyl.zip": {
+     "checksum": "md5:565518443a729b8d31362b6660beed69",
+     "size": 87107428,
+     "url": "https://zenodo.org/api/records/11477731/files/Kmod_Trimethyl.zip/content"
+    },
+    "Kmod_Trimethyl_meta_data.parquet": {
+     "checksum": "md5:3120a49553c22f073d79862f7343060b",
+     "size": 2019012,
+     "url": "https://zenodo.org/api/records/11477731/files/Kmod_Trimethyl_meta_data.parquet/content"
+    },
+    "Kmod_Unmod.zip": {
+     "checksum": "md5:e78d450b66320e72b85a7c822208f3fe",
+     "size": 150702104,
+     "url": "https://zenodo.org/api/records/11477731/files/Kmod_Unmod.zip/content"
+    },
+    "Kmod_Unmod_meta_data.parquet": {
+     "checksum": "md5:b9b9c12cfccc726017cde99a204cee31",
+     "size": 2654857,
+     "url": "https://zenodo.org/api/records/11477731/files/Kmod_Unmod_meta_data.parquet/content"
+    },
+    "Pmod_Hydroxypro.zip": {
+     "checksum": "md5:23222c84d1f61f82d2bee2d926deb9e4",
+     "size": 39870809,
+     "url": "https://zenodo.org/api/records/11477731/files/Pmod_Hydroxypro.zip/content"
+    },
+    "Pmod_Hydroxypro_meta_data.parquet": {
+     "checksum": "md5:e6309cf6ab9490c29ca1c5e3e67ed7f7",
+     "size": 1871429,
+     "url": "https://zenodo.org/api/records/11477731/files/Pmod_Hydroxypro_meta_data.parquet/content"
+    },
+    "Rmod_Citrullin.zip": {
+     "checksum": "md5:78ebbebcd18a37d875c801e21fc585ab",
+     "size": 79108040,
+     "url": "https://zenodo.org/api/records/11477731/files/Rmod_Citrullin.zip/content"
+    },
+    "Rmod_Citrullin_meta_data.parquet": {
+     "checksum": "md5:0462b1d6f12f9cab5e31c2d0a771b14e",
+     "size": 2127105,
+     "url": "https://zenodo.org/api/records/11477731/files/Rmod_Citrullin_meta_data.parquet/content"
+    },
+    "Rmod_Dimethyl-as.zip": {
+     "checksum": "md5:3e8959234dcf01ccba1691cafb8689b1",
+     "size": 70266701,
+     "url": "https://zenodo.org/api/records/11477731/files/Rmod_Dimethyl-as.zip/content"
+    },
+    "Rmod_Dimethyl-as_meta_data.parquet": {
+     "checksum": "md5:41a6cfc470189bc75608750952541233",
+     "size": 1922602,
+     "url": "https://zenodo.org/api/records/11477731/files/Rmod_Dimethyl-as_meta_data.parquet/content"
+    },
+    "Rmod_Dimethyl-sym.zip": {
+     "checksum": "md5:c986f1450c2e1f7c3784e696707fd15e",
+     "size": 70853835,
+     "url": "https://zenodo.org/api/records/11477731/files/Rmod_Dimethyl-sym.zip/content"
+    },
+    "Rmod_Dimethyl-sym_meta_data.parquet": {
+     "checksum": "md5:f929645af0890f981d5d7a1ac272d8cc",
+     "size": 1971320,
+     "url": "https://zenodo.org/api/records/11477731/files/Rmod_Dimethyl-sym_meta_data.parquet/content"
+    },
+    "Rmod_Methyl.zip": {
+     "checksum": "md5:22406527eaf82e93ee8f670cc3ba25d6",
+     "size": 82150107,
+     "url": "https://zenodo.org/api/records/11477731/files/Rmod_Methyl.zip/content"
+    },
+    "Rmod_Methyl_meta_data.parquet": {
+     "checksum": "md5:18de55f4d49e8cd61e9c3b0e0b53d1d0",
+     "size": 2335398,
+     "url": "https://zenodo.org/api/records/11477731/files/Rmod_Methyl_meta_data.parquet/content"
+    },
+    "Rmod_Unmod.zip": {
+     "checksum": "md5:bb7baca9ecc9399a321a57c061f2d397",
+     "size": 95955574,
+     "url": "https://zenodo.org/api/records/11477731/files/Rmod_Unmod.zip/content"
+    },
+    "Rmod_Unmod_meta_data.parquet": {
+     "checksum": "md5:eac9b11e01ad99930e37a145fb2b3369",
+     "size": 2289868,
+     "url": "https://zenodo.org/api/records/11477731/files/Rmod_Unmod_meta_data.parquet/content"
+    },
+    "TMT_TUM_mod_ubi.zip": {
+     "checksum": "md5:7e4e86f4bdfe8dd327525f54e20556ec",
+     "size": 1484988831,
+     "url": "https://zenodo.org/api/records/11477731/files/TMT_TUM_mod_ubi.zip/content"
+    },
+    "TMT_TUM_mod_ubi_meta_data.parquet": {
+     "checksum": "md5:94943a13dfc3672e83f9b90c74b9f14f",
+     "size": 44185963,
+     "url": "https://zenodo.org/api/records/11477731/files/TMT_TUM_mod_ubi_meta_data.parquet/content"
+    },
+    "TMT_TUM_perm_pS.zip": {
+     "checksum": "md5:472f5f608ddffcdbf0db602bd63285e4",
+     "size": 25038494,
+     "url": "https://zenodo.org/api/records/11477731/files/TMT_TUM_perm_pS.zip/content"
+    },
+    "TMT_TUM_perm_pS_meta_data.parquet": {
+     "checksum": "md5:f386e8c3faf7c483dc5eb485320e98c9",
+     "size": 1482769,
+     "url": "https://zenodo.org/api/records/11477731/files/TMT_TUM_perm_pS_meta_data.parquet/content"
+    },
+    "TMT_TUM_perm_pT.zip": {
+     "checksum": "md5:d39a2d2173fe752e5cef2a00a1d7e976",
+     "size": 20459062,
+     "url": "https://zenodo.org/api/records/11477731/files/TMT_TUM_perm_pT.zip/content"
+    },
+    "TMT_TUM_perm_pT_meta_data.parquet": {
+     "checksum": "md5:709a0581ee462f7818c7ae671d2bda7b",
+     "size": 926712,
+     "url": "https://zenodo.org/api/records/11477731/files/TMT_TUM_perm_pT_meta_data.parquet/content"
+    },
+    "TMT_TUM_perm_pY.zip": {
+     "checksum": "md5:8894f7c72074f805d01adbb0d88c99cc",
+     "size": 108983603,
+     "url": "https://zenodo.org/api/records/11477731/files/TMT_TUM_perm_pY.zip/content"
+    },
+    "TMT_TUM_perm_pY_meta_data.parquet": {
+     "checksum": "md5:797384c564fcf8926654f5f4093d5e00",
+     "size": 4521588,
+     "url": "https://zenodo.org/api/records/11477731/files/TMT_TUM_perm_pY_meta_data.parquet/content"
+    },
+    "TUM_combPTM.zip": {
+     "checksum": "md5:7501f6e5e7127e660f43412512f8167b",
+     "size": 1108126378,
+     "url": "https://zenodo.org/api/records/11477731/files/TUM_combPTM.zip/content"
+    },
+    "TUM_combPTM_meta_data.parquet": {
+     "checksum": "md5:a560bb33ecebc3071239255b80d345e9",
+     "size": 15453990,
+     "url": "https://zenodo.org/api/records/11477731/files/TUM_combPTM_meta_data.parquet/content"
+    },
+    "TUM_perm_pS.zip": {
+     "checksum": "md5:e8cf018520474f42fd93aa967c9796b0",
+     "size": 126201196,
+     "url": "https://zenodo.org/api/records/11477731/files/TUM_perm_pS.zip/content"
+    },
+    "TUM_perm_pS_meta_data.parquet": {
+     "checksum": "md5:80416ae54e9aa407be9a25923137e365",
+     "size": 4327445,
+     "url": "https://zenodo.org/api/records/11477731/files/TUM_perm_pS_meta_data.parquet/content"
+    },
+    "TUM_perm_pT.zip": {
+     "checksum": "md5:1fa7794d0f72b64ade1d6090ffed9f07",
+     "size": 107754405,
+     "url": "https://zenodo.org/api/records/11477731/files/TUM_perm_pT.zip/content"
+    },
+    "TUM_perm_pT_meta_data.parquet": {
+     "checksum": "md5:d24451dc27ca4d0e7acd8b01819b0095",
+     "size": 4466730,
+     "url": "https://zenodo.org/api/records/11477731/files/TUM_perm_pT_meta_data.parquet/content"
+    },
+    "TUM_perm_pY.zip": {
+     "checksum": "md5:b74c6cfccbd0e151173a5a5fd94f53f2",
+     "size": 356075241,
+     "url": "https://zenodo.org/api/records/11477731/files/TUM_perm_pY.zip/content"
+    },
+    "TUM_perm_pY_meta_data.parquet": {
+     "checksum": "md5:168b4c026af0bee3039fb4f6f6c14a94",
+     "size": 7190872,
+     "url": "https://zenodo.org/api/records/11477731/files/TUM_perm_pY_meta_data.parquet/content"
+    },
+    "Ymod_Nitrotyr.zip": {
+     "checksum": "md5:dba70e89aa5a777fdcfce3a5b2db1245",
+     "size": 87625603,
+     "url": "https://zenodo.org/api/records/11477731/files/Ymod_Nitrotyr.zip/content"
+    },
+    "Ymod_Nitrotyr_meta_data.parquet": {
+     "checksum": "md5:c4523fd115717c1f0db7cef109b8275d",
+     "size": 2665560,
+     "url": "https://zenodo.org/api/records/11477731/files/Ymod_Nitrotyr_meta_data.parquet/content"
+    },
+    "Ymod_Phospho.zip": {
+     "checksum": "md5:4a53501737b8659612bc070c70ca3165",
+     "size": 120666617,
+     "url": "https://zenodo.org/api/records/11477731/files/Ymod_Phospho.zip/content"
+    },
+    "Ymod_Phospho_meta_data.parquet": {
+     "checksum": "md5:1cd2b4a06cd9b423ac518e2da1f84ce4",
+     "size": 3494992,
+     "url": "https://zenodo.org/api/records/11477731/files/Ymod_Phospho_meta_data.parquet/content"
+    },
+    "Ymod_Unmod.zip": {
+     "checksum": "md5:77d8db4f12ae9832e31b492d2164e146",
+     "size": 83433676,
+     "url": "https://zenodo.org/api/records/11477731/files/Ymod_Unmod.zip/content"
+    },
+    "Ymod_Unmod_meta_data.parquet": {
+     "checksum": "md5:3e43d225b87ce7f2c83d76ae392e0353",
+     "size": 2568507,
+     "url": "https://zenodo.org/api/records/11477731/files/Ymod_Unmod_meta_data.parquet/content"
+    }
+   },
+   "record_id": "11477731"
+  },
+  "tmt": {
+   "doi": "10.5281/zenodo.8221499",
+   "files": {
+    "TMT_TUM_HLA.zip": {
+     "checksum": "md5:9815d8a7f6c43588016b192ebe95fa38",
+     "size": 6717222557,
+     "url": "https://zenodo.org/api/records/8221499/files/TMT_TUM_HLA.zip/content"
+    },
+    "TMT_TUM_HLA_meta_data.parquet": {
+     "checksum": "md5:29f4455e0e77a1974e538f7ded15dbd8",
+     "size": 294795047,
+     "url": "https://zenodo.org/api/records/8221499/files/TMT_TUM_HLA_meta_data.parquet/content"
+    },
+    "TMT_TUM_aspn.zip": {
+     "checksum": "md5:1fbffa6412ae5ab546894c6c85955662",
+     "size": 1047744337,
+     "url": "https://zenodo.org/api/records/8221499/files/TMT_TUM_aspn.zip/content"
+    },
+    "TMT_TUM_aspn_meta_data.parquet": {
+     "checksum": "md5:470bc8ca0e757e515ec5cccbdf84c1c8",
+     "size": 21350310,
+     "url": "https://zenodo.org/api/records/8221499/files/TMT_TUM_aspn_meta_data.parquet/content"
+    },
+    "TMT_TUM_first_pool.zip": {
+     "checksum": "md5:9b0a837b77fda15111d5a8956969c98c",
+     "size": 7052244256,
+     "url": "https://zenodo.org/api/records/8221499/files/TMT_TUM_first_pool.zip/content"
+    },
+    "TMT_TUM_first_pool_meta_data.parquet": {
+     "checksum": "md5:94891a920d70456499880f2d240e2579",
+     "size": 186542305,
+     "url": "https://zenodo.org/api/records/8221499/files/TMT_TUM_first_pool_meta_data.parquet/content"
+    },
+    "TMT_TUM_isoform.zip": {
+     "checksum": "md5:3271d2828aa441d32b3fecc345723639",
+     "size": 7486067981,
+     "url": "https://zenodo.org/api/records/8221499/files/TMT_TUM_isoform.zip/content"
+    },
+    "TMT_TUM_isoform_meta_data.parquet": {
+     "checksum": "md5:002e27b10cac18c68978b68fb14d6eb6",
+     "size": 187891615,
+     "url": "https://zenodo.org/api/records/8221499/files/TMT_TUM_isoform_meta_data.parquet/content"
+    },
+    "TMT_TUM_lysn.zip": {
+     "checksum": "md5:3f8a69c06706798e3f6c6ae1d722f194",
+     "size": 1627165618,
+     "url": "https://zenodo.org/api/records/8221499/files/TMT_TUM_lysn.zip/content"
+    },
+    "TMT_TUM_lysn_meta_data.parquet": {
+     "checksum": "md5:40e4961669881e29aca70edc6092a32d",
+     "size": 29422874,
+     "url": "https://zenodo.org/api/records/8221499/files/TMT_TUM_lysn_meta_data.parquet/content"
+    },
+    "TMT_TUM_missing_first.zip": {
+     "checksum": "md5:6172988058af93ff4d4a5baed7f9d349",
+     "size": 151872652,
+     "url": "https://zenodo.org/api/records/8221499/files/TMT_TUM_missing_first.zip/content"
+    },
+    "TMT_TUM_missing_first_meta_data.parquet": {
+     "checksum": "md5:397f08024c56f8b1600f5a7cf955b5ca",
+     "size": 10678511,
+     "url": "https://zenodo.org/api/records/8221499/files/TMT_TUM_missing_first_meta_data.parquet/content"
+    },
+    "TMT_TUM_proteo_TMT.zip": {
+     "checksum": "md5:6b86293c2a6b3ba12c12564046e83125",
+     "size": 1925282580,
+     "url": "https://zenodo.org/api/records/8221499/files/TMT_TUM_proteo_TMT.zip/content"
+    },
+    "TMT_TUM_proteo_TMT_meta_data.parquet": {
+     "checksum": "md5:dc929a24275d460830abebc3a80fd529",
+     "size": 46667251,
+     "url": "https://zenodo.org/api/records/8221499/files/TMT_TUM_proteo_TMT_meta_data.parquet/content"
+    },
+    "TMT_TUM_second_addon.zip": {
+     "checksum": "md5:a3ced7aa262520dc022452dfa1b534fe",
+     "size": 2527264205,
+     "url": "https://zenodo.org/api/records/8221499/files/TMT_TUM_second_addon.zip/content"
+    },
+    "TMT_TUM_second_addon_meta_data.parquet": {
+     "checksum": "md5:164ffd1d1d83c5ffd167a957f2087e15",
+     "size": 70794185,
+     "url": "https://zenodo.org/api/records/8221499/files/TMT_TUM_second_addon_meta_data.parquet/content"
+    },
+    "TMT_TUM_second_pool.zip": {
+     "checksum": "md5:d9eae0396fe053fbd1765cc730911089",
+     "size": 3472811880,
+     "url": "https://zenodo.org/api/records/8221499/files/TMT_TUM_second_pool.zip/content"
+    },
+    "TMT_TUM_second_pool_meta_data.parquet": {
+     "checksum": "md5:e6cc46a1b5aedb60ac03ba97a4dba2ab",
+     "size": 68790575,
+     "url": "https://zenodo.org/api/records/8221499/files/TMT_TUM_second_pool_meta_data.parquet/content"
+    },
+    "TMT_TUM_third_pool.zip": {
+     "checksum": "md5:ec44541f5c3ac2f82b2379fa0deb911e",
+     "size": 263087557,
+     "url": "https://zenodo.org/api/records/8221499/files/TMT_TUM_third_pool.zip/content"
+    },
+    "TMT_TUM_third_pool_meta_data.parquet": {
+     "checksum": "md5:5f22dccda7099f1c608246c4beb7cd35",
+     "size": 5288054,
+     "url": "https://zenodo.org/api/records/8221499/files/TMT_TUM_third_pool_meta_data.parquet/content"
+    },
+    "TMT_Thermo_SRM_Pool.zip": {
+     "checksum": "md5:dce3b078996d30df4f1d0181625b4305",
+     "size": 3317256488,
+     "url": "https://zenodo.org/api/records/8221499/files/TMT_Thermo_SRM_Pool.zip/content"
+    },
+    "TMT_Thermo_SRM_Pool_meta_data.parquet": {
+     "checksum": "md5:87a81ba72fa3e62461e271a42f0559a3",
+     "size": 114207998,
+     "url": "https://zenodo.org/api/records/8221499/files/TMT_Thermo_SRM_Pool_meta_data.parquet/content"
+    }
+   },
+   "record_id": "8221499"
+  },
+  "tmt_ptm": {
+   "doi": "10.5281/zenodo.11474099",
+   "files": {
+    "TMT_TUM_mod_acetylated.zip": {
+     "checksum": "md5:88c613db8b69589d16dedf913ff92bd9",
+     "size": 875779251,
+     "url": "https://zenodo.org/api/records/11474099/files/TMT_TUM_mod_acetylated.zip/content"
+    },
+    "TMT_TUM_mod_acetylated_meta_data.parquet": {
+     "checksum": "md5:d2e14f13c431b27696dedb3e0ef11314",
+     "size": 28979419,
+     "url": "https://zenodo.org/api/records/11474099/files/TMT_TUM_mod_acetylated_meta_data.parquet/content"
+    },
+    "TMT_TUM_mod_imp_pSTY.zip": {
+     "checksum": "md5:d774fec0cda80653eed2e4e837de9205",
+     "size": 448908818,
+     "url": "https://zenodo.org/api/records/11474099/files/TMT_TUM_mod_imp_pSTY.zip/content"
+    },
+    "TMT_TUM_mod_imp_pSTY_meta_data.parquet": {
+     "checksum": "md5:d36f430062237930f108cbd6f8a217fa",
+     "size": 22180051,
+     "url": "https://zenodo.org/api/records/11474099/files/TMT_TUM_mod_imp_pSTY_meta_data.parquet/content"
+    },
+    "TMT_TUM_mod_monomethyl.zip": {
+     "checksum": "md5:224b18a9d71beb41813c4413e2d41a6a",
+     "size": 560858626,
+     "url": "https://zenodo.org/api/records/11474099/files/TMT_TUM_mod_monomethyl.zip/content"
+    },
+    "TMT_TUM_mod_monomethyl_meta_data.parquet": {
+     "checksum": "md5:a00b0cee595be592fc24804eb22486fd",
+     "size": 20649070,
+     "url": "https://zenodo.org/api/records/11474099/files/TMT_TUM_mod_monomethyl_meta_data.parquet/content"
+    },
+    "TMT_TUM_mod_pS.zip": {
+     "checksum": "md5:d34bd241fe6b77c76590223a31ea77ea",
+     "size": 949357507,
+     "url": "https://zenodo.org/api/records/11474099/files/TMT_TUM_mod_pS.zip/content"
+    },
+    "TMT_TUM_mod_pS_meta_data.parquet": {
+     "checksum": "md5:d0730c322b36ea32baf1b9e3b23d3821",
+     "size": 47860594,
+     "url": "https://zenodo.org/api/records/11474099/files/TMT_TUM_mod_pS_meta_data.parquet/content"
+    },
+    "TMT_TUM_mod_pT.zip": {
+     "checksum": "md5:6174b9354a2e545d6a56e8afaf8e3ab7",
+     "size": 356950896,
+     "url": "https://zenodo.org/api/records/11474099/files/TMT_TUM_mod_pT.zip/content"
+    },
+    "TMT_TUM_mod_pT_meta_data.parquet": {
+     "checksum": "md5:e14def13515649f5075d3537a36a7b8c",
+     "size": 14577786,
+     "url": "https://zenodo.org/api/records/11474099/files/TMT_TUM_mod_pT_meta_data.parquet/content"
+    },
+    "TMT_TUM_mod_pY.zip": {
+     "checksum": "md5:8ae1c0ca59c109c1d6737770992ef4f1",
+     "size": 3605480899,
+     "url": "https://zenodo.org/api/records/11474099/files/TMT_TUM_mod_pY.zip/content"
+    },
+    "TMT_TUM_mod_pY_meta_data.parquet": {
+     "checksum": "md5:722556c8832cde3f4469baaea8135646",
+     "size": 124849372,
+     "url": "https://zenodo.org/api/records/11474099/files/TMT_TUM_mod_pY_meta_data.parquet/content"
+    }
+   },
+   "record_id": "11474099"
+  }
+ }
+}
