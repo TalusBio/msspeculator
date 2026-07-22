@@ -73,6 +73,33 @@ def unspecific_window_stream(
         yield p[start : start + length]
 
 
+def enumerate_tryptic_stream(
+    path: str | Path, cfg: DigestConfig, loop: bool = False
+) -> Iterator[str]:
+    """Lazily yield tryptic peptides in FASTA order — no dedup (dup rate ~2%, not worth a
+    proteome-scale seen-set). One pass ~= the whole digest; ``loop`` repeats forever."""
+    while True:
+        for _h, seq in parse_fasta(path):
+            yield from cleave_protein(seq, cfg)
+        if not loop:
+            return
+
+
+def enumerate_unspecific_stream(
+    path: str | Path, min_len: int = 8, max_len: int = 11, loop: bool = False
+) -> Iterator[str]:
+    """Lazily yield every ``min_len..max_len`` protein sub-sequence (immunopeptidome-like),
+    in FASTA order, no dedup. One pass covers the whole space exactly (± ~2% repeats)."""
+    while True:
+        for _h, seq in parse_fasta(path):
+            n = len(seq)
+            for w in range(min_len, max_len + 1):
+                for i in range(n - w + 1):
+                    yield seq[i : i + w]
+        if not loop:
+            return
+
+
 def precursors_from_sequences(
     sequences: list[str], cfg: DigestConfig, rng: np.random.Generator
 ) -> list[Precursor]:

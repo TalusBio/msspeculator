@@ -33,7 +33,10 @@ class Teacher(ABC):
     name: str = "teacher"
 
     @abstractmethod
-    def predict(self, precursors: list[Precursor]) -> list[PrecursorLabels]: ...
+    def predict(self, precursors: list[Precursor], nces=None) -> list[PrecursorLabels]:
+        """Label precursors. ``nces`` (optional) is a per-precursor collision energy override
+        for a sweep; ``None`` uses the teacher's fixed NCE."""
+        ...
 
 
 def labels_to_frames(

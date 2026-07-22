@@ -40,8 +40,8 @@ _HYDRO = {
 class FakeTeacher(Teacher):
     name = "fake"
 
-    def predict(self, precursors: list[Precursor]) -> list[PrecursorLabels]:
-        return [self._one(p) for p in precursors]
+    def predict(self, precursors: list[Precursor], nces=None) -> list[PrecursorLabels]:
+        return [self._one(p) for p in precursors]  # deterministic; NCE has no effect
 
     def _one(self, prec: Precursor) -> PrecursorLabels:
         pep: Peptide = prec.peptide

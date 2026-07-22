@@ -1,15 +1,16 @@
-"""Online (streaming) teacher-distill pretrain with a collision-energy sweep.
+"""Online teacher-distill pretrain: enumerate the digests, chunk-label, per-peptide NCE sweep.
 
-Aggressive warmup: instead of caching labels, the teacher scores freshly-sampled peptides
-live in the training loop, and each batch draws a random NCE from a range. The batch's NCE is
-fed to the shared :class:`ContextEncoder` as ``ctx_acq``, so the student sees a broad CE axis
-(not a single teacher condition) and the CE encoder can learn a real response instead of
-memorizing a few points.
+Aggressive but not wasteful. Instead of randomly sampling peptides (coupon-collector — needs
+~16x the draws to cover a space), it *enumerates* the digests lazily: walk the FASTA, yield
+every tryptic peptide and every unspecific (immunopeptidome-like) window, no dedup (~2% repeat
+rate isn't worth a proteome-scale seen-set). One pass = full coverage.
 
-Peptides come from a weighted mix of streams — e.g. immunopeptidome-like unspecific windows
-and tryptic digests of a proteome — so the student learns fragmentation over a wide,
-effectively infinite peptide space. Stays on the Lightning engine: an ``IterableDataset``
-yields ready-made labeled batches (teacher called inside ``__iter__``) into ``DistillModule``.
+Throughput is teacher-bound, and peptdeep amortizes per-call overhead over big batches
+(~4k pep/s at 10k vs ~340 at 256). So peptides are labeled in large CHUNKS (prefetcher-style)
+and fed to the student as small mini-batches. Each peptide in a chunk gets its OWN collision
+energy drawn from a range, so ``ctx_acq`` is conditioned on a genuine per-peptide NCE sweep
+(the shared ContextEncoder learns a real CE response). Stays on the Lightning engine: a finite
+``IterableDataset`` over ``passes`` enumerations feeds ``DistillModule``.
 """
 
 from __future__ import annotations
@@ -23,9 +24,9 @@ from torch.utils.data import DataLoader, IterableDataset
 
 from ..data.config import DigestConfig
 from ..data.sources import (
-    fasta_peptide_stream,
+    enumerate_tryptic_stream,
+    enumerate_unspecific_stream,
     precursors_from_sequences,
-    unspecific_window_stream,
 )
 from ..models.context import ContextEncoder
 from ..models.student import StudentModel
@@ -35,13 +36,12 @@ from .lightning import DistillModule
 
 @dataclass
 class StreamMix:
-    """One peptide stream in the pretrain mix: its FASTA, how to sample it, how to build precursors."""
+    """One digest stream: its FASTA, kind (enumerator), and precursor settings (charge/mods)."""
 
     name: str
     kind: str  # "unspecific" | "tryptic"
     fasta: str
-    cfg: DigestConfig  # charges + mods used by precursors_from_sequences (and enzyme for tryptic)
-    weight: float = 1.0
+    cfg: DigestConfig
     min_len: int = 8
     max_len: int = 11
 
@@ -50,8 +50,9 @@ class StreamMix:
 class StreamPretrainCfg:
     mixes: list[StreamMix] = field(default_factory=list)
     nce_range: tuple[float, float] = (20.0, 40.0)
-    total_batches: int = 5000
-    batch_size: int = 256
+    chunk_size: int = 10000  # peptides per teacher call (throughput knob)
+    batch_size: int = 256  # student mini-batch
+    passes: int = 1  # full enumerations of the digests
     lr: float = 1e-3
     seed: int = 0
 
@@ -59,11 +60,17 @@ class StreamPretrainCfg:
 def default_mixes(fasta: str) -> list[StreamMix]:
     """Immunopeptidome-like unspecific windows (charge 1-2, no var mods) + tryptic (charge 2-4)."""
     immuno = DigestConfig(enzyme="unspecific", min_charge=1, max_charge=2, max_variable_mods=0)
-    tryptic = DigestConfig()  # trypsin, fixed CAM, variable Met-ox, charge 2-4 (project defaults)
+    tryptic = DigestConfig()
     return [
-        StreamMix("immuno", "unspecific", fasta, immuno, weight=1.0, min_len=8, max_len=11),
-        StreamMix("tryptic", "tryptic", fasta, tryptic, weight=1.0),
+        StreamMix("immuno", "unspecific", fasta, immuno, min_len=8, max_len=11),
+        StreamMix("tryptic", "tryptic", fasta, tryptic),
     ]
+
+
+def _peptides(mix: StreamMix, loop: bool):
+    if mix.kind == "unspecific":
+        return enumerate_unspecific_stream(mix.fasta, mix.min_len, mix.max_len, loop)
+    return enumerate_tryptic_stream(mix.fasta, mix.cfg, loop)
 
 
 class _StreamingDataset(IterableDataset):
@@ -71,56 +78,69 @@ class _StreamingDataset(IterableDataset):
         self.teacher = teacher
         self.cfg = cfg
 
-    def _samplers(self, rng):
-        out = []
-        for m in self.cfg.mixes:
-            if m.kind == "unspecific":
-                it = unspecific_window_stream(m.fasta, rng, m.min_len, m.max_len)
-            else:
-                it = fasta_peptide_stream(m.fasta, m.cfg, rng)
-            out.append(it)
-        return out
+    def _round_robin(self, iters):
+        """Interleave the mix streams -> (mix_idx, seq) until all are exhausted."""
+        done = [False] * len(iters)
+        while not all(done):
+            for mi, it in enumerate(iters):
+                if done[mi]:
+                    continue
+                try:
+                    yield mi, next(it)
+                except StopIteration:
+                    done[mi] = True
 
-    def _batch(self, samplers, weights, rng):
-        nce = float(rng.uniform(*self.cfg.nce_range))
-        which = rng.choice(len(samplers), p=weights)
-        mix = self.cfg.mixes[which]
-        seqs = [next(samplers[which]) for _ in range(self.cfg.batch_size)]
-        precs = precursors_from_sequences(seqs, mix.cfg, rng)
-        self.teacher.nce = nce
-        labels = self.teacher.predict(precs)
-        pairs = [(p, lab) for p, lab in zip(precs, labels) if lab is not None]
-        if not pairs:
-            return None
-        lb = collate_with_labels([p for p, _ in pairs], [lab for _, lab in pairs])
-        lb.ce = torch.full((len(pairs),), nce, dtype=torch.float32)
-        return lb
+    def _build_precs(self, items, rng):
+        """items: [(mix_idx, seq)] -> precursor list aligned to items (per-mix charge/mods)."""
+        precs = [None] * len(items)
+        by_mix: dict[int, list[int]] = {}
+        for idx, (mi, _seq) in enumerate(items):
+            by_mix.setdefault(mi, []).append(idx)
+        for mi, idxs in by_mix.items():
+            built = precursors_from_sequences(
+                [items[i][1] for i in idxs], self.cfg.mixes[mi].cfg, rng
+            )
+            for i, p in zip(idxs, built):
+                precs[i] = p
+        return precs
+
+    def _label_chunk(self, items, rng):
+        precs = self._build_precs(items, rng)
+        nces = rng.uniform(*self.cfg.nce_range, size=len(precs))
+        labels = self.teacher.predict(precs, nces=nces)
+        triples = [(p, lab, float(n)) for p, lab, n in zip(precs, labels, nces) if lab is not None]
+        for start in range(0, len(triples), self.cfg.batch_size):
+            sub = triples[start : start + self.cfg.batch_size]
+            lb = collate_with_labels([p for p, _, _ in sub], [lab for _, lab, _ in sub])
+            lb.ce = torch.tensor([n for _, _, n in sub], dtype=torch.float32)
+            yield lb
 
     def __iter__(self):
         rng = np.random.default_rng(self.cfg.seed)
-        samplers = self._samplers(rng)
-        w = np.array([m.weight for m in self.cfg.mixes], dtype=np.float64)
-        w /= w.sum()
-        made = 0
-        while made < self.cfg.total_batches:
-            lb = self._batch(samplers, w, rng)
-            if lb is not None:
-                made += 1
-                yield lb
+        for _ in range(self.cfg.passes):
+            iters = [_peptides(m, loop=False) for m in self.cfg.mixes]
+            buf: list = []
+            for item in self._round_robin(iters):
+                buf.append(item)
+                if len(buf) >= self.cfg.chunk_size:
+                    yield from self._label_chunk(buf, rng)
+                    buf = []
+            if buf:
+                yield from self._label_chunk(buf, rng)
 
 
 def _estimate_norm(teacher, cfg: StreamPretrainCfg, n: int = 512):
     """Label a mid-NCE sample to standardize rt/ccs (teacher frame); real train resets it."""
     rng = np.random.default_rng(cfg.seed + 1)
     ds = _StreamingDataset(teacher, cfg)
-    samplers = ds._samplers(rng)
-    w = np.array([m.weight for m in cfg.mixes], dtype=np.float64)
-    w /= w.sum()
+    iters = [_peptides(m, loop=False) for m in cfg.mixes]
+    items = []
+    for item in ds._round_robin(iters):
+        items.append(item)
+        if len(items) >= n:
+            break
+    precs = ds._build_precs(items, rng)
     teacher.nce = float(np.mean(cfg.nce_range))
-    seqs, mixidx = [], int(np.argmax(w))
-    for _ in range(n):
-        seqs.append(next(samplers[mixidx]))
-    precs = precursors_from_sequences(seqs, cfg.mixes[mixidx].cfg, rng)
     labels = [lab for lab in teacher.predict(precs) if lab is not None]
     rt = np.array([lab.rt for lab in labels], dtype=np.float64)
     ccs = np.array([lab.ccs for lab in labels], dtype=np.float64)
@@ -150,17 +170,16 @@ def fit_stream_pretrain(
     *,
     accelerator: str = "cpu",
     log=print,
-    log_every: int = 250,
+    log_every: int = 100,
 ) -> DistillModule:
-    """Online NCE-sweep teacher-distill warmup on the shared backbone + CE encoder."""
+    """Enumerate-and-chunk online teacher-distill warmup on the shared backbone + CE encoder."""
     L.seed_everything(cfg.seed, verbose=False)
     log("[stream] estimating rt/ccs norm from a teacher sample...")
     model.set_norm(*_estimate_norm(teacher, cfg))
     module = DistillModule(model, lr=cfg.lr, context_encoder=encoder)
     loader = DataLoader(_StreamingDataset(teacher, cfg), batch_size=None)
     trainer = L.Trainer(
-        max_steps=cfg.total_batches,
-        max_epochs=1,
+        max_epochs=1,  # the dataset is finite (passes enumerations); it drives the length
         accelerator=accelerator,
         enable_checkpointing=False,
         logger=False,

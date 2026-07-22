@@ -41,7 +41,7 @@ class PeptDeepTeacher(Teacher):
         self._mgr = ModelManager(mask_modloss=True, device=device)
         self._mgr.load_installed_models()
 
-    def _frame(self, precursors: list[Precursor]) -> pd.DataFrame:
+    def _frame(self, precursors: list[Precursor], nces=None) -> pd.DataFrame:
         rows = []
         for i, p in enumerate(precursors):
             pep = p.peptide
@@ -52,7 +52,7 @@ class PeptDeepTeacher(Teacher):
                     # peptdeep/alphabase mod_sites are 1-based.
                     "mod_sites": ";".join(str(site + 1) for site, _ in pep.mods),
                     "charge": p.charge,
-                    "nce": self.nce,
+                    "nce": self.nce if nces is None else float(nces[i]),
                     "instrument": self.instrument,
                     # predict_all sorts by length and resets the index, so we carry an
                     # explicit column to restore the caller's order afterwards.
@@ -61,8 +61,10 @@ class PeptDeepTeacher(Teacher):
             )
         return pd.DataFrame(rows)
 
-    def predict(self, precursors: list[Precursor]) -> list[PrecursorLabels]:  # pragma: no cover
-        df = self._frame(precursors)
+    def predict(
+        self, precursors: list[Precursor], nces=None
+    ) -> list[PrecursorLabels]:  # pragma: no cover
+        df = self._frame(precursors, nces)
         res = self._mgr.predict_all(
             df, predict_items=["rt", "mobility", "ms2"], multiprocessing=False
         )

@@ -45,7 +45,7 @@ def test_stream_pretrain_runs_and_moves_encoder(tmp_path):
         StreamMix("tryptic", "tryptic", str(fasta), DigestConfig()),
     ]
     cfg = StreamPretrainCfg(
-        mixes=mixes, nce_range=(20.0, 40.0), total_batches=4, batch_size=8, seed=0
+        mixes=mixes, nce_range=(20.0, 40.0), chunk_size=64, batch_size=8, passes=1, seed=0
     )
 
     before = enc.proj.weight.detach().clone()

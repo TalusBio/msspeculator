@@ -66,11 +66,12 @@ class PretrainCfg:
     epochs: int = 25  # cached mode
     batch_size: int = 256
     lr: float = 1e-3
-    # stream mode: sample `sources` live, NCE swept in [nce_min, nce_max]; `epochs` ignored,
-    # `total_batches` sets the length.
+    # stream mode: enumerate `sources` live over `passes` full digests, NCE swept per-peptide
+    # in [nce_min, nce_max], labeled in `chunk_size` teacher calls. `epochs` ignored.
     nce_min: float = 20.0
     nce_max: float = 40.0
-    total_batches: int = 5000
+    passes: int = 1
+    chunk_size: int = 10000
 
 
 @dataclass
@@ -207,13 +208,15 @@ def _run_pretrain(cfg: RunConfig, model, encoder, acc, log):
         spc = StreamPretrainCfg(
             mixes=_stream_mixes(p),
             nce_range=(p.nce_min, p.nce_max),
-            total_batches=p.total_batches,
+            chunk_size=p.chunk_size,
             batch_size=p.batch_size,
+            passes=p.passes,
             lr=p.lr,
             seed=cfg.seed,
         )
         log(
-            f"[pretrain] stream: {[m.name for m in spc.mixes]}, NCE {spc.nce_range}, {spc.total_batches} batches"
+            f"[pretrain] stream: {[m.name for m in spc.mixes]}, NCE {spc.nce_range}, "
+            f"{spc.passes} pass(es), chunk {spc.chunk_size}"
         )
         return fit_stream_pretrain(model, encoder, teacher, spc, accelerator=acc, log=log)
 
