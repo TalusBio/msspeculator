@@ -6,7 +6,7 @@ from pepdistill.chem import Peptide
 from pepdistill.data.encode import collate
 from pepdistill.data.precursors import Precursor
 from pepdistill.models.context import ContextBook, ContextEncoder
-from pepdistill.models.registry import build_student
+from pepdistill.models.registry import build_student, load_checkpoint, load_context, save_checkpoint
 from pepdistill.models.student import StudentConfig, StudentModel
 
 
@@ -97,6 +97,33 @@ def test_context_encoder_zero_init_is_base():
         base = m(b)
         conditioned = m(b, ctx_acq=enc(torch.full((3,), 25.0)))
     assert torch.allclose(base["ms2"], conditioned["ms2"], atol=1e-6)
+
+
+def test_checkpoint_persists_context(tmp_path):
+    """save/load round-trips the CE encoder + per-run book so the artifact is complete."""
+    m = build_student("small")
+    enc = ContextEncoder(context_dim=m.cfg.context_dim, ce_center=30.0, ce_scale=10.0)
+    torch.nn.init.normal_(enc.proj.weight, std=0.3)
+    book = ContextBook(2, 2, m.cfg.context_dim)
+    torch.nn.init.normal_(book.lc.weight, std=0.3)
+    src = {"runA": 0, "runB": 1}
+
+    path = tmp_path / "m.ckpt"
+    save_checkpoint(m, path, encoder=enc, book=book, source_index=src)
+    assert load_checkpoint(path).cfg.d_model == m.cfg.d_model  # model still loads
+
+    ctx = load_context(path)
+    assert ctx is not None and ctx.source_index == src
+    assert ctx.encoder.ce_center == 30.0
+    ce = torch.tensor([22.0, 31.0])
+    assert torch.allclose(ctx.encoder(ce), enc(ce))  # reproduces ctx_acq exactly
+    assert torch.allclose(ctx.book.lc.weight, book.lc.weight)
+
+
+def test_checkpoint_without_context_is_none(tmp_path):
+    path = tmp_path / "m.ckpt"
+    save_checkpoint(build_student("tiny"), path)
+    assert load_context(path) is None
 
 
 def test_context_encoder_learns_ce_dependence():

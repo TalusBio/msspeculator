@@ -267,6 +267,8 @@ def run_pipeline(cfg: RunConfig, log=print) -> dict:
         summary["pretrain"] = {k: float(v) for k, v in mod.trainer.callback_metrics.items()}
         log(f"[pretrain] {summary['pretrain']}")
 
+    book = None
+    source_index = None
     if cfg.train.enabled:
         log(f"[train] streaming shards {cfg.train.shards} of {cfg.train.zip}")
         real = _load_real(cfg.train, log)
@@ -283,12 +285,18 @@ def run_pipeline(cfg: RunConfig, log=print) -> dict:
             encoder=encoder,
             enable_progress_bar=False,
         )
+        book = module.book
+        source_index = module.source_index
         summary["train"] = {k: float(v) for k, v in module.trainer.callback_metrics.items()}
-        summary["source_index"] = module.source_index
+        summary["source_index"] = source_index
         log(f"[train] {summary['train']}")
 
+    if encoder is not None:
+        summary["ce_curve"] = _ce_curve(encoder, cfg.pretrain.nce_min, cfg.pretrain.nce_max)
+
     ckpt = out / "model.ckpt"
-    save_checkpoint(model, ckpt)
+    # Persist the context too, or the artifact can only make base (context-free) predictions.
+    save_checkpoint(model, ckpt, encoder=encoder, book=book, source_index=source_index)
     log(f"saved {ckpt}")
 
     if cfg.export.enabled:
@@ -304,6 +312,16 @@ def run_pipeline(cfg: RunConfig, log=print) -> dict:
 
     (out / "summary.json").write_text(json.dumps(summary, indent=2, default=str))
     return summary
+
+
+def _ce_curve(encoder, ce_min: float, ce_max: float, n: int = 5) -> dict:
+    """ctx_acq magnitude across the CE range — a quick read on what the encoder learned."""
+    import torch
+
+    ces = [ce_min + (ce_max - ce_min) * i / (n - 1) for i in range(n)]
+    with torch.no_grad():
+        norms = encoder(torch.tensor(ces, dtype=torch.float32)).norm(dim=1)
+    return {round(c, 1): round(float(v), 4) for c, v in zip(ces, norms)}
 
 
 def _bench(model, cfg: BenchCfg, log) -> dict:
