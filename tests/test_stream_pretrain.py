@@ -42,9 +42,12 @@ def test_stream_pretrain_runs_and_moves_encoder(tmp_path):
     cfg = StreamPretrainCfg(mixes=mixes, nce_range=(20.0, 40.0), total_batches=4, batch_size=8, seed=0)
 
     before = enc.proj.weight.detach().clone()
-    module = fit_stream_pretrain(model, enc, FakeTeacher(), cfg, accelerator="cpu")
+    lines: list[str] = []
+    module = fit_stream_pretrain(model, enc, FakeTeacher(), cfg, accelerator="cpu",
+                                 log=lines.append, log_every=2)
 
     assert isinstance(module, DistillModule)
+    assert any("step" in ln for ln in lines)  # _StepLogger fired (guards the .log shadow bug)
     # CE was fed through the projection -> encoder weights received gradient and moved.
     assert not torch.allclose(before, enc.proj.weight.detach())
     # rt/ccs norm was estimated from a teacher sample (not left at the 0/1 identity).

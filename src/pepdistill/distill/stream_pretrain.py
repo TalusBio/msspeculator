@@ -128,14 +128,16 @@ def _estimate_norm(teacher, cfg: StreamPretrainCfg, n: int = 512):
 
 
 class _StepLogger(L.Callback):
-    def __init__(self, every: int, log) -> None:
-        self.every, self.log = every, log
+    # NB: store the emit fn as `_emit`, NOT `log` — Lightning treats a callback's `.log`
+    # as its own logging hook, which would shadow our callable.
+    def __init__(self, every: int, emit) -> None:
+        self.every, self._emit = every, emit
 
     def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
         if (batch_idx + 1) % self.every == 0:
             m = trainer.callback_metrics
-            self.log(f"  step {batch_idx+1}: ms2={float(m.get('train_ms2', float('nan'))):.3f} "
-                     f"total={float(m.get('train_total', float('nan'))):.3f}")
+            self._emit(f"  step {batch_idx+1}: ms2={float(m.get('train_ms2', float('nan'))):.3f} "
+                       f"total={float(m.get('train_total', float('nan'))):.3f}")
 
 
 def fit_stream_pretrain(
