@@ -23,6 +23,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader, IterableDataset
 
+from ..eval import best_examples
 from ..models.context import ContextBook
 from ..models.student import StudentModel
 from .dataset import LabeledBatch, collate_with_labels
@@ -151,6 +152,7 @@ def fit_realspeclib(
     loss_weights: tuple[float, float, float] = (1.0, 1.0, 1.0),
     seed: int = 0,
     accelerator: str = "auto",
+    dataset: str | None = None,
     **trainer_kwargs,
 ) -> RealSpeclibModule:
     """Train on real spectra with per-raw_file context. Returns the module (``.model`` and
@@ -175,6 +177,10 @@ def fit_realspeclib(
     book = ContextBook(n_acq=len(uniq), n_lc=len(uniq), context_dim=cdim)
     module = RealSpeclibModule(model, book, lr=lr, loss_weights=loss_weights)
     train_ds = RealSpeclibDataset(*tr)
+    # Report val on one best-quality example per (dataset, modified_sequence, charge) so
+    # abundant peptides don't dominate the metric; train keeps every observation.
+    if va[0]:
+        va = best_examples(va[0], va[1], va[2], va[3], dataset=dataset)
     val_ds = RealSpeclibDataset(*va) if va[0] else None
 
     def loader(ds, shuffle):
