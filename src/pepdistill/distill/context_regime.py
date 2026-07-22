@@ -24,7 +24,7 @@ import torch
 from torch.utils.data import DataLoader, IterableDataset
 
 from ..eval import best_examples
-from ..models.context import ContextBook
+from ..models.context import ContextBook, ContextEncoder
 from ..models.student import StudentModel
 from .dataset import LabeledBatch, collate_with_labels
 from .losses import ms2_cosine_loss
@@ -34,20 +34,25 @@ from .losses import ms2_cosine_loss
 class RealBatch:
     base: LabeledBatch  # inputs + ms2_target + rt_target(=iRT) + ccs_target(NaN)
     raw_rt: torch.Tensor  # (B,) run-dependent retention time
-    source_id: torch.Tensor  # (B,) long, raw_file index
+    source_id: torch.Tensor  # (B,) long, raw_file index (for ctx_lc / chromatography)
+    ce: torch.Tensor  # (B,) collision energy (absolute NCE), drives ctx_acq
 
     def to(self, device) -> "RealBatch":
-        return RealBatch(self.base.to(device), self.raw_rt.to(device), self.source_id.to(device))
+        return RealBatch(
+            self.base.to(device), self.raw_rt.to(device),
+            self.source_id.to(device), self.ce.to(device),
+        )
 
 
 class RealSpeclibDataset:
-    """Real examples + per-example raw RT and integer source id (raw_file)."""
+    """Real examples + per-example raw RT, integer source id (raw_file), and collision energy."""
 
-    def __init__(self, precursors, labels, raw_rt, source_id) -> None:
+    def __init__(self, precursors, labels, raw_rt, source_id, ce) -> None:
         self.precursors = precursors
         self.labels = labels
         self.raw_rt = np.asarray(raw_rt, dtype=np.float32)
         self.source_id = np.asarray(source_id, dtype=np.int64)
+        self.ce = np.asarray(ce, dtype=np.float32)
 
     def __len__(self) -> int:
         return len(self.precursors)
@@ -64,6 +69,7 @@ class RealSpeclibDataset:
                 base,
                 torch.from_numpy(self.raw_rt[idx]),
                 torch.from_numpy(self.source_id[idx]),
+                torch.from_numpy(self.ce[idx]),
             )
 
 
@@ -72,13 +78,15 @@ class RealSpeclibModule(L.LightningModule):
         self,
         model: StudentModel,
         book: ContextBook,
+        encoder: ContextEncoder,
         lr: float = 1e-3,
         weight_decay: float = 1e-5,
         loss_weights: tuple[float, float, float] = (1.0, 1.0, 1.0),  # ms2, irt, raw_rt
     ) -> None:
         super().__init__()
         self.model = model
-        self.book = book
+        self.book = book  # ctx_lc (chromatography, per raw_file)
+        self.encoder = encoder  # ctx_acq (MS2/CCS, from collision energy)
         self.lr = lr
         self.weight_decay = weight_decay
         self.loss_weights = loss_weights
@@ -87,7 +95,8 @@ class RealSpeclibModule(L.LightningModule):
         return batch.to(device)
 
     def _forward(self, rb: RealBatch):
-        ctx_acq, ctx_lc = self.book(rb.source_id, rb.source_id)
+        ctx_acq = self.encoder(rb.ce)  # MS2/CCS context from collision energy
+        ctx_lc = self.book.lc(rb.source_id)  # RT context per run (chromatography)
         return self.model.forward_context(rb.base.inputs, ctx_acq=ctx_acq, ctx_lc=ctx_lc)
 
     def _std(self, x: torch.Tensor) -> torch.Tensor:
@@ -124,11 +133,12 @@ class RealSpeclibModule(L.LightningModule):
         )
 
     def configure_optimizers(self):
-        return torch.optim.AdamW(
-            list(self.model.parameters()) + list(self.book.parameters()),
-            lr=self.lr,
-            weight_decay=self.weight_decay,
+        params = (
+            list(self.model.parameters())
+            + list(self.book.parameters())
+            + list(self.encoder.parameters())
         )
+        return torch.optim.AdamW(params, lr=self.lr, weight_decay=self.weight_decay)
 
 
 class _RealIterable(IterableDataset):
@@ -153,34 +163,45 @@ def fit_realspeclib(
     seed: int = 0,
     accelerator: str = "auto",
     dataset: str | None = None,
+    encoder: ContextEncoder | None = None,
+    book: ContextBook | None = None,
     **trainer_kwargs,
 ) -> RealSpeclibModule:
-    """Train on real spectra with per-raw_file context. Returns the module (``.model`` and
-    ``.book`` are the trained backbone and context table; ``.source_index`` maps raw_file)."""
+    """Train on real spectra with per-run context. ``ctx_acq`` comes from collision energy via
+    a :class:`ContextEncoder`; ``ctx_lc`` from a per-raw_file :class:`ContextBook`. Pass an
+    existing ``encoder``/``book`` to continue a curriculum (share them with the warmup). Returns
+    the module (``.model``/``.encoder``/``.book`` trained; ``.source_index`` maps raw_file)."""
     L.seed_everything(seed, verbose=False)
     cdim = context_dim or model.cfg.context_dim
 
-    # Map raw_file -> integer source id.
+    # Map raw_file -> integer source id (ctx_lc); collision energy per run drives ctx_acq.
     uniq = sorted(set(real.source_ids))
     src_index = {name: i for i, name in enumerate(uniq)}
     src_ids = [src_index[s] for s in real.source_ids]
+    # Missing CE -> neutral 30 NCE (encoder center) so ctx_acq stays at base for that run.
+    def _ce(name):
+        v = real.acquisition.get(name, {}).get("collision_energy", 30.0)
+        return 30.0 if v != v else float(v)  # NaN-guard
+    ce_of = {name: _ce(name) for name in uniq}
+    ces = [ce_of[s] for s in real.source_ids]
 
     # Split by the precursor's assigned split; normalize on TRAIN iRT.
-    tr, va = ([], [], [], []), ([], [], [], [])
-    for p, lab, rrt, sid in zip(real.precursors, real.labels, real.raw_rt, src_ids):
+    tr, va = ([], [], [], [], []), ([], [], [], [], [])
+    for p, lab, rrt, sid, ce in zip(real.precursors, real.labels, real.raw_rt, src_ids, ces):
         bucket = va if p.split == "val" else tr
-        for col, val in zip(bucket, (p, lab, rrt, sid)):
+        for col, val in zip(bucket, (p, lab, rrt, sid, ce)):
             col.append(val)
     irt_train = np.array([lab.rt for lab in tr[1]], dtype=np.float64)
     model.set_norm(float(irt_train.mean()), float(irt_train.std() or 1.0), 0.0, 1.0)
 
-    book = ContextBook(n_acq=len(uniq), n_lc=len(uniq), context_dim=cdim)
-    module = RealSpeclibModule(model, book, lr=lr, loss_weights=loss_weights)
+    book = book or ContextBook(n_acq=len(uniq), n_lc=len(uniq), context_dim=cdim)
+    encoder = encoder or ContextEncoder(context_dim=cdim)
+    module = RealSpeclibModule(model, book, encoder, lr=lr, loss_weights=loss_weights)
     train_ds = RealSpeclibDataset(*tr)
     # Report val on one best-quality example per (dataset, modified_sequence, charge) so
     # abundant peptides don't dominate the metric; train keeps every observation.
     if va[0]:
-        va = best_examples(va[0], va[1], va[2], va[3], dataset=dataset)
+        va = best_examples(va[0], va[1], va[2], va[3], va[4], dataset=dataset)
     val_ds = RealSpeclibDataset(*va) if va[0] else None
 
     def loader(ds, shuffle):

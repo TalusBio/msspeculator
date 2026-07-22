@@ -48,3 +48,31 @@ class ContextBook(nn.Module):
             mask = torch.zeros_like(emb.weight.grad)
             mask[keep] = 1.0
             emb.weight.grad *= mask
+
+
+class ContextEncoder(nn.Module):
+    """Generate ``ctx_acq`` from continuous acquisition factors (currently collision energy).
+
+    First step off the per-source lookup toward "context from metadata": ``ctx_acq`` becomes a
+    learned function of collision energy, so the teacher (a known NCE) and every real run share
+    ONE CE axis — unseen CEs interpolate, and the teacher stops silently anchoring the base.
+    CE is expected in absolute NCE units (teacher ``nce`` and PROSPECT ``*_collision_energy``
+    agree). Descended through the same head projection as ``ContextBook`` vectors.
+
+    Zero-init -> ``ctx_acq`` = 0 at every CE -> exact base model (the acq projection has zero
+    bias); CE-dependence is then learned from data, so this strictly generalizes the no-context
+    path. RT/chromatography is NOT CE-driven — keep ``ctx_lc`` on a per-run :class:`ContextBook`.
+    """
+
+    def __init__(self, context_dim: int = 16, ce_center: float = 30.0, ce_scale: float = 10.0) -> None:
+        super().__init__()
+        self.ce_center = ce_center
+        self.ce_scale = ce_scale
+        self.proj = nn.Linear(1, context_dim)
+        nn.init.zeros_(self.proj.weight)
+        nn.init.zeros_(self.proj.bias)
+
+    def forward(self, ce: torch.Tensor) -> torch.Tensor:
+        """(B,) collision energy (absolute NCE) -> (B, context_dim) ``ctx_acq``."""
+        x = ((ce - self.ce_center) / self.ce_scale).unsqueeze(-1)
+        return self.proj(x)

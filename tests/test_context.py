@@ -5,7 +5,7 @@ import torch
 from pepdistill.chem import Peptide
 from pepdistill.data.encode import collate
 from pepdistill.data.precursors import Precursor
-from pepdistill.models.context import ContextBook
+from pepdistill.models.context import ContextBook, ContextEncoder
 from pepdistill.models.registry import build_student
 from pepdistill.models.student import StudentConfig, StudentModel
 
@@ -83,3 +83,34 @@ def test_context_book_zero_init_is_noop():
     ids = torch.tensor([0, 1])
     acq, lc = book(ids, ids)
     assert torch.count_nonzero(acq) == 0 and torch.count_nonzero(lc) == 0
+
+
+def test_context_encoder_zero_init_is_base():
+    """Fresh CE encoder emits ctx_acq=0 for any collision energy -> exact base MS2."""
+    enc = ContextEncoder(context_dim=16)
+    ce = torch.tensor([20.0, 30.0, 40.0])
+    assert torch.count_nonzero(enc(ce)) == 0
+
+    m = build_student("small").eval()
+    b = _batch()
+    with torch.no_grad():
+        base = m(b)
+        conditioned = m(b, ctx_acq=enc(torch.full((3,), 25.0)))
+    assert torch.allclose(base["ms2"], conditioned["ms2"], atol=1e-6)
+
+
+def test_context_encoder_learns_ce_dependence():
+    """After a step of training, ctx_acq depends on collision energy and moves MS2."""
+    torch.manual_seed(0)
+    enc = ContextEncoder(context_dim=16)
+    torch.nn.init.normal_(enc.proj.weight, std=0.5)  # simulate a trained (nonzero) encoder
+    lo, hi = enc(torch.tensor([22.0])), enc(torch.tensor([31.0]))
+    assert not torch.allclose(lo, hi)  # different CE -> different ctx_acq
+
+    m = build_student("small").eval()
+    b = _batch()
+    with torch.no_grad():
+        out_lo = m(b, ctx_acq=enc(torch.full((3,), 22.0)))
+        out_hi = m(b, ctx_acq=enc(torch.full((3,), 31.0)))
+    assert not torch.allclose(out_lo["ms2"], out_hi["ms2"])  # CE changes MS2
+    assert torch.allclose(out_lo["rt"], out_hi["rt"], atol=1e-6)  # not RT

@@ -32,9 +32,16 @@ class DistillModule(L.LightningModule):
         lr: float = 1e-3,
         weight_decay: float = 1e-5,
         loss_weights: tuple[float, float, float] = (1.0, 1.0, 1.0),
+        context_encoder=None,
+        distill_ce: float = 30.0,
     ) -> None:
         super().__init__()
         self.model = model  # shared backbone; NOT a hyperparameter
+        # Optional: give the teacher its OWN acquisition context (from its NCE) via the shared
+        # ContextEncoder, so the teacher's collision energy is a factor rather than baked into
+        # the base. None -> context-free warmup (base = teacher condition).
+        self.context_encoder = context_encoder
+        self.distill_ce = distill_ce
         self.lr = lr
         self.weight_decay = weight_decay
         self.loss_weights = loss_weights
@@ -42,8 +49,14 @@ class DistillModule(L.LightningModule):
     def transfer_batch_to_device(self, batch: LabeledBatch, device, dataloader_idx: int):
         return batch.to(device)
 
+    def _predict(self, batch: LabeledBatch) -> dict:
+        if self.context_encoder is None:
+            return self.model(batch.inputs)
+        ce = torch.full((batch.inputs.tokens.shape[0],), self.distill_ce, device=self.device)
+        return self.model.forward_context(batch.inputs, ctx_acq=self.context_encoder(ce), ctx_lc=None)
+
     def training_step(self, batch: LabeledBatch, batch_idx: int) -> torch.Tensor:
-        out = self.model(batch.inputs)
+        out = self._predict(batch)
         rt_t = (batch.rt_target - self.model.rt_mean) / self.model.rt_std
         ccs_t = (batch.ccs_target - self.model.ccs_mean) / self.model.ccs_std
         loss, parts = distill_loss(
@@ -54,7 +67,7 @@ class DistillModule(L.LightningModule):
 
     @torch.no_grad()
     def validation_step(self, batch: LabeledBatch, batch_idx: int) -> None:
-        out = self.model.denormalize(self.model(batch.inputs))
+        out = self.model.denormalize(self._predict(batch))
         sa = spectral_angle(out["ms2"], batch.ms2_target, batch.inputs.frag_mask).mean()
         rt_mae = (out["rt"] - batch.rt_target).abs().mean()
         ccs_mae = (out["ccs"] - batch.ccs_target).abs().mean()
@@ -127,16 +140,23 @@ def fit_distill(
     grad_clip: float = 1.0,
     seed: int = 0,
     accelerator: str = "auto",
+    context_encoder=None,
+    distill_ce: float = 30.0,
     **trainer_kwargs,
 ) -> DistillModule:
     """Set target norm from ``train_ds`` and run a Lightning distillation fit in place.
 
     Mirrors :func:`pepdistill.distill.trainer.train` but on the Lightning engine. Returns
-    the LightningModule (its ``.model`` is the trained shared backbone).
+    the LightningModule (its ``.model`` is the trained shared backbone). Pass a
+    ``context_encoder`` to give the teacher its own CE-driven acquisition context (shared with
+    a later real-speclib sink), so the teacher's ``distill_ce`` becomes a factor, not the base.
     """
     L.seed_everything(seed, verbose=False)
     model.set_norm(*train_ds.rt_ccs_stats())
-    module = DistillModule(model, lr=lr, weight_decay=weight_decay, loss_weights=loss_weights)
+    module = DistillModule(
+        model, lr=lr, weight_decay=weight_decay, loss_weights=loss_weights,
+        context_encoder=context_encoder, distill_ce=distill_ce,
+    )
     dm = DistillDataModule(train_ds, val_ds, batch_size=batch_size, seed=seed)
     trainer = L.Trainer(
         max_epochs=epochs,
