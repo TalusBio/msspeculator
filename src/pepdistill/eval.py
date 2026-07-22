@@ -56,7 +56,11 @@ def best_examples(
     parallel sequences (raw_rt, source ids, ...) are sliced with the same indices, so the
     return is ``(precursors, labels, *extra)`` reduced consistently.
     """
-    ds = dataset if isinstance(dataset, Sequence) and not isinstance(dataset, str) else [dataset] * len(precursors)
+    ds = (
+        dataset
+        if isinstance(dataset, Sequence) and not isinstance(dataset, str)
+        else [dataset] * len(precursors)
+    )
     keys = [precursor_key(p, d) for p, d in zip(precursors, ds)]
     q = [quality(lab) for lab in labels]
     idx = best_per_key(q, keys)

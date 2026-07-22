@@ -39,8 +39,10 @@ class RealBatch:
 
     def to(self, device) -> "RealBatch":
         return RealBatch(
-            self.base.to(device), self.raw_rt.to(device),
-            self.source_id.to(device), self.ce.to(device),
+            self.base.to(device),
+            self.raw_rt.to(device),
+            self.source_id.to(device),
+            self.ce.to(device),
         )
 
 
@@ -143,7 +145,13 @@ class RealSpeclibModule(L.LightningModule):
 
 class _RealIterable(IterableDataset):
     def __init__(self, ds: RealSpeclibDataset, batch_size: int, shuffle: bool, seed: int) -> None:
-        self.ds, self.batch_size, self.shuffle, self.seed, self._epoch = ds, batch_size, shuffle, seed, 0
+        self.ds, self.batch_size, self.shuffle, self.seed, self._epoch = (
+            ds,
+            batch_size,
+            shuffle,
+            seed,
+            0,
+        )
 
     def __iter__(self):
         gen = torch.Generator().manual_seed(self.seed + self._epoch)
@@ -178,10 +186,12 @@ def fit_realspeclib(
     uniq = sorted(set(real.source_ids))
     src_index = {name: i for i, name in enumerate(uniq)}
     src_ids = [src_index[s] for s in real.source_ids]
+
     # Missing CE -> neutral 30 NCE (encoder center) so ctx_acq stays at base for that run.
     def _ce(name):
         v = real.acquisition.get(name, {}).get("collision_energy", 30.0)
         return 30.0 if v != v else float(v)  # NaN-guard
+
     ce_of = {name: _ce(name) for name in uniq}
     ces = [ce_of[s] for s in real.source_ids]
 
@@ -205,8 +215,10 @@ def fit_realspeclib(
     val_ds = RealSpeclibDataset(*va) if va[0] else None
 
     def loader(ds, shuffle):
-        return None if ds is None else DataLoader(
-            _RealIterable(ds, batch_size, shuffle, seed), batch_size=None
+        return (
+            None
+            if ds is None
+            else DataLoader(_RealIterable(ds, batch_size, shuffle, seed), batch_size=None)
         )
 
     trainer = L.Trainer(

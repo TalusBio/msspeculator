@@ -17,7 +17,15 @@ import numpy as np
 import pandas as pd
 
 from ..chem import H2O, MOD_DELTA, PROTON, RESIDUE_MASS, ION_TYPES
-from ..data.encode import AA_OFFSET, CTERM_IDX, MOD_SCALE, NTERM_IDX, PAD_IDX, frag_offset, use_termini
+from ..data.encode import (
+    AA_OFFSET,
+    CTERM_IDX,
+    MOD_SCALE,
+    NTERM_IDX,
+    PAD_IDX,
+    frag_offset,
+    use_termini,
+)
 from ..data.precursors import Precursor
 from .library import LIBRARY_COLUMNS
 
@@ -152,9 +160,7 @@ def predict_library_fast(
             ordinal_grid = np.broadcast_to(ordinal, (bsz, frag_pos, n_ion))
             ion_grid = np.broadcast_to(ion_names[None, None, :], (bsz, frag_pos, n_ion))
             zcol_grid = np.broadcast_to(ion_charges[None, None, :], (bsz, frag_pos, n_ion))
-            prec_idx = np.broadcast_to(
-                np.arange(bsz)[:, None, None], (bsz, frag_pos, n_ion)
-            )
+            prec_idx = np.broadcast_to(np.arange(bsz)[:, None, None], (bsz, frag_pos, n_ion))
 
             keep = rel >= min_intensity  # (B, F, n_ion)
             flat = keep.reshape(-1)

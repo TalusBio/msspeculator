@@ -136,8 +136,10 @@ class _StepLogger(L.Callback):
     def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
         if (batch_idx + 1) % self.every == 0:
             m = trainer.callback_metrics
-            self._emit(f"  step {batch_idx+1}: ms2={float(m.get('train_ms2', float('nan'))):.3f} "
-                       f"total={float(m.get('train_total', float('nan'))):.3f}")
+            self._emit(
+                f"  step {batch_idx + 1}: ms2={float(m.get('train_ms2', float('nan'))):.3f} "
+                f"total={float(m.get('train_total', float('nan'))):.3f}"
+            )
 
 
 def fit_stream_pretrain(
@@ -157,9 +159,14 @@ def fit_stream_pretrain(
     module = DistillModule(model, lr=cfg.lr, context_encoder=encoder)
     loader = DataLoader(_StreamingDataset(teacher, cfg), batch_size=None)
     trainer = L.Trainer(
-        max_steps=cfg.total_batches, max_epochs=1, accelerator=accelerator,
-        enable_checkpointing=False, logger=False, enable_progress_bar=False,
-        limit_val_batches=0, callbacks=[_StepLogger(log_every, log)],
+        max_steps=cfg.total_batches,
+        max_epochs=1,
+        accelerator=accelerator,
+        enable_checkpointing=False,
+        logger=False,
+        enable_progress_bar=False,
+        limit_val_batches=0,
+        callbacks=[_StepLogger(log_every, log)],
     )
     trainer.fit(module, loader)
     return module

@@ -19,7 +19,9 @@ pytestmark = pytest.mark.skipif(not HAVE_RS, reason="pepdistill_rs not built")
 def _precs():
     return [
         Precursor(Peptide("SAMPLER"), 2, "train"),
-        Precursor(Peptide("ACDEMKPEPTIDE", ((1, "Carbamidomethyl@C"), (4, "Oxidation@M"))), 3, "train"),
+        Precursor(
+            Peptide("ACDEMKPEPTIDE", ((1, "Carbamidomethyl@C"), (4, "Oxidation@M"))), 3, "train"
+        ),
         Precursor(Peptide("MKLV", ((0, "Oxidation@M"),)), 1, "train"),
         Precursor(Peptide("WYFGHIKLMNPQRSTVWYAC"), 4, "train"),
     ]

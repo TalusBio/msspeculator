@@ -11,7 +11,16 @@ from pepdistill.teacher.fake import FakeTeacher
 
 
 def _dataset():
-    seqs = ["SAMPLER", "PEPTIDEK", "ACDEFGHIK", "MKLVWYR", "LLLLLLK", "GASPVTCLIN", "EDCAAKR", "YYWWFFK"]
+    seqs = [
+        "SAMPLER",
+        "PEPTIDEK",
+        "ACDEFGHIK",
+        "MKLVWYR",
+        "LLLLLLK",
+        "GASPVTCLIN",
+        "EDCAAKR",
+        "YYWWFFK",
+    ]
     precs = [Precursor(Peptide(s), 2 + (i % 3), "train") for i, s in enumerate(seqs)]
     labels = FakeTeacher().predict(precs)
     return DistillDataset(precs, labels)
@@ -21,7 +30,12 @@ def test_fit_distill_runs_and_sets_norm():
     ds = _dataset()
     model = build_student("small")
     module = fit_distill(
-        model, ds, ds, epochs=2, batch_size=4, accelerator="cpu",
+        model,
+        ds,
+        ds,
+        epochs=2,
+        batch_size=4,
+        accelerator="cpu",
         enable_progress_bar=False,
     )
     # Norm buffers were set from the data (not the identity default of 1.0).

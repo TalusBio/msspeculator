@@ -44,6 +44,4 @@ class ZenodoRecord:
         files = self.list_files()
         if filename not in files:
             raise KeyError(f"{filename!r} not in record {self.record_id}; have {sorted(files)}")
-        return self.cache.resolve(
-            f"{self._prefix()}/{filename}", http_origin(files[filename])
-        )
+        return self.cache.resolve(f"{self._prefix()}/{filename}", http_origin(files[filename]))

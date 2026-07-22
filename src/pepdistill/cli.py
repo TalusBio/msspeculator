@@ -55,7 +55,9 @@ def run(
 
 @app.command()
 def predict(
-    model: Path = typer.Option(..., exists=True, readable=True, help="Checkpoint (.ckpt) or .onnx."),
+    model: Path = typer.Option(
+        ..., exists=True, readable=True, help="Checkpoint (.ckpt) or .onnx."
+    ),
     out: Path = typer.Option(..., "--out", "-o", help="Output library parquet."),
     fasta: Optional[Path] = typer.Option(None, exists=True, help="Digest this FASTA to predict."),
     precursors: Optional[Path] = typer.Option(None, exists=True, help="Or use a precursor table."),
@@ -77,8 +79,13 @@ def predict(
 
     if fasta is not None:
         dcfg = DigestConfig(
-            enzyme=enzyme, missed_cleavages=missed, min_length=min_len, max_length=max_len,
-            min_charge=min_charge, max_charge=max_charge, max_variable_mods=max_var_mods,
+            enzyme=enzyme,
+            missed_cleavages=missed,
+            min_length=min_len,
+            max_length=max_len,
+            min_charge=min_charge,
+            max_charge=max_charge,
+            max_variable_mods=max_var_mods,
         )
         precs = enumerate_precursors(digest_fasta(fasta, dcfg), dcfg, SplitConfig())
     else:

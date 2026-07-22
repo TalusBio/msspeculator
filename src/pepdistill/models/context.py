@@ -36,7 +36,9 @@ class ContextBook(nn.Module):
         """(B,) acquisition + chromatography ids -> ((B, ctx), (B, ctx)) vectors."""
         return self.acq(acq_id), self.lc(lc_id)
 
-    def freeze_except(self, acq_ids: list[int] | None = None, lc_ids: list[int] | None = None) -> None:
+    def freeze_except(
+        self, acq_ids: list[int] | None = None, lc_ids: list[int] | None = None
+    ) -> None:
         """Grad-mask for parameter-efficient fine-tuning: only the listed source rows train.
 
         Zeros the gradient of every row except those given (per table). Call after
@@ -64,7 +66,9 @@ class ContextEncoder(nn.Module):
     path. RT/chromatography is NOT CE-driven — keep ``ctx_lc`` on a per-run :class:`ContextBook`.
     """
 
-    def __init__(self, context_dim: int = 16, ce_center: float = 30.0, ce_scale: float = 10.0) -> None:
+    def __init__(
+        self, context_dim: int = 16, ce_center: float = 30.0, ce_scale: float = 10.0
+    ) -> None:
         super().__init__()
         self.ce_center = ce_center
         self.ce_scale = ce_scale

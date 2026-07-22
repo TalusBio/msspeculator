@@ -24,7 +24,9 @@ def load_catalog() -> dict:
     return _CATALOG
 
 
-def build_catalog(out_path: str | None = _CATALOG_PATH, records: dict[str, str] | None = None) -> dict:
+def build_catalog(
+    out_path: str | None = _CATALOG_PATH, records: dict[str, str] | None = None
+) -> dict:
     """Query Zenodo and (re)write the catalog JSON. Network; run manually to refresh."""
     import urllib.request
 

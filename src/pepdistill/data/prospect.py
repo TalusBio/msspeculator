@@ -68,6 +68,7 @@ def parse_modseq(modseq: str) -> tuple[str, tuple[tuple[int, str], ...]]:
             mods.append((pos if pos >= 0 else 0, _UNIMOD_TO_NAME.get(n, f"UNIMOD:{n}")))
     return "".join(residues), tuple(mods)
 
+
 # record name -> Zenodo record id (from the PROSPECT repo).
 RECORDS: dict[str, str] = {
     "prospect": "6602020",
@@ -113,8 +114,9 @@ class ProspectSchema:
         return [self.mass_analyzer, self.fragmentation]
 
 
-def make_cache(local_dir: str | None = None, s3_prefix: str | None = None,
-               write_through: bool = True) -> FileCache:
+def make_cache(
+    local_dir: str | None = None, s3_prefix: str | None = None, write_through: bool = True
+) -> FileCache:
     """Build the tiered cache: local first, optional S3 mirror second.
 
     ``s3_prefix`` like ``s3://my-bucket/prospect``. S3 creds come from the standard AWS
@@ -221,7 +223,9 @@ class ProspectSource:
         frames = []
         with self._open_remote_zip(zip_filename) as z:
             names = [n for n in z.namelist() if n.endswith(".parquet")]
-            chosen = members if members is not None else (names[:max_members] if max_members else names)
+            chosen = (
+                members if members is not None else (names[:max_members] if max_members else names)
+            )
             for name in chosen:
                 frames.append(pd.read_parquet(io.BytesIO(z.read(name))))
         if not frames:
@@ -253,7 +257,11 @@ class ProspectSource:
         for col in (s.modified_sequence, s.charge, s.raw_file, s.scan_number):
             if col not in meta_df.columns:
                 raise ValueError(f"meta missing {col!r}")
-        irt_col = s.indexed_retention_time if s.indexed_retention_time in meta_df.columns else s.retention_time
+        irt_col = (
+            s.indexed_retention_time
+            if s.indexed_retention_time in meta_df.columns
+            else s.retention_time
+        )
         raw_col = s.retention_time if s.retention_time in meta_df.columns else irt_col
         n_ion = len(ION_TYPES)
 
@@ -267,7 +275,9 @@ class ProspectSource:
             for ms, v in parsed.items()
         }
 
-        acq_cols = [f for f in ("mass_analyzer", "fragmentation") if getattr(s, f) in meta_df.columns]
+        acq_cols = [
+            f for f in ("mass_analyzer", "fragmentation") if getattr(s, f) in meta_df.columns
+        ]
         has_ce = s.collision_energy in meta_df.columns
         # Scalar meta columns to attach to each fragment row — no object columns keeps the merge fast.
         carry = {s.raw_file, s.scan_number, s.modified_sequence, s.charge, irt_col, raw_col}
@@ -283,7 +293,14 @@ class ProspectSource:
         )
         frag = ann_df.loc[
             keep,
-            [s.raw_file, s.scan_number, s.ann_ion_type, s.ann_ordinal, s.ann_frag_charge, s.ann_intensity],
+            [
+                s.raw_file,
+                s.scan_number,
+                s.ann_ion_type,
+                s.ann_ordinal,
+                s.ann_frag_charge,
+                s.ann_intensity,
+            ],
         ].merge(meta_u[list(carry)], on=[s.raw_file, s.scan_number], how="inner")
 
         # (site, col) computed for every surviving fragment at once. ION_TYPES order is
@@ -296,15 +313,23 @@ class ProspectSource:
         site = np.where(is_b, ordinal - 1, n_arr - 1 - ordinal)
         col = np.where(is_b, 0, 1) + 2 * (z - 1)
         mask = modok & (site >= 0) & (site < n_arr - 1)
-        frag = frag.assign(_site=site, _col=col, _inten=frag[s.ann_intensity].to_numpy(dtype=np.float32))[mask]
+        frag = frag.assign(
+            _site=site, _col=col, _inten=frag[s.ann_intensity].to_numpy(dtype=np.float32)
+        )[mask]
 
         # Max-collapse duplicate (site, col) cells in C, then scatter per spectrum.
-        agg = frag.groupby([s.raw_file, s.scan_number, "_site", "_col"], sort=False)["_inten"].max().reset_index()
+        agg = (
+            frag.groupby([s.raw_file, s.scan_number, "_site", "_col"], sort=False)["_inten"]
+            .max()
+            .reset_index()
+        )
 
         keymeta = frag.drop_duplicates([s.raw_file, s.scan_number], keep="first")
         meta_at = {
             (str(r), int(sc)): i
-            for i, (r, sc) in enumerate(zip(keymeta[s.raw_file].to_numpy(), keymeta[s.scan_number].to_numpy()))
+            for i, (r, sc) in enumerate(
+                zip(keymeta[s.raw_file].to_numpy(), keymeta[s.scan_number].to_numpy())
+            )
         }
         km_seq = keymeta[s.modified_sequence].to_numpy()
         km_charge = keymeta[s.charge].to_numpy()
@@ -327,8 +352,9 @@ class ProspectSource:
             ms2[grp["_site"].to_numpy(), grp["_col"].to_numpy()] = grp["_inten"].to_numpy()
             if not ms2.any():
                 continue
-            precursors.append(Precursor(Peptide(stripped, mods), int(km_charge[i]),
-                                        assign_split(stripped, split)))
+            precursors.append(
+                Precursor(Peptide(stripped, mods), int(km_charge[i]), assign_split(stripped, split))
+            )
             # labels.rt = iRT (context-free base target); raw_rt = run-dependent target.
             labels.append(PrecursorLabels(ms2=ms2, rt=float(km_irt[i]), ccs=float("nan")))
             raw_rt.append(float(km_raw[i]))

@@ -34,17 +34,25 @@ def test_stream_pretrain_runs_and_moves_encoder(tmp_path):
     model = build_student("tiny")
     enc = ContextEncoder(context_dim=model.cfg.context_dim)
     mixes = [
-        StreamMix("immuno", "unspecific", str(fasta),
-                  DigestConfig(enzyme="unspecific", min_charge=1, max_charge=2, max_variable_mods=0),
-                  min_len=8, max_len=11),
+        StreamMix(
+            "immuno",
+            "unspecific",
+            str(fasta),
+            DigestConfig(enzyme="unspecific", min_charge=1, max_charge=2, max_variable_mods=0),
+            min_len=8,
+            max_len=11,
+        ),
         StreamMix("tryptic", "tryptic", str(fasta), DigestConfig()),
     ]
-    cfg = StreamPretrainCfg(mixes=mixes, nce_range=(20.0, 40.0), total_batches=4, batch_size=8, seed=0)
+    cfg = StreamPretrainCfg(
+        mixes=mixes, nce_range=(20.0, 40.0), total_batches=4, batch_size=8, seed=0
+    )
 
     before = enc.proj.weight.detach().clone()
     lines: list[str] = []
-    module = fit_stream_pretrain(model, enc, FakeTeacher(), cfg, accelerator="cpu",
-                                 log=lines.append, log_every=2)
+    module = fit_stream_pretrain(
+        model, enc, FakeTeacher(), cfg, accelerator="cpu", log=lines.append, log_every=2
+    )
 
     assert isinstance(module, DistillModule)
     assert any("step" in ln for ln in lines)  # _StepLogger fired (guards the .log shadow bug)

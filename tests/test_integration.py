@@ -51,9 +51,17 @@ def test_training_reduces_loss_and_predicts(tmp_path: Path):
 
     baseline = _spectral_angle(build_student("tiny"), train_ds)
     model = build_student("tiny")
-    fit_distill(model, train_ds, val_ds if len(val_ds) else None,
-                epochs=80, batch_size=32, lr=2e-3, seed=1, accelerator="cpu",
-                enable_progress_bar=False)
+    fit_distill(
+        model,
+        train_ds,
+        val_ds if len(val_ds) else None,
+        epochs=80,
+        batch_size=32,
+        lr=2e-3,
+        seed=1,
+        accelerator="cpu",
+        enable_progress_bar=False,
+    )
 
     sa = _spectral_angle(model, train_ds)
     assert sa > 0.75  # fits the deterministic teacher targets

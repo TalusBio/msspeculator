@@ -101,21 +101,30 @@ def _meta_ann():
     )
     rows = [
         # rfA / PEPTIDEK (n=8): kept fragments
-        ("rfA", 1, "b", 1, 1, 0.5, ""),      # site 0, col (b,1)=0
-        ("rfA", 1, "y", 1, 1, 0.9, ""),      # site n-1-1=6, col (y,1)=1
-        ("rfA", 1, "b", 2, 2, 0.3, ""),      # site 1, col (b,2)=2
+        ("rfA", 1, "b", 1, 1, 0.5, ""),  # site 0, col (b,1)=0
+        ("rfA", 1, "y", 1, 1, 0.9, ""),  # site n-1-1=6, col (y,1)=1
+        ("rfA", 1, "b", 2, 2, 0.3, ""),  # site 1, col (b,2)=2
         # filtered: precursor ion, frag charge 3, neutral loss
         ("rfA", 1, "precursor", 0, 1, 1.0, ""),
         ("rfA", 1, "b", 3, 3, 0.7, ""),
         ("rfA", 1, "y", 2, 1, 0.7, "H2O"),
         # rfB / SPEPK (n=5), phospho on S: one fragment so it's non-empty
-        ("rfB", 2, "b", 2, 1, 0.4, ""),      # site 1, col 0
+        ("rfB", 2, "b", 2, 1, 0.4, ""),  # site 1, col 0
         # rfC unknown mod -> whole spectrum skipped even though it has fragments
         ("rfC", 3, "b", 1, 1, 0.6, ""),
     ]
-    ann = pd.DataFrame(rows, columns=[
-        "raw_file", "scan_number", "ion_type", "no", "charge", "intensity", "neutral_loss"
-    ])
+    ann = pd.DataFrame(
+        rows,
+        columns=[
+            "raw_file",
+            "scan_number",
+            "ion_type",
+            "no",
+            "charge",
+            "intensity",
+            "neutral_loss",
+        ],
+    )
     return meta, ann
 
 
@@ -156,7 +165,9 @@ def test_read_annotation_from_zip(tmp_path):
     with zipfile.ZipFile(root / "TMT_TUM_perm_pT.zip", "w") as z:
         z.writestr("TMT_TUM_perm_pT/shard_annotation.parquet", buf.getvalue())
 
-    src = ProspectSource("test_ptm", cache=FileCache([str(tmp_path / "local")], write_through=False))
+    src = ProspectSource(
+        "test_ptm", cache=FileCache([str(tmp_path / "local")], write_through=False)
+    )
     df = src.read_annotation("TMT_TUM_perm_pT.zip")
     assert len(df) == len(ann) and "ion_type" in df.columns
 
@@ -173,11 +184,16 @@ def test_streaming_reads_cached_zip_by_member(tmp_path):
         z.writestr("pool/a_annotation.parquet", buf.getvalue())
         z.writestr("pool/b_annotation.parquet", buf.getvalue())
 
-    src = ProspectSource("test_ptm", cache=FileCache([str(tmp_path / "local")], write_through=False))
+    src = ProspectSource(
+        "test_ptm", cache=FileCache([str(tmp_path / "local")], write_through=False)
+    )
     assert src.annotation_shards("TMT_TUM_perm_pT.zip") == [
-        "pool/a_annotation.parquet", "pool/b_annotation.parquet"
+        "pool/a_annotation.parquet",
+        "pool/b_annotation.parquet",
     ]
     one = src.read_annotation_streaming("TMT_TUM_perm_pT.zip", max_members=1)
     assert len(one) == len(ann)  # only the first shard read
-    both = src.read_annotation_streaming("TMT_TUM_perm_pT.zip", members=["pool/b_annotation.parquet"])
+    both = src.read_annotation_streaming(
+        "TMT_TUM_perm_pT.zip", members=["pool/b_annotation.parquet"]
+    )
     assert len(both) == len(ann)

@@ -22,9 +22,7 @@ OFFSET = 25.0
 
 def _real():
     aa = "ACDEFGHIKLMNPQRSTVWY"
-    seqs = [
-        "".join(aa[(i * 7 + j * 3) % 20] for j in range(8 + i % 4)) + "K" for i in range(40)
-    ]
+    seqs = ["".join(aa[(i * 7 + j * 3) % 20] for j in range(8 + i % 4)) + "K" for i in range(40)]
     base = FakeTeacher().predict([Precursor(Peptide(s), 2, "t") for s in seqs])
     precs, labels, raw_rt, sources = [], [], [], []
     for s, lab in zip(seqs, base):

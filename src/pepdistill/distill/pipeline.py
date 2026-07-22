@@ -143,8 +143,12 @@ def _accelerator(device: str) -> str:
 
 def _digest_cfg(s: DigestSource) -> DigestConfig:
     return DigestConfig(
-        enzyme=s.enzyme, missed_cleavages=s.missed, min_length=s.min_len,
-        max_length=s.max_len, min_charge=s.min_charge, max_charge=s.max_charge,
+        enzyme=s.enzyme,
+        missed_cleavages=s.missed,
+        min_length=s.min_len,
+        max_length=s.max_len,
+        min_charge=s.min_charge,
+        max_charge=s.max_charge,
         max_variable_mods=s.max_var_mods,
     )
 
@@ -163,8 +167,12 @@ def _stream_mixes(cfg: PretrainCfg) -> list[StreamMix]:
     """Map each pretrain source to a StreamMix (enzyme 'unspecific' -> immunopeptidome windows)."""
     return [
         StreamMix(
-            name=s.enzyme, kind="unspecific" if s.enzyme == "unspecific" else "tryptic",
-            fasta=s.fasta, cfg=_digest_cfg(s), min_len=s.min_len, max_len=s.max_len,
+            name=s.enzyme,
+            kind="unspecific" if s.enzyme == "unspecific" else "tryptic",
+            fasta=s.fasta,
+            cfg=_digest_cfg(s),
+            min_len=s.min_len,
+            max_len=s.max_len,
         )
         for s in cfg.sources
     ]
@@ -187,30 +195,56 @@ def _load_real(cfg: TrainCfg, log):
 
 def _run_pretrain(cfg: RunConfig, model, encoder, acc, log):
     p = cfg.pretrain
-    kw = {} if p.teacher == "fake" else {"device": p.device, "nce": p.nce, "instrument": p.instrument}
+    kw = (
+        {}
+        if p.teacher == "fake"
+        else {"device": p.device, "nce": p.nce, "instrument": p.instrument}
+    )
     teacher = get_teacher(p.teacher, **kw)
 
     if p.mode == "stream":
         assert encoder is not None  # guaranteed by need_encoder in run_pipeline
         spc = StreamPretrainCfg(
-            mixes=_stream_mixes(p), nce_range=(p.nce_min, p.nce_max),
-            total_batches=p.total_batches, batch_size=p.batch_size, lr=p.lr, seed=cfg.seed,
+            mixes=_stream_mixes(p),
+            nce_range=(p.nce_min, p.nce_max),
+            total_batches=p.total_batches,
+            batch_size=p.batch_size,
+            lr=p.lr,
+            seed=cfg.seed,
         )
-        log(f"[pretrain] stream: {[m.name for m in spc.mixes]}, NCE {spc.nce_range}, {spc.total_batches} batches")
+        log(
+            f"[pretrain] stream: {[m.name for m in spc.mixes]}, NCE {spc.nce_range}, {spc.total_batches} batches"
+        )
         return fit_stream_pretrain(model, encoder, teacher, spc, accelerator=acc, log=log)
 
     precs = _pretrain_precursors(p)
     t = time.perf_counter()
     labels = teacher.predict(precs)
     pairs = [(pr, lab) for pr, lab in zip(precs, labels) if lab is not None]
-    tr = DistillDataset([pr for pr, _ in pairs if pr.split != "val"],
-                        [lab for pr, lab in pairs if pr.split != "val"])
+    tr = DistillDataset(
+        [pr for pr, _ in pairs if pr.split != "val"],
+        [lab for pr, lab in pairs if pr.split != "val"],
+    )
     va_pairs = [(pr, lab) for pr, lab in pairs if pr.split == "val"]
-    va = DistillDataset([pr for pr, _ in va_pairs], [lab for _, lab in va_pairs]) if va_pairs else None
-    log(f"[pretrain] {len(pairs)} teacher labels in {time.perf_counter()-t:.0f}s; fitting {p.epochs} ep")
+    va = (
+        DistillDataset([pr for pr, _ in va_pairs], [lab for _, lab in va_pairs])
+        if va_pairs
+        else None
+    )
+    log(
+        f"[pretrain] {len(pairs)} teacher labels in {time.perf_counter() - t:.0f}s; fitting {p.epochs} ep"
+    )
     return fit_distill(
-        model, tr, va, epochs=p.epochs, batch_size=p.batch_size, lr=p.lr, accelerator=acc,
-        context_encoder=encoder, distill_fallback_ce=p.nce, enable_progress_bar=False,
+        model,
+        tr,
+        va,
+        epochs=p.epochs,
+        batch_size=p.batch_size,
+        lr=p.lr,
+        accelerator=acc,
+        context_encoder=encoder,
+        distill_fallback_ce=p.nce,
+        enable_progress_bar=False,
     )
 
 
@@ -237,9 +271,17 @@ def run_pipeline(cfg: RunConfig, log=print) -> dict:
         log(f"[train] streaming shards {cfg.train.shards} of {cfg.train.zip}")
         real = _load_real(cfg.train, log)
         module = fit_realspeclib(
-            model, real, dataset=cfg.train.dataset, epochs=cfg.train.epochs,
-            batch_size=cfg.train.batch_size, lr=cfg.train.lr, loss_weights=cfg.train.loss_weights,
-            seed=cfg.seed, accelerator=acc, encoder=encoder, enable_progress_bar=False,
+            model,
+            real,
+            dataset=cfg.train.dataset,
+            epochs=cfg.train.epochs,
+            batch_size=cfg.train.batch_size,
+            lr=cfg.train.lr,
+            loss_weights=cfg.train.loss_weights,
+            seed=cfg.seed,
+            accelerator=acc,
+            encoder=encoder,
+            enable_progress_bar=False,
         )
         summary["train"] = {k: float(v) for k, v in module.trainer.callback_metrics.items()}
         summary["source_index"] = module.source_index
@@ -279,4 +321,12 @@ def _bench(model, cfg: BenchCfg, log) -> dict:
     return {"precursors": len(precs), "rows": len(lib), "best_s": best, "rate": rate}
 
 
-__all__ = ["RunConfig", "DigestSource", "PretrainCfg", "TrainCfg", "ExportCfg", "BenchCfg", "run_pipeline"]
+__all__ = [
+    "RunConfig",
+    "DigestSource",
+    "PretrainCfg",
+    "TrainCfg",
+    "ExportCfg",
+    "BenchCfg",
+    "run_pipeline",
+]

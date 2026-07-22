@@ -53,10 +53,16 @@ class DistillModule(L.LightningModule):
         if self.context_encoder is None:
             return self.model(batch.inputs)
         # Per-batch CE (streaming NCE sweep) if provided, else the constant fallback.
-        ce = batch.ce if batch.ce is not None else torch.full(
-            (batch.inputs.tokens.shape[0],), self.distill_fallback_ce, device=self.device
+        ce = (
+            batch.ce
+            if batch.ce is not None
+            else torch.full(
+                (batch.inputs.tokens.shape[0],), self.distill_fallback_ce, device=self.device
+            )
         )
-        return self.model.forward_context(batch.inputs, ctx_acq=self.context_encoder(ce), ctx_lc=None)
+        return self.model.forward_context(
+            batch.inputs, ctx_acq=self.context_encoder(ce), ctx_lc=None
+        )
 
     def training_step(self, batch: LabeledBatch, batch_idx: int) -> torch.Tensor:
         out = self._predict(batch)
@@ -108,7 +114,10 @@ class _BatchIterable(IterableDataset):
 
 class DistillDataModule(L.LightningDataModule):
     def __init__(
-        self, train_ds: DistillDataset, val_ds: DistillDataset | None, batch_size: int = 256,
+        self,
+        train_ds: DistillDataset,
+        val_ds: DistillDataset | None,
+        batch_size: int = 256,
         seed: int = 0,
     ) -> None:
         super().__init__()
@@ -157,8 +166,12 @@ def fit_distill(
     L.seed_everything(seed, verbose=False)
     model.set_norm(*train_ds.rt_ccs_stats())
     module = DistillModule(
-        model, lr=lr, weight_decay=weight_decay, loss_weights=loss_weights,
-        context_encoder=context_encoder, distill_fallback_ce=distill_fallback_ce,
+        model,
+        lr=lr,
+        weight_decay=weight_decay,
+        loss_weights=loss_weights,
+        context_encoder=context_encoder,
+        distill_fallback_ce=distill_fallback_ce,
     )
     dm = DistillDataModule(train_ds, val_ds, batch_size=batch_size, seed=seed)
     trainer = L.Trainer(
