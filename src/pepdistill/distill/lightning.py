@@ -5,11 +5,9 @@ embeds + trunk + heads + norm buffers. Each training *regime* is a thin
 :class:`lightning.LightningModule` that owns a reference to that same StudentModel and
 defines only its loss/data contract. Multiple regimes constructed with the *same* model
 instance share weights, so you can, e.g., pre-train with :class:`DistillModule` (teacher
-soft labels) and then fine-tune the identical backbone with a future ``RealSpeclibModule``
-(experimental spectra) — "pass the backbone around".
-
-The pure-loop :func:`pepdistill.distill.trainer.train` stays as the dependency-light
-reference; this is the scalable path (multi-GPU, callbacks, logging) for the same math.
+soft labels) and then fine-tune the identical backbone with ``RealSpeclibModule``
+(experimental spectra) — "pass the backbone around". :mod:`pepdistill.distill.pipeline`
+chains exactly that (pretrain -> real train) from one config.
 """
 
 from __future__ import annotations
@@ -146,8 +144,7 @@ def fit_distill(
 ) -> DistillModule:
     """Set target norm from ``train_ds`` and run a Lightning distillation fit in place.
 
-    Mirrors :func:`pepdistill.distill.trainer.train` but on the Lightning engine. Returns
-    the LightningModule (its ``.model`` is the trained shared backbone). Pass a
+    Returns the LightningModule (its ``.model`` is the trained shared backbone). Pass a
     ``context_encoder`` to give the teacher its own CE-driven acquisition context (shared with
     a later real-speclib sink), so the teacher's ``distill_ce`` becomes a factor, not the base.
     """

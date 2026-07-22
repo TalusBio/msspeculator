@@ -1,9 +1,9 @@
-"""Distillation: datasets, losses, and the training loop."""
+"""Distillation: datasets, losses, and the Lightning training pipeline."""
 
 from .dataset import DistillDataset, LabeledBatch, collate_with_labels
+from .lightning import DistillModule, fit_distill
 from .losses import distill_loss, ms2_cosine_loss, spectral_angle
-from .streaming import build_val_set, curriculum_batches, estimate_norm
-from .trainer import TrainConfig, evaluate, train, train_streaming
+from .pipeline import RunConfig, run_pipeline
 
 __all__ = [
     "DistillDataset",
@@ -12,11 +12,8 @@ __all__ = [
     "ms2_cosine_loss",
     "spectral_angle",
     "distill_loss",
-    "TrainConfig",
-    "train",
-    "train_streaming",
-    "evaluate",
-    "curriculum_batches",
-    "estimate_norm",
-    "build_val_set",
+    "DistillModule",
+    "fit_distill",
+    "RunConfig",
+    "run_pipeline",
 ]

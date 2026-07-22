@@ -353,3 +353,23 @@ class RealLabels:
     raw_rt: list
     source_ids: list
     acquisition: dict
+
+
+def merge_real_labels(parts: list[RealLabels]) -> RealLabels:
+    """Concatenate decoded shards into one :class:`RealLabels` (union of acquisition maps).
+
+    Lets a full pool load shard-by-shard — decode each, merge, drop the raw annotation — so
+    peak memory stays at one shard rather than the whole multi-GB zip decompressed at once.
+    """
+    precursors: list = []
+    labels: list = []
+    raw_rt: list = []
+    source_ids: list = []
+    acquisition: dict = {}
+    for p in parts:
+        precursors += list(p.precursors)
+        labels += list(p.labels)
+        raw_rt += list(p.raw_rt)
+        source_ids += list(p.source_ids)
+        acquisition.update(p.acquisition)
+    return RealLabels(precursors, labels, raw_rt, source_ids, acquisition)

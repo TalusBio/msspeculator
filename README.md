@@ -13,8 +13,12 @@ teacher generates the training labels from in-silico digests.
 - **Deterministic splits.** Train/val/test is assigned by hashing the *stripped*
   sequence, so every mod-form and charge state of a peptide stays in one split
   (no leakage) and the split is stable across runs and dataset growth.
-- **Staged, cached pipeline.** `digest → label → distill → predict`, each writing a
-  reusable artifact. The teacher runs once.
+- **One config-driven pipeline.** A single `run` command walks toggleable Lightning stages
+  — `pretrain` (teacher distill) → `train` (real spectra) → `export` → `bench` — from one
+  TOML config. `predict` (library generation) is the separate inference command.
+- **Learns from real spectra too.** Beyond teacher distillation, the student can fine-tune on
+  real experimental libraries (PROSPECT) with per-run acquisition **context conditioning**:
+  collision energy drives the MS2 context, chromatography drives the RT context.
 
 ## Install
 
@@ -29,43 +33,52 @@ development and tests; the real `alphapeptdeep` teacher needs the `teacher` extr
 
 ## Quick start
 
-One-shot, end to end into a working directory:
+Describe the run in a TOML config, then run it:
 
-```bash
-pepdistill pipeline proteome.fasta -w work/ --teacher alphapeptdeep --preset small --epochs 30
-# -> work/precursors.parquet, work/labels/, work/model.ckpt, work/library.parquet
+```toml
+# run.toml
+out = "work"
+preset = "small"
+device = "auto"
+
+[pretrain]                    # teacher-distill warmup (a union of FASTA x digest configs)
+enabled = true
+teacher = "alphapeptdeep"     # or "fake"
+epochs  = 25
+[[pretrain.sources]]
+fasta = "proteome.fasta"
+
+[train]                       # fine-tune on real spectra (PROSPECT pool, streamed)
+enabled = true
+meta   = "TUM_third_pool_meta_data.parquet"
+zip    = "TUM_third_pool.zip"
+shards = [0]
+epochs = 60
+ce_context = true             # ctx_acq from collision energy
+
+[export]                      # ONNX
+enabled = true
+
+[bench]                       # library throughput
+enabled = true
+fasta   = "proteome.fasta"
 ```
 
-Or run the stages individually:
-
 ```bash
-pepdistill digest  proteome.fasta -o precursors.parquet
-pepdistill label   precursors.parquet -o labels/ --teacher alphapeptdeep
-pepdistill distill --precursors precursors.parquet --labels labels/ -o model.ckpt --preset small
-pepdistill predict --model model.ckpt --fasta proteome.fasta -o library.parquet --device auto
-pepdistill benchmark --model model.ckpt --fasta proteome.fasta --device auto
+pepdistill run run.toml                 # -> work/model.ckpt, work/model.onnx, work/summary.json
+pepdistill run run.toml --no-train      # pretrain only (disable any stage inline)
 ```
 
-### Streaming (online) distillation
+Distillation-only (no real spectra): drop the `[train]` block or `enabled = false`. Any stage
+can be turned off in the config or with `--no-pretrain` / `--no-train`.
 
-Skip the label cache entirely: the teacher scores fresh sequences **live in the training
-loop**. A curriculum warms up on a random-peptide generator, then switches to real FASTA
-digests. Throughput is capped by the teacher — meant to run overnight.
+### Predict a library
 
-```bash
-pepdistill distill-stream -o model.ckpt --fasta proteome.fasta \
-    --teacher alphapeptdeep --preset flash \
-    --total-batches 20000 --warmup-batches 2000 --batch-size 256 --device auto
-```
-
-`--device auto` uses Apple MPS when present, else CPU. No FASTA → trains purely on random
-sequences (the teacher generalizes to any peptide).
-
-### ONNX export
+Standalone inference from a trained model (torch or ONNX):
 
 ```bash
-pepdistill export --model model.ckpt -o model.onnx        # cnn presets export fully dynamic
-pepdistill predict --model model.onnx --fasta p.fasta -o lib.parquet --runtime onnx
+pepdistill predict --model work/model.ckpt  --fasta proteome.fasta -o library.parquet --device auto
+pepdistill predict --model work/model.onnx  --fasta proteome.fasta -o library.parquet --runtime onnx
 ```
 
 ## Output
@@ -86,13 +99,15 @@ fragment:
 pepdistill/
   chem.py      masses, m/z, fragment-ion series (pure numeric)
   data/        FASTA digest, precursor enumeration, deterministic split, tensor encoding,
-               streaming sources (random generator + FASTA stream)
+               PROSPECT real-spectra source + tiered fsspec cache
   teacher/     Teacher ABC + FakeTeacher + PeptDeepTeacher (behind [teacher] extra)
-  models/      student architectures (no LSTM) + presets + checkpoint I/O
-  distill/     dataset, losses (MS2 cosine / RT+CCS MSE), batch + streaming trainers
+  models/      student architectures (no LSTM) + presets + context conditioning + checkpoint I/O
+  distill/     dataset, losses (MS2 cosine / RT+CCS MSE), Lightning regimes (distill +
+               real-speclib context) and the config-driven pipeline
   predict/     library.py (reference) + fast.py (vectorized) + onnx.py (export/runtime)
+  eval.py      val reduction (best example per library entry)
   util.py      device resolution (auto -> mps/cpu)
-  cli.py       typer CLI
+  cli.py       typer CLI (run + predict)
 ```
 
 ## Student presets & speed
