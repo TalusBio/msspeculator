@@ -145,6 +145,26 @@ def test_context_aware_predict_changes_ms2_not_rt():
     assert (rt_base == rt_ctx).all()  # RT is context-free (no ctx_lc)
 
 
+def test_context_encoder_factors():
+    """Analyzer/fragmentation factors shift ctx_acq; unknown -> id 0 (zero row) is a no-op."""
+    enc = ContextEncoder(context_dim=8)
+    assert enc.analyzer_id("FTMS") == 1 and enc.analyzer_id("NOPE") == 0
+    assert enc.frag_id("HCD") == 1 and enc.frag_id("NOPE") == 0
+
+    torch.nn.init.normal_(enc.ana_emb.weight, std=0.5)
+    torch.nn.init.normal_(enc.frag_emb.weight, std=0.5)
+    with torch.no_grad():  # keep the "unknown" row (0) zero
+        enc.ana_emb.weight[0].zero_()
+        enc.frag_emb.weight[0].zero_()
+
+    ce = torch.tensor([30.0])
+    base = enc(ce)  # CE only
+    known = enc(ce, torch.tensor([enc.analyzer_id("FTMS")]), torch.tensor([enc.frag_id("HCD")]))
+    unknown = enc(ce, torch.tensor([enc.analyzer_id("x")]), torch.tensor([enc.frag_id("y")]))
+    assert not torch.allclose(base, known)  # known factors move ctx_acq
+    assert torch.allclose(base, unknown)  # unknown -> row 0 (zero) -> no-op
+
+
 def test_context_encoder_learns_ce_dependence():
     """After a step of training, ctx_acq depends on collision energy and moves MS2."""
     torch.manual_seed(0)

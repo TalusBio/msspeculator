@@ -52,31 +52,70 @@ class ContextBook(nn.Module):
             emb.weight.grad *= mask
 
 
+# Default acquisition vocab (index 0 = "unknown" -> zero-init embedding -> no-op). Covers the
+# PROSPECT analyzers/fragmentations and the peptdeep teacher (FTMS/HCD). Fixed (not
+# data-derived) so one encoder is shared across pretrain + every real run, and unseen values
+# fall back to "unknown" rather than shifting the index space.
+DEFAULT_ANALYZERS = ("unknown", "FTMS", "ITMS", "TOF")
+DEFAULT_FRAGMENTATIONS = ("unknown", "HCD", "CID", "ETD", "EThcD")
+
+
 class ContextEncoder(nn.Module):
-    """Generate ``ctx_acq`` from continuous acquisition factors (currently collision energy).
+    """Generate ``ctx_acq`` from acquisition factors: analyzer + fragmentation (categorical) and
+    collision energy (continuous). Composed additively — the ``INSTR::FRAG::CE`` grammar.
 
-    First step off the per-source lookup toward "context from metadata": ``ctx_acq`` becomes a
-    learned function of collision energy, so the teacher (a known NCE) and every real run share
-    ONE CE axis — unseen CEs interpolate, and the teacher stops silently anchoring the base.
-    CE is expected in absolute NCE units (teacher ``nce`` and PROSPECT ``*_collision_energy``
-    agree). Descended through the same head projection as ``ContextBook`` vectors.
+    "Context from metadata": ``ctx_acq`` is a learned function of the acquisition settings, so
+    the teacher (a known analyzer/frag/NCE) and every real run share ONE factor space — unseen
+    CEs interpolate, unseen categoricals fall back to "unknown", and the teacher stops silently
+    anchoring the base. CE is absolute NCE (teacher ``nce`` and PROSPECT ``*_collision_energy``
+    agree). Analyzer/frag ids come from :meth:`analyzer_id`/:meth:`frag_id`.
 
-    Zero-init -> ``ctx_acq`` = 0 at every CE -> exact base model (the acq projection has zero
-    bias); CE-dependence is then learned from data, so this strictly generalizes the no-context
-    path. RT/chromatography is NOT CE-driven — keep ``ctx_lc`` on a per-run :class:`ContextBook`.
+    Zero-init -> ``ctx_acq`` = 0 for every input -> exact base model (the acq projection has
+    zero bias); factor dependence is learned from data, so this strictly generalizes the
+    no-context path. RT/chromatography is NOT here — keep ``ctx_lc`` on a per-run ``ContextBook``.
     """
 
     def __init__(
-        self, context_dim: int = 16, ce_center: float = 30.0, ce_scale: float = 10.0
+        self,
+        context_dim: int = 16,
+        ce_center: float = 30.0,
+        ce_scale: float = 10.0,
+        analyzers: tuple[str, ...] = DEFAULT_ANALYZERS,
+        fragmentations: tuple[str, ...] = DEFAULT_FRAGMENTATIONS,
     ) -> None:
         super().__init__()
         self.ce_center = ce_center
         self.ce_scale = ce_scale
-        self.proj = nn.Linear(1, context_dim)
+        self.analyzers = tuple(analyzers)
+        self.fragmentations = tuple(fragmentations)
+        self._ana_ix = {n: i for i, n in enumerate(self.analyzers)}
+        self._frag_ix = {n: i for i, n in enumerate(self.fragmentations)}
+        self.proj = nn.Linear(1, context_dim)  # collision energy
+        self.ana_emb = nn.Embedding(len(self.analyzers), context_dim)
+        self.frag_emb = nn.Embedding(len(self.fragmentations), context_dim)
         nn.init.zeros_(self.proj.weight)
         nn.init.zeros_(self.proj.bias)
+        nn.init.zeros_(self.ana_emb.weight)
+        nn.init.zeros_(self.frag_emb.weight)
 
-    def forward(self, ce: torch.Tensor) -> torch.Tensor:
-        """(B,) collision energy (absolute NCE) -> (B, context_dim) ``ctx_acq``."""
-        x = ((ce - self.ce_center) / self.ce_scale).unsqueeze(-1)
-        return self.proj(x)
+    def analyzer_id(self, name: str) -> int:
+        """Vocab id for a mass-analyzer name; unknown -> 0 (no-op)."""
+        return self._ana_ix.get(name, 0)
+
+    def frag_id(self, name: str) -> int:
+        """Vocab id for a fragmentation name; unknown -> 0 (no-op)."""
+        return self._frag_ix.get(name, 0)
+
+    def forward(
+        self,
+        ce: torch.Tensor,
+        analyzer_id: torch.Tensor | None = None,
+        frag_id: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """(B,) CE (+ optional (B,) analyzer/frag ids) -> (B, context_dim) ``ctx_acq``."""
+        out = self.proj(((ce - self.ce_center) / self.ce_scale).unsqueeze(-1))
+        if analyzer_id is not None:
+            out = out + self.ana_emb(analyzer_id)
+        if frag_id is not None:
+            out = out + self.frag_emb(frag_id)
+        return out

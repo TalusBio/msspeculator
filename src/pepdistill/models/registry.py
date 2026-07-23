@@ -47,6 +47,8 @@ def _encoder_blob(enc: ContextEncoder) -> dict:
         "context_dim": enc.proj.out_features,
         "ce_center": enc.ce_center,
         "ce_scale": enc.ce_scale,
+        "analyzers": enc.analyzers,
+        "fragmentations": enc.fragmentations,
         "state_dict": enc.state_dict(),
     }
 
@@ -101,7 +103,13 @@ def load_context(path: str | Path, map_location: str = "cpu") -> ContextBundle |
     encoder = book = None
     if ctx.get("encoder"):
         e = ctx["encoder"]
-        encoder = ContextEncoder(e["context_dim"], e["ce_center"], e["ce_scale"])
+        encoder = ContextEncoder(
+            e["context_dim"],
+            e["ce_center"],
+            e["ce_scale"],
+            analyzers=tuple(e.get("analyzers", ContextEncoder().analyzers)),
+            fragmentations=tuple(e.get("fragmentations", ContextEncoder().fragmentations)),
+        )
         encoder.load_state_dict(e["state_dict"])
         encoder.eval()
     if ctx.get("book"):

@@ -69,6 +69,11 @@ def predict(
     nce: Optional[float] = typer.Option(
         None, help="Collision energy for context-aware MS2 (needs a ckpt with a saved encoder)."
     ),
+    ms_context: Optional[str] = typer.Option(
+        None,
+        "--ms-context",
+        help="Full acquisition context 'ANALYZER::FRAGMENTATION::CE', e.g. FTMS::HCD::30.",
+    ),
     enzyme: str = "trypsin",
     missed: int = 2,
     min_len: int = 7,
@@ -95,11 +100,21 @@ def predict(
     else:
         precs = frame_to_precursors(pd.read_parquet(precursors))
 
+    # Resolve acquisition context: --ms-context "ANALYZER::FRAG::CE" wins; else --nce (CE only).
+    analyzer, fragmentation = "", ""
+    if ms_context is not None:
+        parts = ms_context.split("::")
+        if len(parts) != 3:
+            raise typer.BadParameter("--ms-context must be 'ANALYZER::FRAGMENTATION::CE'")
+        analyzer, fragmentation, nce = parts[0], parts[1], float(parts[2])
+
     if runtime == "onnx" or str(model).endswith(".onnx"):
         from .predict.onnx import OnnxRunner  # optional [onnx] extra — import only if used
 
         if nce is not None:
-            raise typer.BadParameter("--nce (context-aware MS2) needs the torch runtime")
+            raise typer.BadParameter(
+                "context-aware MS2 (--nce/--ms-context) needs the torch runtime"
+            )
         runner = OnnxRunner(model)
     else:
         ctx_acq = None
@@ -108,10 +123,16 @@ def predict(
 
             ctx = load_context(model)
             if ctx is None or ctx.encoder is None:
-                raise typer.BadParameter(f"{model} has no saved CE encoder; can't use --nce")
-            ctx_acq = ctx.encoder(torch.tensor([float(nce)])).detach().numpy()[0]
+                raise typer.BadParameter(
+                    f"{model} has no saved acquisition encoder; can't condition MS2"
+                )
+            enc = ctx.encoder
+            ana = torch.tensor([enc.analyzer_id(analyzer)])
+            frag = torch.tensor([enc.frag_id(fragmentation)])
+            ctx_acq = enc(torch.tensor([float(nce)]), ana, frag).detach().numpy()[0]
             typer.echo(
-                f"context-aware: NCE={nce} -> ctx_acq |v|={float((ctx_acq**2).sum() ** 0.5):.3f}"
+                f"context-aware: {analyzer or '-'}::{fragmentation or '-'}::{nce} "
+                f"-> ctx_acq |v|={float((ctx_acq**2).sum() ** 0.5):.3f}"
             )
         runner = TorchRunner(load_checkpoint(model), resolve_device(device), ctx_acq=ctx_acq)
 

@@ -35,7 +35,9 @@ class RealBatch:
     base: LabeledBatch  # inputs + ms2_target + rt_target(=iRT) + ccs_target(NaN)
     raw_rt: torch.Tensor  # (B,) run-dependent retention time
     source_id: torch.Tensor  # (B,) long, raw_file index (for ctx_lc / chromatography)
-    ce: torch.Tensor  # (B,) collision energy (absolute NCE), drives ctx_acq
+    ce: torch.Tensor  # (B,) collision energy (absolute NCE) -> ctx_acq
+    analyzer_id: torch.Tensor  # (B,) long, mass-analyzer factor -> ctx_acq
+    frag_id: torch.Tensor  # (B,) long, fragmentation factor -> ctx_acq
 
     def to(self, device) -> "RealBatch":
         return RealBatch(
@@ -43,18 +45,22 @@ class RealBatch:
             self.raw_rt.to(device),
             self.source_id.to(device),
             self.ce.to(device),
+            self.analyzer_id.to(device),
+            self.frag_id.to(device),
         )
 
 
 class RealSpeclibDataset:
-    """Real examples + per-example raw RT, integer source id (raw_file), and collision energy."""
+    """Real examples + per-example raw RT, source id (raw_file), CE, and analyzer/frag factors."""
 
-    def __init__(self, precursors, labels, raw_rt, source_id, ce) -> None:
+    def __init__(self, precursors, labels, raw_rt, source_id, ce, analyzer_id, frag_id) -> None:
         self.precursors = precursors
         self.labels = labels
         self.raw_rt = np.asarray(raw_rt, dtype=np.float32)
         self.source_id = np.asarray(source_id, dtype=np.int64)
         self.ce = np.asarray(ce, dtype=np.float32)
+        self.analyzer_id = np.asarray(analyzer_id, dtype=np.int64)
+        self.frag_id = np.asarray(frag_id, dtype=np.int64)
 
     def __len__(self) -> int:
         return len(self.precursors)
@@ -72,6 +78,8 @@ class RealSpeclibDataset:
                 torch.from_numpy(self.raw_rt[idx]),
                 torch.from_numpy(self.source_id[idx]),
                 torch.from_numpy(self.ce[idx]),
+                torch.from_numpy(self.analyzer_id[idx]),
+                torch.from_numpy(self.frag_id[idx]),
             )
 
 
@@ -97,7 +105,7 @@ class RealSpeclibModule(L.LightningModule):
         return batch.to(device)
 
     def _forward(self, rb: RealBatch):
-        ctx_acq = self.encoder(rb.ce)  # MS2/CCS context from collision energy
+        ctx_acq = self.encoder(rb.ce, rb.analyzer_id, rb.frag_id)  # MS2/CCS acquisition factors
         ctx_lc = self.book.lc(rb.source_id)  # RT context per run (chromatography)
         return self.model.forward_context(rb.base.inputs, ctx_acq=ctx_acq, ctx_lc=ctx_lc)
 
@@ -181,37 +189,47 @@ def fit_realspeclib(
     the module (``.model``/``.encoder``/``.book`` trained; ``.source_index`` maps raw_file)."""
     L.seed_everything(seed, verbose=False)
     cdim = context_dim or model.cfg.context_dim
+    book = book or ContextBook(
+        n_acq=len(set(real.source_ids)), n_lc=len(set(real.source_ids)), context_dim=cdim
+    )
+    encoder = encoder or ContextEncoder(context_dim=cdim)
 
-    # Map raw_file -> integer source id (ctx_lc); collision energy per run drives ctx_acq.
+    # Map raw_file -> integer source id (ctx_lc). Per-run acquisition factors drive ctx_acq:
+    # collision energy (continuous) + mass analyzer + fragmentation (categorical, via encoder vocab).
     uniq = sorted(set(real.source_ids))
     src_index = {name: i for i, name in enumerate(uniq)}
     src_ids = [src_index[s] for s in real.source_ids]
 
-    # Missing CE -> neutral 30 NCE (encoder center) so ctx_acq stays at base for that run.
-    def _ce(name):
+    def _ce(name):  # missing CE -> neutral 30 NCE (encoder center) -> base ctx_acq
         v = real.acquisition.get(name, {}).get("collision_energy", 30.0)
         return 30.0 if v != v else float(v)  # NaN-guard
 
-    ce_of = {name: _ce(name) for name in uniq}
+    ce_of = {n: _ce(n) for n in uniq}
+    ana_of = {
+        n: encoder.analyzer_id(real.acquisition.get(n, {}).get("mass_analyzer", "")) for n in uniq
+    }
+    frag_of = {
+        n: encoder.frag_id(real.acquisition.get(n, {}).get("fragmentation", "")) for n in uniq
+    }
     ces = [ce_of[s] for s in real.source_ids]
+    anas = [ana_of[s] for s in real.source_ids]
+    frags = [frag_of[s] for s in real.source_ids]
 
     # Split by the precursor's assigned split; normalize on TRAIN iRT.
-    tr, va = ([], [], [], [], []), ([], [], [], [], [])
-    for p, lab, rrt, sid, ce in zip(real.precursors, real.labels, real.raw_rt, src_ids, ces):
-        bucket = va if p.split == "val" else tr
-        for col, val in zip(bucket, (p, lab, rrt, sid, ce)):
+    tr, va = ([], [], [], [], [], [], []), ([], [], [], [], [], [], [])
+    for row in zip(real.precursors, real.labels, real.raw_rt, src_ids, ces, anas, frags):
+        bucket = va if row[0].split == "val" else tr
+        for col, val in zip(bucket, row):
             col.append(val)
     irt_train = np.array([lab.rt for lab in tr[1]], dtype=np.float64)
     model.set_norm(float(irt_train.mean()), float(irt_train.std() or 1.0), 0.0, 1.0)
 
-    book = book or ContextBook(n_acq=len(uniq), n_lc=len(uniq), context_dim=cdim)
-    encoder = encoder or ContextEncoder(context_dim=cdim)
     module = RealSpeclibModule(model, book, encoder, lr=lr, loss_weights=loss_weights)
     train_ds = RealSpeclibDataset(*tr)
     # Report val on one best-quality example per (dataset, modified_sequence, charge) so
     # abundant peptides don't dominate the metric; train keeps every observation.
     if va[0]:
-        va = best_examples(va[0], va[1], va[2], va[3], va[4], dataset=dataset)
+        va = best_examples(va[0], va[1], va[2], va[3], va[4], va[5], va[6], dataset=dataset)
     val_ds = RealSpeclibDataset(*va) if va[0] else None
 
     def loader(ds, shuffle):

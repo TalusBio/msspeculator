@@ -62,6 +62,8 @@ class PretrainCfg:
     teacher: str = "alphapeptdeep"  # fake | alphapeptdeep
     nce: float = 30.0
     instrument: str = "Lumos"
+    analyzer: str = "FTMS"  # teacher acquisition -> ctx_acq factors (peptdeep = Orbitrap/HCD)
+    fragmentation: str = "HCD"
     device: str = "cpu"  # teacher device (peptdeep); student device is RunConfig.device
     epochs: int = 25  # cached mode
     batch_size: int = 256
@@ -222,6 +224,8 @@ def _run_pretrain(cfg: RunConfig, model, encoder, acc, log):
             min_delta=p.min_delta,
             check_every=p.check_every,
             warmup_steps=p.warmup_steps,
+            analyzer=p.analyzer,
+            fragmentation=p.fragmentation,
         )
         log(
             f"[pretrain] stream: {[m.name for m in spc.mixes]}, NCE {spc.nce_range}, "
@@ -256,6 +260,8 @@ def _run_pretrain(cfg: RunConfig, model, encoder, acc, log):
         accelerator=acc,
         context_encoder=encoder,
         distill_fallback_ce=p.nce,
+        distill_analyzer=p.analyzer,
+        distill_fragmentation=p.fragmentation,
         enable_progress_bar=False,
     )
 

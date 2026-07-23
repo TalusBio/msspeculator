@@ -55,6 +55,8 @@ class StreamPretrainCfg:
     passes: int = 1  # full enumerations of the digests
     lr: float = 1e-3
     seed: int = 0
+    analyzer: str = "FTMS"  # teacher's acquisition (peptdeep Orbitrap/HCD) -> ctx_acq factors
+    fragmentation: str = "HCD"
     # Early stop when the student saturates the teacher (MS2 loss plateaus) — avoids burning
     # teacher throughput on a converged model. patience=0 disables it. Patience counts
     # consecutive `check_every`-step windows with < min_delta mean-loss improvement.
@@ -220,7 +222,13 @@ def fit_stream_pretrain(
     L.seed_everything(cfg.seed, verbose=False)
     log("[stream] estimating rt/ccs norm from a teacher sample...")
     model.set_norm(*_estimate_norm(teacher, cfg))
-    module = DistillModule(model, lr=cfg.lr, context_encoder=encoder)
+    module = DistillModule(
+        model,
+        lr=cfg.lr,
+        context_encoder=encoder,
+        distill_analyzer=cfg.analyzer,
+        distill_fragmentation=cfg.fragmentation,
+    )
     loader = DataLoader(_StreamingDataset(teacher, cfg), batch_size=None)
     callbacks: list[L.Callback] = [_StepLogger(log_every, log)]
     if cfg.patience > 0:

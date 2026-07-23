@@ -32,16 +32,21 @@ class DistillModule(L.LightningModule):
         loss_weights: tuple[float, float, float] = (1.0, 1.0, 1.0),
         context_encoder=None,
         distill_fallback_ce: float = 30.0,
+        distill_analyzer: str = "FTMS",
+        distill_fragmentation: str = "HCD",
     ) -> None:
         super().__init__()
         self.model = model  # shared backbone; NOT a hyperparameter
-        # Optional: give the teacher its OWN acquisition context (from its NCE) via the shared
-        # ContextEncoder, so the teacher's collision energy is a factor rather than baked into
-        # the base. None -> context-free warmup (base = teacher condition).
+        # Optional: give the teacher its OWN acquisition context (its NCE + analyzer + frag) via
+        # the shared ContextEncoder, so the teacher's acquisition is a factor rather than baked
+        # into the base. None -> context-free warmup (base = teacher condition).
         self.context_encoder = context_encoder
         # Fallback CE for the encoder when a batch carries no per-example CE (cached distill,
         # whose labels are all at one teacher NCE). Streaming supplies per-batch CE instead.
         self.distill_fallback_ce = distill_fallback_ce
+        # The teacher's fixed analyzer/fragmentation (peptdeep defaults: Orbitrap FTMS + HCD).
+        self.distill_analyzer = distill_analyzer
+        self.distill_fragmentation = distill_fragmentation
         self.lr = lr
         self.weight_decay = weight_decay
         self.loss_weights = loss_weights
@@ -52,17 +57,27 @@ class DistillModule(L.LightningModule):
     def _predict(self, batch: LabeledBatch) -> dict:
         if self.context_encoder is None:
             return self.model(batch.inputs)
+        b = batch.inputs.tokens.shape[0]
         # Per-batch CE (streaming NCE sweep) if provided, else the constant fallback.
         ce = (
             batch.ce
             if batch.ce is not None
-            else torch.full(
-                (batch.inputs.tokens.shape[0],), self.distill_fallback_ce, device=self.device
-            )
+            else torch.full((b,), self.distill_fallback_ce, device=self.device)
         )
-        return self.model.forward_context(
-            batch.inputs, ctx_acq=self.context_encoder(ce), ctx_lc=None
+        ana = torch.full(
+            (b,),
+            self.context_encoder.analyzer_id(self.distill_analyzer),
+            device=self.device,
+            dtype=torch.long,
         )
+        frag = torch.full(
+            (b,),
+            self.context_encoder.frag_id(self.distill_fragmentation),
+            device=self.device,
+            dtype=torch.long,
+        )
+        ctx_acq = self.context_encoder(ce, ana, frag)
+        return self.model.forward_context(batch.inputs, ctx_acq=ctx_acq, ctx_lc=None)
 
     def training_step(self, batch: LabeledBatch, batch_idx: int) -> torch.Tensor:
         out = self._predict(batch)
@@ -154,14 +169,16 @@ def fit_distill(
     accelerator: str = "auto",
     context_encoder=None,
     distill_fallback_ce: float = 30.0,
+    distill_analyzer: str = "FTMS",
+    distill_fragmentation: str = "HCD",
     **trainer_kwargs,
 ) -> DistillModule:
     """Set target norm from ``train_ds`` and run a Lightning distillation fit in place.
 
     Returns the LightningModule (its ``.model`` is the trained shared backbone). Pass a
-    ``context_encoder`` to give the teacher its own CE-driven acquisition context (shared with
-    a later real-speclib sink); ``distill_fallback_ce`` is the fixed NCE those cached labels
-    were generated at, fed to the encoder for every batch.
+    ``context_encoder`` to give the teacher its own acquisition context (shared with a later
+    real-speclib sink); ``distill_fallback_ce``/``distill_analyzer``/``distill_fragmentation``
+    are the teacher's fixed acquisition, fed to the encoder for every batch.
     """
     L.seed_everything(seed, verbose=False)
     model.set_norm(*train_ds.rt_ccs_stats())
@@ -172,6 +189,8 @@ def fit_distill(
         loss_weights=loss_weights,
         context_encoder=context_encoder,
         distill_fallback_ce=distill_fallback_ce,
+        distill_analyzer=distill_analyzer,
+        distill_fragmentation=distill_fragmentation,
     )
     dm = DistillDataModule(train_ds, val_ds, batch_size=batch_size, seed=seed)
     trainer = L.Trainer(
