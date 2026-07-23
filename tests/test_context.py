@@ -126,6 +126,25 @@ def test_checkpoint_without_context_is_none(tmp_path):
     assert load_context(path) is None
 
 
+def test_context_aware_predict_changes_ms2_not_rt():
+    """TorchRunner with a ctx_acq shifts MS2 (and CCS) but leaves RT (context-free) alone."""
+    from pepdistill.predict.fast import TorchRunner, _bucket_arrays
+
+    m = build_student("small").eval()
+    m.set_norm(30.0, 10.0, 400.0, 50.0)
+    enc = ContextEncoder(context_dim=m.cfg.context_dim)
+    torch.nn.init.normal_(enc.proj.weight, std=0.5)  # nonzero -> real ctx_acq
+    ctx_vec = enc(torch.tensor([25.0])).detach().numpy()[0]
+
+    precs = [Precursor(Peptide("PEPTIDEK"), 2, "t"), Precursor(Peptide("ACDEFGHK"), 2, "t")]
+    tok, md, ch, _ = _bucket_arrays(precs, 8)
+    ms2_base, rt_base, _ = TorchRunner(m).run(tok, md, ch)
+    ms2_ctx, rt_ctx, _ = TorchRunner(m, ctx_acq=ctx_vec).run(tok, md, ch)
+
+    assert not (ms2_base == ms2_ctx).all()  # CE context moved MS2
+    assert (rt_base == rt_ctx).all()  # RT is context-free (no ctx_lc)
+
+
 def test_context_encoder_learns_ce_dependence():
     """After a step of training, ctx_acq depends on collision energy and moves MS2."""
     torch.manual_seed(0)

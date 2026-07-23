@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Optional
 
 import pandas as pd
+import torch
 import typer
 
 from .data.config import DigestConfig, SplitConfig
@@ -65,6 +66,9 @@ def predict(
     batch_size: int = 4096,
     device: str = typer.Option("auto", help="auto | cpu | mps | cuda (torch runtime)"),
     runtime: str = typer.Option("torch", help="torch | onnx"),
+    nce: Optional[float] = typer.Option(
+        None, help="Collision energy for context-aware MS2 (needs a ckpt with a saved encoder)."
+    ),
     enzyme: str = "trypsin",
     missed: int = 2,
     min_len: int = 7,
@@ -94,9 +98,22 @@ def predict(
     if runtime == "onnx" or str(model).endswith(".onnx"):
         from .predict.onnx import OnnxRunner  # optional [onnx] extra — import only if used
 
+        if nce is not None:
+            raise typer.BadParameter("--nce (context-aware MS2) needs the torch runtime")
         runner = OnnxRunner(model)
     else:
-        runner = TorchRunner(load_checkpoint(model), resolve_device(device))
+        ctx_acq = None
+        if nce is not None:
+            from .models.registry import load_context
+
+            ctx = load_context(model)
+            if ctx is None or ctx.encoder is None:
+                raise typer.BadParameter(f"{model} has no saved CE encoder; can't use --nce")
+            ctx_acq = ctx.encoder(torch.tensor([float(nce)])).detach().numpy()[0]
+            typer.echo(
+                f"context-aware: NCE={nce} -> ctx_acq |v|={float((ctx_acq**2).sum() ** 0.5):.3f}"
+            )
+        runner = TorchRunner(load_checkpoint(model), resolve_device(device), ctx_acq=ctx_acq)
 
     t0 = time.perf_counter()
     lib = predict_library_fast(runner, precs, batch_size=batch_size, min_intensity=min_intensity)

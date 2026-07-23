@@ -49,20 +49,27 @@ class ModelRunner:
 
 
 class TorchRunner(ModelRunner):
-    def __init__(self, model, device: str = "cpu") -> None:
+    def __init__(self, model, device: str = "cpu", ctx_acq: np.ndarray | None = None) -> None:
         import torch
 
         self._torch = torch
         self.model = model.to(device).eval()
         self.device = device
+        # Optional acquisition context (MS2/CCS), e.g. encoder(nce). One vector broadcast to
+        # every precursor in a bucket. RT stays context-free (iRT is run-independent).
+        self.ctx_acq = None if ctx_acq is None else torch.as_tensor(ctx_acq, dtype=torch.float32)
 
     def run(self, tokens, mod_delta, charge):
         torch = self._torch
+        ctx = None
+        if self.ctx_acq is not None:
+            ctx = self.ctx_acq.reshape(1, -1).expand(len(tokens), -1).to(self.device)
         with torch.no_grad():
             ms2, rt, ccs = self.model.forward_dense(
                 torch.from_numpy(tokens).to(self.device),
                 torch.from_numpy(mod_delta).to(self.device),
                 torch.from_numpy(charge).to(self.device),
+                ctx_acq=ctx,
             )
         return ms2.cpu().numpy(), rt.cpu().numpy(), ccs.cpu().numpy()
 
