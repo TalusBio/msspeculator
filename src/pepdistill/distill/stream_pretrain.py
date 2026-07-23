@@ -55,6 +55,13 @@ class StreamPretrainCfg:
     passes: int = 1  # full enumerations of the digests
     lr: float = 1e-3
     seed: int = 0
+    # Early stop when the student saturates the teacher (MS2 loss plateaus) — avoids burning
+    # teacher throughput on a converged model. patience=0 disables it. Patience counts
+    # consecutive `check_every`-step windows with < min_delta mean-loss improvement.
+    patience: int = 0
+    min_delta: float = 1e-3
+    check_every: int = 200
+    warmup_steps: int = 500
 
 
 def default_mixes(fasta: str) -> list[StreamMix]:
@@ -162,6 +169,43 @@ class _StepLogger(L.Callback):
             )
 
 
+class _LossPlateauStop(L.Callback):
+    """Stop the (single-epoch) stream when the mean MS2 loss over a window stops improving."""
+
+    def __init__(self, patience, min_delta, check_every, warmup, emit) -> None:
+        self.patience, self.min_delta, self.check_every, self.warmup, self._emit = (
+            patience,
+            min_delta,
+            check_every,
+            warmup,
+            emit,
+        )
+        self.best = float("inf")
+        self.bad = 0
+        self.buf: list[float] = []
+
+    def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
+        m = trainer.callback_metrics.get("train_ms2")
+        if m is None:
+            return
+        self.buf.append(float(m))
+        step = batch_idx + 1
+        if step < self.warmup or step % self.check_every:
+            return
+        cur = sum(self.buf) / len(self.buf)
+        self.buf.clear()
+        if self.best - cur > self.min_delta:
+            self.best, self.bad = cur, 0
+        else:
+            self.bad += 1
+            if self.bad >= self.patience:
+                self._emit(
+                    f"[early-stop] ms2 plateaued at {cur:.3f} (best {self.best:.3f}) "
+                    f"-> stopping at step {step}"
+                )
+                trainer.should_stop = True
+
+
 def fit_stream_pretrain(
     model: StudentModel,
     encoder: ContextEncoder,
@@ -178,6 +222,11 @@ def fit_stream_pretrain(
     model.set_norm(*_estimate_norm(teacher, cfg))
     module = DistillModule(model, lr=cfg.lr, context_encoder=encoder)
     loader = DataLoader(_StreamingDataset(teacher, cfg), batch_size=None)
+    callbacks: list[L.Callback] = [_StepLogger(log_every, log)]
+    if cfg.patience > 0:
+        callbacks.append(
+            _LossPlateauStop(cfg.patience, cfg.min_delta, cfg.check_every, cfg.warmup_steps, log)
+        )
     trainer = L.Trainer(
         max_epochs=1,  # the dataset is finite (passes enumerations); it drives the length
         accelerator=accelerator,
@@ -185,7 +234,7 @@ def fit_stream_pretrain(
         logger=False,
         enable_progress_bar=False,
         limit_val_batches=0,
-        callbacks=[_StepLogger(log_every, log)],
+        callbacks=callbacks,
     )
     trainer.fit(module, loader)
     return module

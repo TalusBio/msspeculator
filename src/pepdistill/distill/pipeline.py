@@ -72,6 +72,11 @@ class PretrainCfg:
     nce_max: float = 40.0
     passes: int = 1
     chunk_size: int = 10000
+    # Early stop the stream when MS2 loss plateaus (student saturated the teacher). 0 = off.
+    patience: int = 0
+    min_delta: float = 1e-3
+    check_every: int = 200
+    warmup_steps: int = 500
 
 
 @dataclass
@@ -213,6 +218,10 @@ def _run_pretrain(cfg: RunConfig, model, encoder, acc, log):
             passes=p.passes,
             lr=p.lr,
             seed=cfg.seed,
+            patience=p.patience,
+            min_delta=p.min_delta,
+            check_every=p.check_every,
+            warmup_steps=p.warmup_steps,
         )
         log(
             f"[pretrain] stream: {[m.name for m in spc.mixes]}, NCE {spc.nce_range}, "

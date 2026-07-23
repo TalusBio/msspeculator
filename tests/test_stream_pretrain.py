@@ -60,3 +60,30 @@ def test_stream_pretrain_runs_and_moves_encoder(tmp_path):
     assert not torch.allclose(before, enc.proj.weight.detach())
     # rt/ccs norm was estimated from a teacher sample (not left at the 0/1 identity).
     assert float(model.rt_mean) != 0.0 or float(model.rt_std) != 1.0
+
+
+def test_stream_pretrain_early_stops_on_plateau(tmp_path):
+    """With many passes but a patience, a saturated loss halts before exhausting the stream."""
+    fasta = tmp_path / "t.fasta"
+    fasta.write_text(FASTA)
+    model = build_student("tiny")
+    enc = ContextEncoder(context_dim=model.cfg.context_dim)
+    mixes = [StreamMix("tryptic", "tryptic", str(fasta), DigestConfig())]
+    cfg = StreamPretrainCfg(
+        mixes=mixes,
+        chunk_size=32,
+        batch_size=8,
+        passes=1000,  # would run ~forever without stop
+        patience=2,
+        min_delta=1e9,
+        check_every=3,
+        warmup_steps=3,
+        seed=0,
+    )
+    lines: list[str] = []
+    module = fit_stream_pretrain(
+        model, enc, FakeTeacher(), cfg, accelerator="cpu", log=lines.append
+    )
+    # min_delta huge -> every window "fails to improve" -> stops after patience windows.
+    assert any("early-stop" in ln for ln in lines)
+    assert module.trainer.global_step < 1000  # nowhere near 1000 passes
