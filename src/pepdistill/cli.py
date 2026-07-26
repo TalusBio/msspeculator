@@ -127,9 +127,8 @@ def predict(
                     f"{model} has no saved acquisition encoder; can't condition MS2"
                 )
             enc = ctx.encoder
-            ana = torch.tensor([enc.analyzer_id(analyzer)])
-            frag = torch.tensor([enc.frag_id(fragmentation)])
-            ctx_acq = enc(torch.tensor([float(nce)]), ana, frag).detach().numpy()[0]
+            ce = torch.tensor([float(nce)])
+            ctx_acq = enc.encode_batch(ce, analyzer, fragmentation, "cpu").detach().numpy()[0]
             typer.echo(
                 f"context-aware: {analyzer or '-'}::{fragmentation or '-'}::{nce} "
                 f"-> ctx_acq |v|={float((ctx_acq**2).sum() ** 0.5):.3f}"

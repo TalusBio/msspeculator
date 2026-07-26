@@ -110,7 +110,8 @@ device = "cpu"
 [pretrain]
 enabled = true
 teacher = "fake"
-epochs = 3
+passes = 1
+chunk_size = 64
 [[pretrain.sources]]
 fasta = "{fasta}"
 

@@ -232,6 +232,19 @@ class ProspectSource:
             raise ValueError(f"no parquet members read from {zip_filename}")
         return pd.concat(frames, ignore_index=True)
 
+    def iter_annotation_shards(self, zip_filename: str, indices):
+        """Yield ``(name, DataFrame)`` for each shard index from a SINGLE open of the remote zip.
+
+        Same range-streaming as :meth:`read_annotation_streaming`, but opens the zip once for
+        all requested shards (instead of reopening — re-reading the central directory — per
+        shard), while still yielding one shard at a time so the caller can decode and release
+        each before the next. Bounded memory over a multi-shard pull.
+        """
+        with self._open_remote_zip(zip_filename) as z:
+            names = [n for n in z.namelist() if n.endswith(".parquet")]
+            for i in indices:
+                yield names[i], pd.read_parquet(io.BytesIO(z.read(names[i])))
+
     def _open_remote_zip(self, zip_filename: str) -> zipfile.ZipFile:
         """Open the record's zip as a seekable remote file (range requests), or local if cached."""
         local = self.cache._local_path(f"zenodo/{self.record_id}/{zip_filename}")

@@ -119,3 +119,17 @@ class ContextEncoder(nn.Module):
         if frag_id is not None:
             out = out + self.frag_emb(frag_id)
         return out
+
+    def encode_batch(
+        self, ce: torch.Tensor, analyzer: str, fragmentation: str, device
+    ) -> torch.Tensor:
+        """(B,) CE + one fixed analyzer/fragmentation NAME -> (B, context_dim) ``ctx_acq``.
+
+        The single entry point for a batch sharing one acquisition instrument/fragmentation
+        (the teacher's fixed setting, or a CLI ``--ms-context``): owns the name->id lookup and
+        the broadcast so callers never re-roll it. Per-example CE still varies via ``ce``.
+        """
+        n = ce.shape[0]
+        ana = torch.full((n,), self.analyzer_id(analyzer), device=device, dtype=torch.long)
+        frag = torch.full((n,), self.frag_id(fragmentation), device=device, dtype=torch.long)
+        return self(ce, ana, frag)

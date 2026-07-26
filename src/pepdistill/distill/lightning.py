@@ -14,11 +14,25 @@ from __future__ import annotations
 
 import lightning as L
 import torch
-from torch.utils.data import DataLoader, IterableDataset
+from torch.utils.data import DataLoader
 
 from ..models.student import StudentModel
-from .dataset import DistillDataset, LabeledBatch
+from .dataset import BatchIterable, DistillDataset, LabeledBatch
 from .losses import distill_loss, spectral_angle
+
+
+def build_trainer(epochs: int, accelerator: str, grad_clip: float, **trainer_kwargs) -> L.Trainer:
+    """Shared Trainer defaults for the distill/real-speclib regimes: checkpointing and logging
+    off unless the caller overrides via ``trainer_kwargs``; everything else passes straight
+    through. One place so the two regimes' Trainer setup can't drift apart."""
+    return L.Trainer(
+        max_epochs=epochs,
+        accelerator=accelerator,
+        gradient_clip_val=grad_clip,
+        enable_checkpointing=trainer_kwargs.pop("enable_checkpointing", False),
+        logger=trainer_kwargs.pop("logger", False),
+        **trainer_kwargs,
+    )
 
 
 class DistillModule(L.LightningModule):
@@ -31,19 +45,16 @@ class DistillModule(L.LightningModule):
         weight_decay: float = 1e-5,
         loss_weights: tuple[float, float, float] = (1.0, 1.0, 1.0),
         context_encoder=None,
-        distill_fallback_ce: float = 30.0,
         distill_analyzer: str = "FTMS",
         distill_fragmentation: str = "HCD",
     ) -> None:
         super().__init__()
         self.model = model  # shared backbone; NOT a hyperparameter
-        # Optional: give the teacher its OWN acquisition context (its NCE + analyzer + frag) via
-        # the shared ContextEncoder, so the teacher's acquisition is a factor rather than baked
-        # into the base. None -> context-free warmup (base = teacher condition).
+        # Optional: condition on acquisition via the shared ContextEncoder, so the teacher's
+        # settings are factors rather than baked into the base. None -> context-free warmup.
+        # When set, each batch MUST carry its own collision energy (batch.ce) — CE is never
+        # fabricated; supply it from the data (streaming sweeps it per-peptide).
         self.context_encoder = context_encoder
-        # Fallback CE for the encoder when a batch carries no per-example CE (cached distill,
-        # whose labels are all at one teacher NCE). Streaming supplies per-batch CE instead.
-        self.distill_fallback_ce = distill_fallback_ce
         # The teacher's fixed analyzer/fragmentation (peptdeep defaults: Orbitrap FTMS + HCD).
         self.distill_analyzer = distill_analyzer
         self.distill_fragmentation = distill_fragmentation
@@ -57,32 +68,20 @@ class DistillModule(L.LightningModule):
     def _predict(self, batch: LabeledBatch) -> dict:
         if self.context_encoder is None:
             return self.model(batch.inputs)
-        b = batch.inputs.tokens.shape[0]
-        # Per-batch CE (streaming NCE sweep) if provided, else the constant fallback.
-        ce = (
-            batch.ce
-            if batch.ce is not None
-            else torch.full((b,), self.distill_fallback_ce, device=self.device)
+        if batch.ce is None:
+            raise ValueError(
+                "context_encoder is set but the batch carries no collision energy; the dataset "
+                "must provide per-example CE (it is never fabricated)"
+            )
+        ctx_acq = self.context_encoder.encode_batch(
+            batch.ce, self.distill_analyzer, self.distill_fragmentation, self.device
         )
-        ana = torch.full(
-            (b,),
-            self.context_encoder.analyzer_id(self.distill_analyzer),
-            device=self.device,
-            dtype=torch.long,
-        )
-        frag = torch.full(
-            (b,),
-            self.context_encoder.frag_id(self.distill_fragmentation),
-            device=self.device,
-            dtype=torch.long,
-        )
-        ctx_acq = self.context_encoder(ce, ana, frag)
         return self.model.forward_context(batch.inputs, ctx_acq=ctx_acq, ctx_lc=None)
 
     def training_step(self, batch: LabeledBatch, batch_idx: int) -> torch.Tensor:
         out = self._predict(batch)
-        rt_t = (batch.rt_target - self.model.rt_mean) / self.model.rt_std
-        ccs_t = (batch.ccs_target - self.model.ccs_mean) / self.model.ccs_std
+        rt_t = self.model.standardize_rt(batch.rt_target)
+        ccs_t = self.model.standardize_ccs(batch.ccs_target)
         loss, parts = distill_loss(
             out, batch.ms2_target, rt_t, ccs_t, batch.inputs.frag_mask, self.loss_weights
         )
@@ -102,29 +101,8 @@ class DistillModule(L.LightningModule):
             batch_size=bs,
         )
 
-    def configure_optimizers(self):
+    def configure_optimizers(self) -> torch.optim.Optimizer:
         return torch.optim.AdamW(self.parameters(), lr=self.lr, weight_decay=self.weight_decay)
-
-
-class _BatchIterable(IterableDataset):
-    """Yields ready-made :class:`LabeledBatch` objects from a DistillDataset.
-
-    Batching/collation already live in ``DistillDataset.batches``; we wrap them as an
-    IterableDataset so a ``DataLoader(batch_size=None)`` passes each LabeledBatch straight
-    through. ``__iter__`` runs per epoch, so training reshuffles each epoch.
-    """
-
-    def __init__(self, ds: DistillDataset, batch_size: int, shuffle: bool, seed: int) -> None:
-        self.ds = ds
-        self.batch_size = batch_size
-        self.shuffle = shuffle
-        self.seed = seed
-        self._epoch = 0
-
-    def __iter__(self):
-        gen = torch.Generator().manual_seed(self.seed + self._epoch)
-        self._epoch += 1
-        yield from self.ds.batches(self.batch_size, self.shuffle, gen)
 
 
 class DistillDataModule(L.LightningDataModule):
@@ -143,14 +121,14 @@ class DistillDataModule(L.LightningDataModule):
 
     def train_dataloader(self) -> DataLoader:
         return DataLoader(
-            _BatchIterable(self.train_ds, self.batch_size, True, self.seed), batch_size=None
+            BatchIterable(self.train_ds, self.batch_size, True, self.seed), batch_size=None
         )
 
     def val_dataloader(self) -> DataLoader | None:
         if self.val_ds is None or not len(self.val_ds):
             return None
         return DataLoader(
-            _BatchIterable(self.val_ds, self.batch_size, False, self.seed), batch_size=None
+            BatchIterable(self.val_ds, self.batch_size, False, self.seed), batch_size=None
         )
 
 
@@ -168,7 +146,6 @@ def fit_distill(
     seed: int = 0,
     accelerator: str = "auto",
     context_encoder=None,
-    distill_fallback_ce: float = 30.0,
     distill_analyzer: str = "FTMS",
     distill_fragmentation: str = "HCD",
     **trainer_kwargs,
@@ -176,9 +153,9 @@ def fit_distill(
     """Set target norm from ``train_ds`` and run a Lightning distillation fit in place.
 
     Returns the LightningModule (its ``.model`` is the trained shared backbone). Pass a
-    ``context_encoder`` to give the teacher its own acquisition context (shared with a later
-    real-speclib sink); ``distill_fallback_ce``/``distill_analyzer``/``distill_fragmentation``
-    are the teacher's fixed acquisition, fed to the encoder for every batch.
+    ``context_encoder`` to condition on acquisition (shared with a later real-speclib sink);
+    the dataset must then carry per-example collision energy (``LabeledBatch.ce``).
+    ``distill_analyzer``/``distill_fragmentation`` are the teacher's fixed acquisition factors.
     """
     L.seed_everything(seed, verbose=False)
     model.set_norm(*train_ds.rt_ccs_stats())
@@ -188,18 +165,10 @@ def fit_distill(
         weight_decay=weight_decay,
         loss_weights=loss_weights,
         context_encoder=context_encoder,
-        distill_fallback_ce=distill_fallback_ce,
         distill_analyzer=distill_analyzer,
         distill_fragmentation=distill_fragmentation,
     )
     dm = DistillDataModule(train_ds, val_ds, batch_size=batch_size, seed=seed)
-    trainer = L.Trainer(
-        max_epochs=epochs,
-        accelerator=accelerator,
-        gradient_clip_val=grad_clip,
-        enable_checkpointing=trainer_kwargs.pop("enable_checkpointing", False),
-        logger=trainer_kwargs.pop("logger", False),
-        **trainer_kwargs,
-    )
+    trainer = build_trainer(epochs, accelerator, grad_clip, **trainer_kwargs)
     trainer.fit(module, datamodule=dm)
     return module

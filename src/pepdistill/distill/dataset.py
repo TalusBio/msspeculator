@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass
 
 import numpy as np
 import torch
+from torch.utils.data import IterableDataset
 
 from ..data.encode import Batch, collate, frag_offset
 from ..data.precursors import Precursor
@@ -28,6 +30,16 @@ class LabeledBatch:
             self.ccs_target.to(device),
             None if self.ce is None else self.ce.to(device),
         )
+
+
+def iter_batch_indices(
+    n: int, batch_size: int, shuffle: bool, generator: torch.Generator
+) -> Iterator[list[int]]:
+    """Yield index chunks over ``range(n)`` — shuffled (via ``generator``) or in order. The one
+    place the epoch's example order and chunking live, shared by every in-memory dataset."""
+    order = torch.randperm(n, generator=generator).tolist() if shuffle else list(range(n))
+    for start in range(0, n, batch_size):
+        yield order[start : start + batch_size]
 
 
 class DistillDataset:
@@ -53,13 +65,30 @@ class DistillDataset:
         )
 
     def batches(self, batch_size: int, shuffle: bool, generator: torch.Generator):
-        n = len(self)
-        order = torch.randperm(n, generator=generator).tolist() if shuffle else list(range(n))
-        for start in range(0, n, batch_size):
-            idx = order[start : start + batch_size]
+        for idx in iter_batch_indices(len(self), batch_size, shuffle, generator):
             yield collate_with_labels(
                 [self.precursors[i] for i in idx], [self.labels[i] for i in idx]
             )
+
+
+class BatchIterable(IterableDataset):
+    """Wrap any object exposing ``batches(batch_size, shuffle, generator)`` as an
+    ``IterableDataset``. ``__iter__`` runs once per epoch and re-seeds the generator, so a
+    ``DataLoader(batch_size=None)`` reshuffles each epoch while passing each ready-made batch
+    straight through — batching/collation already happened inside ``batches``.
+    """
+
+    def __init__(self, source, batch_size: int, shuffle: bool, seed: int) -> None:
+        self.source = source
+        self.batch_size = batch_size
+        self.shuffle = shuffle
+        self.seed = seed
+        self._epoch = 0
+
+    def __iter__(self):
+        gen = torch.Generator().manual_seed(self.seed + self._epoch)
+        self._epoch += 1
+        yield from self.source.batches(self.batch_size, self.shuffle, gen)
 
 
 def collate_with_labels(precursors: list[Precursor], labels: list[PrecursorLabels]) -> LabeledBatch:

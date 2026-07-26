@@ -30,7 +30,7 @@ from ..data.sources import (
 )
 from ..models.context import ContextEncoder
 from ..models.student import StudentModel
-from .dataset import collate_with_labels
+from .dataset import DistillDataset, collate_with_labels
 from .lightning import DistillModule
 
 
@@ -150,10 +150,8 @@ def _estimate_norm(teacher, cfg: StreamPretrainCfg, n: int = 512):
             break
     precs = ds._build_precs(items, rng)
     teacher.nce = float(np.mean(cfg.nce_range))
-    labels = [lab for lab in teacher.predict(precs) if lab is not None]
-    rt = np.array([lab.rt for lab in labels], dtype=np.float64)
-    ccs = np.array([lab.ccs for lab in labels], dtype=np.float64)
-    return float(rt.mean()), float(rt.std() or 1.0), float(ccs.mean()), float(ccs.std() or 1.0)
+    pairs = [(p, lab) for p, lab in zip(precs, teacher.predict(precs)) if lab is not None]
+    return DistillDataset([p for p, _ in pairs], [lab for _, lab in pairs]).rt_ccs_stats()
 
 
 class _StepLogger(L.Callback):
@@ -175,13 +173,11 @@ class _LossPlateauStop(L.Callback):
     """Stop the (single-epoch) stream when the mean MS2 loss over a window stops improving."""
 
     def __init__(self, patience, min_delta, check_every, warmup, emit) -> None:
-        self.patience, self.min_delta, self.check_every, self.warmup, self._emit = (
-            patience,
-            min_delta,
-            check_every,
-            warmup,
-            emit,
-        )
+        self.patience = patience
+        self.min_delta = min_delta
+        self.check_every = check_every
+        self.warmup = warmup
+        self._emit = emit
         self.best = float("inf")
         self.bad = 0
         self.buf: list[float] = []

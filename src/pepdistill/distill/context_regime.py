@@ -16,18 +16,44 @@ new run), freeze the model and step only the book.
 
 from __future__ import annotations
 
+import math
+from collections.abc import Iterator
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, TypeVar
 
 import lightning as L
 import numpy as np
 import torch
-from torch.utils.data import DataLoader, IterableDataset
+from torch.utils.data import DataLoader
 
-from ..eval import best_examples
+from ..data.precursors import Precursor
+from ..eval import best_per_key, ms2_intensity, precursor_key
 from ..models.context import ContextBook, ContextEncoder
 from ..models.student import StudentModel
-from .dataset import LabeledBatch, collate_with_labels
-from .losses import ms2_cosine_loss
+from ..teacher.base import PrecursorLabels
+from .dataset import BatchIterable, LabeledBatch, collate_with_labels, iter_batch_indices
+from .lightning import build_trainer
+from .losses import ms2_cosine_loss, spectral_angle
+
+if TYPE_CHECKING:
+    from ..data.prospect import RealLabels
+
+_T = TypeVar("_T")
+
+
+@dataclass(slots=True)
+class RealExample:
+    """One real observation: the peptide, its teacher/experimental labels, and the acquisition
+    factors that condition the two context vectors. ``ce``/``analyzer_id``/``frag_id`` drive
+    ``ctx_acq`` (MS2/CCS); ``source_id`` drives ``ctx_lc`` (RT / chromatography)."""
+
+    precursor: Precursor
+    label: PrecursorLabels  # ms2 + rt(=iRT) + ccs(NaN for real DDA)
+    raw_rt: float  # run-dependent retention time (the ctx_lc target)
+    source_id: int  # raw_file index -> ctx_lc
+    ce: float  # collision energy (absolute NCE) -> ctx_acq
+    analyzer_id: int  # mass-analyzer factor -> ctx_acq
+    frag_id: int  # fragmentation factor -> ctx_acq
 
 
 @dataclass(slots=True)
@@ -39,51 +65,57 @@ class RealBatch:
     analyzer_id: torch.Tensor  # (B,) long, mass-analyzer factor -> ctx_acq
     frag_id: torch.Tensor  # (B,) long, fragmentation factor -> ctx_acq
 
-    def to(self, device) -> "RealBatch":
+    def to(self, device: torch.device | str) -> RealBatch:
         return RealBatch(
-            self.base.to(device),
-            self.raw_rt.to(device),
-            self.source_id.to(device),
-            self.ce.to(device),
-            self.analyzer_id.to(device),
-            self.frag_id.to(device),
+            base=self.base.to(device),
+            raw_rt=self.raw_rt.to(device),
+            source_id=self.source_id.to(device),
+            ce=self.ce.to(device),
+            analyzer_id=self.analyzer_id.to(device),
+            frag_id=self.frag_id.to(device),
         )
 
 
 class RealSpeclibDataset:
-    """Real examples + per-example raw RT, source id (raw_file), CE, and analyzer/frag factors."""
+    """A list of :class:`RealExample`; columns the collate/context path needs are cached as
+    arrays so :meth:`batches` only pays per-batch indexing, not per-batch attribute walks."""
 
-    def __init__(self, precursors, labels, raw_rt, source_id, ce, analyzer_id, frag_id) -> None:
-        self.precursors = precursors
-        self.labels = labels
-        self.raw_rt = np.asarray(raw_rt, dtype=np.float32)
-        self.source_id = np.asarray(source_id, dtype=np.int64)
-        self.ce = np.asarray(ce, dtype=np.float32)
-        self.analyzer_id = np.asarray(analyzer_id, dtype=np.int64)
-        self.frag_id = np.asarray(frag_id, dtype=np.int64)
+    def __init__(self, examples: list[RealExample]) -> None:
+        self.examples = examples
+        self.raw_rt = np.array([e.raw_rt for e in examples], dtype=np.float32)
+        self.source_id = np.array([e.source_id for e in examples], dtype=np.int64)
+        self.ce = np.array([e.ce for e in examples], dtype=np.float32)
+        self.analyzer_id = np.array([e.analyzer_id for e in examples], dtype=np.int64)
+        self.frag_id = np.array([e.frag_id for e in examples], dtype=np.int64)
 
     def __len__(self) -> int:
-        return len(self.precursors)
+        return len(self.examples)
 
-    def batches(self, batch_size: int, shuffle: bool, generator: torch.Generator):
-        n = len(self)
-        order = torch.randperm(n, generator=generator).tolist() if shuffle else list(range(n))
-        for start in range(0, n, batch_size):
-            idx = order[start : start + batch_size]
+    def batches(
+        self, batch_size: int, shuffle: bool, generator: torch.Generator
+    ) -> Iterator[RealBatch]:
+        for idx in iter_batch_indices(len(self), batch_size, shuffle, generator):
             base = collate_with_labels(
-                [self.precursors[i] for i in idx], [self.labels[i] for i in idx]
+                [self.examples[i].precursor for i in idx],
+                [self.examples[i].label for i in idx],
             )
             yield RealBatch(
-                base,
-                torch.from_numpy(self.raw_rt[idx]),
-                torch.from_numpy(self.source_id[idx]),
-                torch.from_numpy(self.ce[idx]),
-                torch.from_numpy(self.analyzer_id[idx]),
-                torch.from_numpy(self.frag_id[idx]),
+                base=base,
+                raw_rt=torch.from_numpy(self.raw_rt[idx]),
+                source_id=torch.from_numpy(self.source_id[idx]),
+                ce=torch.from_numpy(self.ce[idx]),
+                analyzer_id=torch.from_numpy(self.analyzer_id[idx]),
+                frag_id=torch.from_numpy(self.frag_id[idx]),
             )
 
 
 class RealSpeclibModule(L.LightningModule):
+    """Fit the shared backbone on real spectra while learning per-run context: MS2 on
+    ``ctx_acq`` (from acquisition factors), the dual RT targets on the base head (iRT) and the
+    ``ctx_lc``-conditioned head (raw RT). Set ``freeze_backbone`` to adapt to a new run by
+    training only the context (ctx_lc book + ctx_acq encoder) — the PEFT path from the module
+    docstring — leaving the backbone fixed."""
+
     def __init__(
         self,
         model: StudentModel,
@@ -92,161 +124,173 @@ class RealSpeclibModule(L.LightningModule):
         lr: float = 1e-3,
         weight_decay: float = 1e-5,
         loss_weights: tuple[float, float, float] = (1.0, 1.0, 1.0),  # ms2, irt, raw_rt
+        source_index: dict[str, int] | None = None,
+        freeze_backbone: bool = False,
     ) -> None:
         super().__init__()
         self.model = model
         self.book = book  # ctx_lc (chromatography, per raw_file)
-        self.encoder = encoder  # ctx_acq (MS2/CCS, from collision energy)
+        self.encoder = encoder  # ctx_acq (MS2/CCS, from acquisition factors)
         self.lr = lr
         self.weight_decay = weight_decay
         self.loss_weights = loss_weights
+        # raw_file -> ctx_lc row; needed to address a trained run's context at inference.
+        self.source_index = source_index
+        if freeze_backbone:  # PEFT: fit only the context vectors, backbone stays fixed.
+            self.model.requires_grad_(False)
 
-    def transfer_batch_to_device(self, batch: RealBatch, device, dataloader_idx: int):
+    def transfer_batch_to_device(
+        self, batch: RealBatch, device: torch.device | str, dataloader_idx: int
+    ) -> RealBatch:
         return batch.to(device)
 
-    def _forward(self, rb: RealBatch):
+    def _forward(self, rb: RealBatch) -> dict[str, torch.Tensor]:
         ctx_acq = self.encoder(rb.ce, rb.analyzer_id, rb.frag_id)  # MS2/CCS acquisition factors
         ctx_lc = self.book.lc(rb.source_id)  # RT context per run (chromatography)
         return self.model.forward_context(rb.base.inputs, ctx_acq=ctx_acq, ctx_lc=ctx_lc)
-
-    def _std(self, x: torch.Tensor) -> torch.Tensor:
-        return (x - self.model.rt_mean) / self.model.rt_std
 
     def training_step(self, rb: RealBatch, batch_idx: int) -> torch.Tensor:
         w_ms2, w_irt, w_raw = self.loss_weights
         out = self._forward(rb)
         lb = rb.base
         loss_ms2 = ms2_cosine_loss(out["ms2"], lb.ms2_target, lb.inputs.frag_mask)
-        loss_irt = torch.nn.functional.mse_loss(out["rt_base"], self._std(lb.rt_target))
-        loss_raw = torch.nn.functional.mse_loss(out["rt"], self._std(rb.raw_rt))
-        total = w_ms2 * loss_ms2 + w_irt * loss_irt + w_raw * loss_raw
+        # rt_base (context-free) -> iRT; the ctx_lc-conditioned rt -> this run's raw RT.
+        loss_irt = torch.nn.functional.mse_loss(
+            out["rt_base"], self.model.standardize_rt(lb.rt_target)
+        )
+        loss_raw = torch.nn.functional.mse_loss(out["rt"], self.model.standardize_rt(rb.raw_rt))
         self.log_dict(
             {"train_ms2": loss_ms2, "train_irt": loss_irt, "train_rawrt": loss_raw},
             prog_bar=False,
+            batch_size=rb.raw_rt.shape[0],
         )
-        return total
+        return w_ms2 * loss_ms2 + w_irt * loss_irt + w_raw * loss_raw
 
-    @torch.no_grad()
     def validation_step(self, rb: RealBatch, batch_idx: int) -> None:
-        from .losses import spectral_angle
-
         out = self._forward(rb)
         lb = rb.base
-        rt_mean, rt_std = self.model.rt_mean, self.model.rt_std
         sa = spectral_angle(out["ms2"], lb.ms2_target, lb.inputs.frag_mask).mean()
-        irt_mae = ((out["rt_base"] * rt_std + rt_mean) - lb.rt_target).abs().mean()
-        rawrt_mae = ((out["rt"] * rt_std + rt_mean) - rb.raw_rt).abs().mean()
+        irt_mae = (self.model.unstandardize_rt(out["rt_base"]) - lb.rt_target).abs().mean()
+        rawrt_mae = (self.model.unstandardize_rt(out["rt"]) - rb.raw_rt).abs().mean()
         self.log_dict(
             {"val_spectral_angle": sa, "val_irt_mae": irt_mae, "val_rawrt_mae": rawrt_mae},
             prog_bar=True,
             batch_size=rb.raw_rt.shape[0],
         )
 
-    def configure_optimizers(self):
-        params = (
-            list(self.model.parameters())
-            + list(self.book.parameters())
-            + list(self.encoder.parameters())
-        )
+    def configure_optimizers(self) -> torch.optim.Optimizer:
+        # Optimize every trainable parameter across the registered submodules (model + book +
+        # encoder); with freeze_backbone the model's are already requires_grad=False, so this
+        # narrows to the context vectors without listing them by hand.
+        params = [p for p in self.parameters() if p.requires_grad]
         return torch.optim.AdamW(params, lr=self.lr, weight_decay=self.weight_decay)
 
 
-class _RealIterable(IterableDataset):
-    def __init__(self, ds: RealSpeclibDataset, batch_size: int, shuffle: bool, seed: int) -> None:
-        self.ds, self.batch_size, self.shuffle, self.seed, self._epoch = (
-            ds,
-            batch_size,
-            shuffle,
-            seed,
-            0,
-        )
+def _build_examples(
+    real: RealLabels, encoder: ContextEncoder, source_index: dict[str, int]
+) -> list[RealExample]:
+    """Turn ``RealLabels`` (parallel columns) into per-example records, resolving each run's
+    acquisition factors ONCE (few runs, many examples) and reusing them across its examples."""
 
-    def __iter__(self):
-        gen = torch.Generator().manual_seed(self.seed + self._epoch)
-        self._epoch += 1
-        yield from self.ds.batches(self.batch_size, self.shuffle, gen)
+    def acq(name: str, key: str, default: _T) -> _T:
+        return real.acquisition.get(name, {}).get(key, default)
+
+    def ce(name: str) -> float:  # missing CE -> encoder center (its zero-point) -> base ctx_acq
+        v = float(acq(name, "collision_energy", encoder.ce_center))
+        return encoder.ce_center if math.isnan(v) else v
+
+    ce_of = {n: ce(n) for n in source_index}
+    ana_of = {n: encoder.analyzer_id(acq(n, "mass_analyzer", "")) for n in source_index}
+    frag_of = {n: encoder.frag_id(acq(n, "fragmentation", "")) for n in source_index}
+    return [
+        RealExample(
+            precursor=p,
+            label=lab,
+            raw_rt=float(rrt),
+            source_id=source_index[s],
+            ce=ce_of[s],
+            analyzer_id=ana_of[s],
+            frag_id=frag_of[s],
+        )
+        for p, lab, rrt, s in zip(real.precursors, real.labels, real.raw_rt, real.source_ids)
+    ]
+
+
+def _dedupe_val(examples: list[RealExample], dataset_name: str | None) -> list[RealExample]:
+    """Keep one best-quality example per (dataset, modified_sequence, charge) so abundant
+    peptides don't dominate the val metric. Train keeps every observation."""
+    keys = [precursor_key(e.precursor, dataset_name) for e in examples]
+    quality = [ms2_intensity(e.label) for e in examples]
+    return [examples[i] for i in best_per_key(quality, keys)]
 
 
 def fit_realspeclib(
     model: StudentModel,
-    real,  # prospect.RealLabels
+    real: RealLabels,
     *,
     context_dim: int | None = None,
     epochs: int = 20,
     batch_size: int = 128,
     lr: float = 1e-3,
+    weight_decay: float = 1e-5,
     loss_weights: tuple[float, float, float] = (1.0, 1.0, 1.0),
+    grad_clip: float = 1.0,
     seed: int = 0,
     accelerator: str = "auto",
-    dataset: str | None = None,
+    dataset_name: str | None = None,
     encoder: ContextEncoder | None = None,
     book: ContextBook | None = None,
+    freeze_backbone: bool = False,
     **trainer_kwargs,
 ) -> RealSpeclibModule:
-    """Train on real spectra with per-run context. ``ctx_acq`` comes from collision energy via
-    a :class:`ContextEncoder`; ``ctx_lc`` from a per-raw_file :class:`ContextBook`. Pass an
-    existing ``encoder``/``book`` to continue a curriculum (share them with the warmup). Returns
-    the module (``.model``/``.encoder``/``.book`` trained; ``.source_index`` maps raw_file)."""
+    """Train on real spectra with per-run context. ``ctx_acq`` comes from the acquisition
+    factors via a :class:`ContextEncoder`; ``ctx_lc`` from a per-raw_file :class:`ContextBook`.
+    Pass an existing ``encoder``/``book`` to continue a curriculum (share them with the warmup);
+    their ``context_dim`` must match the model's. Set ``freeze_backbone`` to adapt to a run by
+    fitting only the context (PEFT). ``dataset_name`` is the val dedup key's dataset label.
+    Returns the module (``.model``/``.encoder``/``.book`` trained; ``.source_index`` maps
+    raw_file -> ctx_lc row)."""
     L.seed_everything(seed, verbose=False)
     cdim = context_dim or model.cfg.context_dim
-    book = book or ContextBook(
-        n_acq=len(set(real.source_ids)), n_lc=len(set(real.source_ids)), context_dim=cdim
-    )
+    if cdim <= 0:
+        raise ValueError(f"context_dim must be positive to condition on acquisition, got {cdim}")
+    if encoder is not None and encoder.proj.out_features != cdim:
+        raise ValueError(f"encoder context_dim {encoder.proj.out_features} != model's {cdim}")
+    if book is not None and book.lc.embedding_dim != cdim:
+        raise ValueError(f"book context_dim {book.lc.embedding_dim} != model's {cdim}")
     encoder = encoder or ContextEncoder(context_dim=cdim)
 
-    # Map raw_file -> integer source id (ctx_lc). Per-run acquisition factors drive ctx_acq:
-    # collision energy (continuous) + mass analyzer + fragmentation (categorical, via encoder vocab).
-    uniq = sorted(set(real.source_ids))
-    src_index = {name: i for i, name in enumerate(uniq)}
-    src_ids = [src_index[s] for s in real.source_ids]
+    # raw_file -> ctx_lc row. ctx_acq comes from the encoder, so the book only holds ctx_lc
+    # (one row per run); its acq table is unused here -> size it to 1, not per-raw_file.
+    source_index = {name: i for i, name in enumerate(sorted(set(real.source_ids)))}
+    book = book or ContextBook(n_acq=1, n_lc=len(source_index), context_dim=cdim)
 
-    def _ce(name):  # missing CE -> neutral 30 NCE (encoder center) -> base ctx_acq
-        v = real.acquisition.get(name, {}).get("collision_energy", 30.0)
-        return 30.0 if v != v else float(v)  # NaN-guard
+    examples = _build_examples(real, encoder, source_index)
+    train = [e for e in examples if e.precursor.split != "val"]
+    val = [e for e in examples if e.precursor.split == "val"]
 
-    ce_of = {n: _ce(n) for n in uniq}
-    ana_of = {
-        n: encoder.analyzer_id(real.acquisition.get(n, {}).get("mass_analyzer", "")) for n in uniq
-    }
-    frag_of = {
-        n: encoder.frag_id(real.acquisition.get(n, {}).get("fragmentation", "")) for n in uniq
-    }
-    ces = [ce_of[s] for s in real.source_ids]
-    anas = [ana_of[s] for s in real.source_ids]
-    frags = [frag_of[s] for s in real.source_ids]
-
-    # Split by the precursor's assigned split; normalize on TRAIN iRT.
-    tr, va = ([], [], [], [], [], [], []), ([], [], [], [], [], [], [])
-    for row in zip(real.precursors, real.labels, real.raw_rt, src_ids, ces, anas, frags):
-        bucket = va if row[0].split == "val" else tr
-        for col, val in zip(bucket, row):
-            col.append(val)
-    irt_train = np.array([lab.rt for lab in tr[1]], dtype=np.float64)
+    # Normalize the RT heads on TRAIN iRT (CCS is unsupervised here -> identity norm).
+    irt_train = np.array([e.label.rt for e in train], dtype=np.float64)
     model.set_norm(float(irt_train.mean()), float(irt_train.std() or 1.0), 0.0, 1.0)
 
-    module = RealSpeclibModule(model, book, encoder, lr=lr, loss_weights=loss_weights)
-    train_ds = RealSpeclibDataset(*tr)
-    # Report val on one best-quality example per (dataset, modified_sequence, charge) so
-    # abundant peptides don't dominate the metric; train keeps every observation.
-    if va[0]:
-        va = best_examples(va[0], va[1], va[2], va[3], va[4], va[5], va[6], dataset=dataset)
-    val_ds = RealSpeclibDataset(*va) if va[0] else None
-
-    def loader(ds, shuffle):
-        return (
-            None
-            if ds is None
-            else DataLoader(_RealIterable(ds, batch_size, shuffle, seed), batch_size=None)
-        )
-
-    trainer = L.Trainer(
-        max_epochs=epochs,
-        accelerator=accelerator,
-        gradient_clip_val=trainer_kwargs.pop("gradient_clip_val", 1.0),
-        enable_checkpointing=trainer_kwargs.pop("enable_checkpointing", False),
-        logger=trainer_kwargs.pop("logger", False),
-        **trainer_kwargs,
+    module = RealSpeclibModule(
+        model,
+        book,
+        encoder,
+        lr=lr,
+        weight_decay=weight_decay,
+        loss_weights=loss_weights,
+        source_index=source_index,
+        freeze_backbone=freeze_backbone,
     )
+    train_ds = RealSpeclibDataset(train)
+    val_ds = RealSpeclibDataset(_dedupe_val(val, dataset_name)) if val else None
+
+    def loader(ds: RealSpeclibDataset | None, shuffle: bool) -> DataLoader | None:
+        if ds is None:
+            return None
+        return DataLoader(BatchIterable(ds, batch_size, shuffle, seed), batch_size=None)
+
+    trainer = build_trainer(epochs, accelerator, grad_clip, **trainer_kwargs)
     trainer.fit(module, loader(train_ds, True), loader(val_ds, False))
-    module.source_index = src_index
     return module

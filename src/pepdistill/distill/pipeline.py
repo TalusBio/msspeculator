@@ -6,9 +6,10 @@ built once and threaded through, so the teacher warmup and the real-data sink sh
 axis (the teacher's NCE is a factor, not a baked base).
 
 Stages:
-- **pretrain** — teacher-distill warmup. ``mode="cached"`` labels a UNION of (FASTA x digest)
-  sources once; ``mode="stream"`` samples those sources online (unspecific enzyme ->
-  immunopeptidome windows, else tryptic) with the teacher labeling live over an NCE sweep.
+- **pretrain** — online teacher-distill warmup. Enumerate the ``sources`` live (unspecific
+  enzyme -> immunopeptidome windows, else tryptic) with the teacher labeling over an NCE sweep,
+  so collision energy comes from the data (never fabricated) and the encoder learns a real CE
+  axis. (A fixed-energy corpus would just be a dataset that carries its own CE — no special mode.)
 - **train** — real-speclib sink on a PROSPECT pool (streamed shard-by-shard), per-run ctx_lc
   and CE-driven ctx_acq.
 - **export** — ONNX. **bench** — library-generation throughput on a FASTA digest.
@@ -34,15 +35,13 @@ from ..models.registry import build_student, load_checkpoint, save_checkpoint
 from ..predict.fast import TorchRunner, predict_library_fast
 from ..teacher import get_teacher
 from .context_regime import fit_realspeclib
-from .dataset import DistillDataset
-from .lightning import fit_distill
 from .stream_pretrain import StreamMix, StreamPretrainCfg, fit_stream_pretrain
 
 
 @dataclass
 class DigestSource:
-    """One FASTA + its digestion settings. Drives both pretrain modes: cached enumerates +
-    labels it; stream samples it (enzyme 'unspecific' -> immunopeptidome windows)."""
+    """One FASTA + its digestion settings for the pretrain stream (enzyme 'unspecific' ->
+    immunopeptidome windows, else tryptic)."""
 
     fasta: str
     enzyme: str = "trypsin"
@@ -56,20 +55,18 @@ class DigestSource:
 
 @dataclass
 class PretrainCfg:
+    # Online teacher-distill warmup: enumerate `sources` live over `passes` full digests, sweep
+    # NCE per-peptide in [nce_min, nce_max], label in `chunk_size` teacher calls. Collision
+    # energy always comes from the sweep (never fabricated), so a real CE axis is learned.
     enabled: bool = True
-    mode: str = "cached"  # "cached" (label a FASTA-digest union once) | "stream" (online NCE sweep)
     sources: list[DigestSource] = field(default_factory=list)
     teacher: str = "alphapeptdeep"  # fake | alphapeptdeep
-    nce: float = 30.0
     instrument: str = "Lumos"
     analyzer: str = "FTMS"  # teacher acquisition -> ctx_acq factors (peptdeep = Orbitrap/HCD)
     fragmentation: str = "HCD"
     device: str = "cpu"  # teacher device (peptdeep); student device is RunConfig.device
-    epochs: int = 25  # cached mode
     batch_size: int = 256
     lr: float = 1e-3
-    # stream mode: enumerate `sources` live over `passes` full digests, NCE swept per-peptide
-    # in [nce_min, nce_max], labeled in `chunk_size` teacher calls. `epochs` ignored.
     nce_min: float = 20.0
     nce_max: float = 40.0
     passes: int = 1
@@ -161,16 +158,6 @@ def _digest_cfg(s: DigestSource) -> DigestConfig:
     )
 
 
-def _pretrain_precursors(cfg: PretrainCfg):
-    """Digest every (fasta x config) source into one precursor list (cached mode)."""
-    scfg = SplitConfig()
-    out = []
-    for s in cfg.sources:
-        dcfg = _digest_cfg(s)
-        out += enumerate_precursors(digest_fasta(s.fasta, dcfg), dcfg, scfg)
-    return out
-
-
 def _stream_mixes(cfg: PretrainCfg) -> list[StreamMix]:
     """Map each pretrain source to a StreamMix (enzyme 'unspecific' -> immunopeptidome windows)."""
     return [
@@ -190,11 +177,8 @@ def _load_real(cfg: TrainCfg, log):
     """Stream the chosen shards of a PROSPECT pool and decode them into one RealLabels."""
     src = ProspectSource(cfg.record)
     meta = src.read(cfg.meta)
-    names = src.annotation_shards(cfg.zip)
-    chosen = [names[i] for i in cfg.shards]
     parts = []
-    for name in chosen:
-        ann = src.read_annotation_streaming(cfg.zip, members=[name])
+    for name, ann in src.iter_annotation_shards(cfg.zip, cfg.shards):
         parts.append(src.to_labels(meta, ann))
         log(f"  decoded {name.split('/')[-1]}: {len(parts[-1].precursors)} examples")
         del ann
@@ -203,67 +187,29 @@ def _load_real(cfg: TrainCfg, log):
 
 def _run_pretrain(cfg: RunConfig, model, encoder, acc, log):
     p = cfg.pretrain
-    kw = (
-        {}
-        if p.teacher == "fake"
-        else {"device": p.device, "nce": p.nce, "instrument": p.instrument}
-    )
+    assert encoder is not None  # guaranteed by need_encoder in run_pipeline
+    kw = {} if p.teacher == "fake" else {"device": p.device, "instrument": p.instrument}
     teacher = get_teacher(p.teacher, **kw)
-
-    if p.mode == "stream":
-        assert encoder is not None  # guaranteed by need_encoder in run_pipeline
-        spc = StreamPretrainCfg(
-            mixes=_stream_mixes(p),
-            nce_range=(p.nce_min, p.nce_max),
-            chunk_size=p.chunk_size,
-            batch_size=p.batch_size,
-            passes=p.passes,
-            lr=p.lr,
-            seed=cfg.seed,
-            patience=p.patience,
-            min_delta=p.min_delta,
-            check_every=p.check_every,
-            warmup_steps=p.warmup_steps,
-            analyzer=p.analyzer,
-            fragmentation=p.fragmentation,
-        )
-        log(
-            f"[pretrain] stream: {[m.name for m in spc.mixes]}, NCE {spc.nce_range}, "
-            f"{spc.passes} pass(es), chunk {spc.chunk_size}"
-        )
-        return fit_stream_pretrain(model, encoder, teacher, spc, accelerator=acc, log=log)
-
-    precs = _pretrain_precursors(p)
-    t = time.perf_counter()
-    labels = teacher.predict(precs)
-    pairs = [(pr, lab) for pr, lab in zip(precs, labels) if lab is not None]
-    tr = DistillDataset(
-        [pr for pr, _ in pairs if pr.split != "val"],
-        [lab for pr, lab in pairs if pr.split != "val"],
-    )
-    va_pairs = [(pr, lab) for pr, lab in pairs if pr.split == "val"]
-    va = (
-        DistillDataset([pr for pr, _ in va_pairs], [lab for _, lab in va_pairs])
-        if va_pairs
-        else None
+    spc = StreamPretrainCfg(
+        mixes=_stream_mixes(p),
+        nce_range=(p.nce_min, p.nce_max),
+        chunk_size=p.chunk_size,
+        batch_size=p.batch_size,
+        passes=p.passes,
+        lr=p.lr,
+        seed=cfg.seed,
+        patience=p.patience,
+        min_delta=p.min_delta,
+        check_every=p.check_every,
+        warmup_steps=p.warmup_steps,
+        analyzer=p.analyzer,
+        fragmentation=p.fragmentation,
     )
     log(
-        f"[pretrain] {len(pairs)} teacher labels in {time.perf_counter() - t:.0f}s; fitting {p.epochs} ep"
+        f"[pretrain] stream: {[m.name for m in spc.mixes]}, NCE {spc.nce_range}, "
+        f"{spc.passes} pass(es), chunk {spc.chunk_size}"
     )
-    return fit_distill(
-        model,
-        tr,
-        va,
-        epochs=p.epochs,
-        batch_size=p.batch_size,
-        lr=p.lr,
-        accelerator=acc,
-        context_encoder=encoder,
-        distill_fallback_ce=p.nce,
-        distill_analyzer=p.analyzer,
-        distill_fragmentation=p.fragmentation,
-        enable_progress_bar=False,
-    )
+    return fit_stream_pretrain(model, encoder, teacher, spc, accelerator=acc, log=log)
 
 
 def run_pipeline(cfg: RunConfig, log=print) -> dict:
@@ -276,7 +222,7 @@ def run_pipeline(cfg: RunConfig, log=print) -> dict:
     model = load_checkpoint(cfg.model_in) if cfg.model_in else build_student(cfg.preset)
     # CE ContextEncoder is needed by the real-data sink (ce_context) AND by streaming pretrain
     # (the NCE sweep); build once and share it across both.
-    need_encoder = cfg.train.ce_context or (cfg.pretrain.enabled and cfg.pretrain.mode == "stream")
+    need_encoder = cfg.train.ce_context or cfg.pretrain.enabled
     encoder = ContextEncoder(context_dim=model.cfg.context_dim) if need_encoder else None
     log(f"student '{cfg.preset}' — {model.num_parameters():,} params (device={cfg.device})")
 
@@ -293,7 +239,7 @@ def run_pipeline(cfg: RunConfig, log=print) -> dict:
         module = fit_realspeclib(
             model,
             real,
-            dataset=cfg.train.dataset,
+            dataset_name=cfg.train.dataset,
             epochs=cfg.train.epochs,
             batch_size=cfg.train.batch_size,
             lr=cfg.train.lr,

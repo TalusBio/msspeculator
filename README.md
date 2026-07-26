@@ -41,10 +41,12 @@ out = "work"
 preset = "small"
 device = "auto"
 
-[pretrain]                    # teacher-distill warmup (a union of FASTA x digest configs)
+[pretrain]                    # online teacher-distill warmup (digests streamed + labeled live)
 enabled = true
 teacher = "alphapeptdeep"     # or "fake"
-epochs  = 25
+nce_min = 20                  # collision-energy sweep (per-peptide) -> learned CE axis
+nce_max = 40
+passes  = 1                   # full enumerations of the digests
 [[pretrain.sources]]
 fasta = "proteome.fasta"
 

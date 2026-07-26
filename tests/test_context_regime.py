@@ -11,8 +11,9 @@ from pepdistill.data.config import SplitConfig
 from pepdistill.data.encode import collate
 from pepdistill.data.precursors import Precursor
 from pepdistill.data.split import assign_split
-from pepdistill.distill.context_regime import fit_realspeclib
+from pepdistill.distill.context_regime import RealSpeclibModule, fit_realspeclib
 from pepdistill.data.prospect import RealLabels
+from pepdistill.models.context import ContextBook, ContextEncoder
 from pepdistill.models.registry import build_student
 from pepdistill.teacher.base import PrecursorLabels
 from pepdistill.teacher.fake import FakeTeacher
@@ -54,9 +55,28 @@ def test_context_regime_learns_run_offset():
     with torch.no_grad():
         for src in (0, 1):
             ids = torch.tensor([src])
-            ctx_acq, ctx_lc = module.book(ids, ids)
-            out = m.forward_context(b, ctx_acq=ctx_acq, ctx_lc=ctx_lc)
+            ctx_lc = module.book.lc(ids)  # ctx_acq is encoder-driven; base MS2 here (ctx_acq=None)
+            out = m.forward_context(b, ctx_acq=None, ctx_lc=ctx_lc)
             preds.append(float(out["rt"][0] * m.rt_std + m.rt_mean))
             # base (context-free) RT must be finite (tracks iRT), independent of source.
             assert torch.isfinite(out["rt_base"]).all()
     assert 10.0 < (preds[1] - preds[0]) < 40.0, preds  # ~OFFSET=25, learned by ctx_lc alone
+
+
+def test_freeze_backbone_trains_only_context():
+    model = build_student("small")
+    cdim = model.cfg.context_dim
+    book = ContextBook(n_acq=1, n_lc=2, context_dim=cdim)
+    encoder = ContextEncoder(context_dim=cdim)
+    module = RealSpeclibModule(model, book, encoder, freeze_backbone=True)
+
+    # Backbone is frozen; the context modules stay trainable.
+    assert not any(p.requires_grad for p in model.parameters())
+    assert all(p.requires_grad for p in book.parameters())
+    assert all(p.requires_grad for p in encoder.parameters())
+
+    # The optimizer therefore only sees the context vectors, not the backbone.
+    opt = module.configure_optimizers()
+    optimized = {id(p) for group in opt.param_groups for p in group["params"]}
+    context_params = {id(p) for p in (*book.parameters(), *encoder.parameters())}
+    assert optimized == context_params

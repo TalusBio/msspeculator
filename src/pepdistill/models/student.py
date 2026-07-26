@@ -163,11 +163,23 @@ class StudentModel(nn.Module):
         self.ccs_mean.fill_(ccs_mean)
         self.ccs_std.fill_(max(ccs_std, 1e-6))
 
+    def standardize_rt(self, rt: torch.Tensor) -> torch.Tensor:
+        """Native-unit RT -> the head's standardized space (the target for training)."""
+        return (rt - self.rt_mean) / self.rt_std
+
+    def standardize_ccs(self, ccs: torch.Tensor) -> torch.Tensor:
+        """Native-unit CCS -> the head's standardized space."""
+        return (ccs - self.ccs_mean) / self.ccs_std
+
+    def unstandardize_rt(self, rt: torch.Tensor) -> torch.Tensor:
+        """Standardized RT prediction -> native units (inverse of :meth:`standardize_rt`)."""
+        return rt * self.rt_std + self.rt_mean
+
     def denormalize(self, out: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
         """Map standardized rt/ccs predictions back to native units (in-place-safe copy)."""
         return {
             "ms2": out["ms2"],
-            "rt": out["rt"] * self.rt_std + self.rt_mean,
+            "rt": self.unstandardize_rt(out["rt"]),
             "ccs": out["ccs"] * self.ccs_std + self.ccs_mean,
         }
 

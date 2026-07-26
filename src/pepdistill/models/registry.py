@@ -7,7 +7,7 @@ from pathlib import Path
 
 import torch
 
-from .context import ContextBook, ContextEncoder
+from .context import DEFAULT_ANALYZERS, DEFAULT_FRAGMENTATIONS, ContextBook, ContextEncoder
 from .student import StudentConfig, StudentModel
 
 # Size presets. Swap freely; benchmark decides the winner.
@@ -107,8 +107,8 @@ def load_context(path: str | Path, map_location: str = "cpu") -> ContextBundle |
             e["context_dim"],
             e["ce_center"],
             e["ce_scale"],
-            analyzers=tuple(e.get("analyzers", ContextEncoder().analyzers)),
-            fragmentations=tuple(e.get("fragmentations", ContextEncoder().fragmentations)),
+            analyzers=tuple(e.get("analyzers", DEFAULT_ANALYZERS)),
+            fragmentations=tuple(e.get("fragmentations", DEFAULT_FRAGMENTATIONS)),
         )
         encoder.load_state_dict(e["state_dict"])
         encoder.eval()
