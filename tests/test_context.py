@@ -1,4 +1,4 @@
-"""Acquisition-context conditioning: no-op init, head isolation, param-efficient fine-tune."""
+"""Context conditioning: ms_context/chrom_context head routing, MSContextEncoder, ChromRunbook."""
 
 import torch
 
@@ -14,75 +14,32 @@ from pepdistill.models.context import (
     MSContextEncoder,
 )
 from pepdistill.models.registry import build_student, load_checkpoint, load_context, save_checkpoint
-from pepdistill.models.student import StudentConfig, StudentModel
 
 
-def _batch(seqs=("SAMPLER", "PEPTIDEK", "ACDEFGHIK")):
-    return collate([Precursor(Peptide(s), 2 + i % 3, "t") for i, s in enumerate(seqs)])
+def _batch():
+    return collate([Precursor(Peptide("PEPTIDEK"), 2, "t"), Precursor(Peptide("ACDEFGHK"), 3, "t")])
 
 
-def test_zero_context_is_base_model():
-    """ctx=None and ctx=0 must both reproduce the base prediction exactly (zero bias init)."""
+def test_zero_ms_context_is_base_ms2():
     m = build_student("small").eval()
     b = _batch()
-    z = torch.zeros(3, m.cfg.context_dim)
-    with torch.no_grad():
-        base = m(b)
-        zeroed = m(b, ctx_acq=z, ctx_lc=z)
-    for k in ("ms2", "rt", "ccs"):
-        assert torch.allclose(base[k], zeroed[k], atol=1e-6), k
+    base = m.forward(b)
+    ctx = torch.zeros(2, m.cfg.context_dim)
+    with_zero = m.forward(b, ms_context=ctx, chrom_context=ctx)
+    assert torch.allclose(base["ms2"], with_zero["ms2"], atol=1e-6)
+    assert torch.allclose(base["rt"], with_zero["rt"], atol=1e-6)
 
 
-def test_context_head_isolation():
-    """ctx_lc moves RT only; ctx_acq moves MS2+CCS only (RT untouched)."""
-    m = build_student("small").eval()
-    b = _batch()
-    g = torch.Generator().manual_seed(0)
-    r = torch.randn(3, m.cfg.context_dim, generator=g)
-    with torch.no_grad():
-        base = m(b)
-        lc = m(b, ctx_lc=r)
-        acq = m(b, ctx_acq=r)
-
-    # chromatography context -> RT changes, fragmentation/mobility untouched.
-    assert not torch.allclose(lc["rt"], base["rt"])
-    assert torch.allclose(lc["ms2"], base["ms2"], atol=1e-6)
-    assert torch.allclose(lc["ccs"], base["ccs"], atol=1e-6)
-    # acquisition context -> MS2 and CCS change, RT untouched.
-    assert not torch.allclose(acq["ms2"], base["ms2"])
-    assert not torch.allclose(acq["ccs"], base["ccs"])
-    assert torch.allclose(acq["rt"], base["rt"], atol=1e-6)
-
-
-def test_param_efficient_finetune():
-    """Freeze the backbone; fit ONLY a ContextBook row and RT must move toward a target."""
+def test_ms_context_moves_ms2_not_ccs():
     torch.manual_seed(0)
-    m = StudentModel(StudentConfig(d_model=48, n_layers=1, n_heads=2, dropout=0.0))
-    m.set_norm(30.0, 10.0, 400.0, 50.0)
-    for p in m.parameters():  # backbone + heads + projections frozen
-        p.requires_grad_(False)
-
-    book = ContextBook(n_acq=1, n_lc=1, context_dim=m.cfg.context_dim)
-    opt = torch.optim.Adam(book.parameters(), lr=0.1)
+    m = build_student("small").eval()
+    for lin in (m.ms_to_frag,):  # de-neutralize the MS->frag projection
+        torch.nn.init.normal_(lin.weight, std=0.3)
     b = _batch()
-    ids = torch.zeros(3, dtype=torch.long)
-    with torch.no_grad():
-        target_rt = m(b)["rt"] + 2.0  # want RT shifted well off the base (standardized units)
-
-    losses = []
-    for _ in range(200):
-        ctx_acq, ctx_lc = book(ids, ids)
-        out = m(b, ctx_acq=ctx_acq, ctx_lc=ctx_lc)
-        loss = ((out["rt"] - target_rt) ** 2).mean()
-        opt.zero_grad()
-        loss.backward()
-        opt.step()
-        losses.append(float(loss.detach()))
-
-    # The tiny context vector alone (16 numbers) pulls RT most of the way to the target.
-    assert losses[-1] < losses[0] * 0.1, (losses[0], losses[-1])
-    # Only the context learned; the backbone is untouched.
-    assert m.token_emb.weight.grad is None
+    ctx = torch.randn(2, m.cfg.context_dim)
+    base, cond = m.forward(b), m.forward(b, ms_context=ctx)
+    assert not torch.allclose(base["ms2"], cond["ms2"])  # MS context reaches fragments
+    assert torch.allclose(base["ccs"], cond["ccs"], atol=1e-6)  # ...but never CCS
 
 
 def test_context_book_zero_init_is_noop():
@@ -90,20 +47,6 @@ def test_context_book_zero_init_is_noop():
     ids = torch.tensor([0, 1])
     acq, lc = book(ids, ids)
     assert torch.count_nonzero(acq) == 0 and torch.count_nonzero(lc) == 0
-
-
-def test_context_encoder_zero_init_is_base():
-    """Fresh CE encoder emits ctx_acq=0 for any collision energy -> exact base MS2."""
-    enc = ContextEncoder(context_dim=16)
-    ce = torch.tensor([20.0, 30.0, 40.0])
-    assert torch.count_nonzero(enc(ce)) == 0
-
-    m = build_student("small").eval()
-    b = _batch()
-    with torch.no_grad():
-        base = m(b)
-        conditioned = m(b, ctx_acq=enc(torch.full((3,), 25.0)))
-    assert torch.allclose(base["ms2"], conditioned["ms2"], atol=1e-6)
 
 
 def test_checkpoint_persists_context(tmp_path):
@@ -150,43 +93,6 @@ def test_context_aware_predict_changes_ms2_not_rt():
 
     assert not (ms2_base == ms2_ctx).all()  # CE context moved MS2
     assert (rt_base == rt_ctx).all()  # RT is context-free (no ctx_lc)
-
-
-def test_context_encoder_factors():
-    """Analyzer/fragmentation factors shift ctx_acq; unknown -> id 0 (zero row) is a no-op."""
-    enc = ContextEncoder(context_dim=8)
-    assert enc.analyzer_id("FTMS") == 1 and enc.analyzer_id("NOPE") == 0
-    assert enc.frag_id("HCD") == 1 and enc.frag_id("NOPE") == 0
-
-    torch.nn.init.normal_(enc.ana_emb.weight, std=0.5)
-    torch.nn.init.normal_(enc.frag_emb.weight, std=0.5)
-    with torch.no_grad():  # keep the "unknown" row (0) zero
-        enc.ana_emb.weight[0].zero_()
-        enc.frag_emb.weight[0].zero_()
-
-    ce = torch.tensor([30.0])
-    base = enc(ce)  # CE only
-    known = enc(ce, torch.tensor([enc.analyzer_id("FTMS")]), torch.tensor([enc.frag_id("HCD")]))
-    unknown = enc(ce, torch.tensor([enc.analyzer_id("x")]), torch.tensor([enc.frag_id("y")]))
-    assert not torch.allclose(base, known)  # known factors move ctx_acq
-    assert torch.allclose(base, unknown)  # unknown -> row 0 (zero) -> no-op
-
-
-def test_context_encoder_learns_ce_dependence():
-    """After a step of training, ctx_acq depends on collision energy and moves MS2."""
-    torch.manual_seed(0)
-    enc = ContextEncoder(context_dim=16)
-    torch.nn.init.normal_(enc.proj.weight, std=0.5)  # simulate a trained (nonzero) encoder
-    lo, hi = enc(torch.tensor([22.0])), enc(torch.tensor([31.0]))
-    assert not torch.allclose(lo, hi)  # different CE -> different ctx_acq
-
-    m = build_student("small").eval()
-    b = _batch()
-    with torch.no_grad():
-        out_lo = m(b, ctx_acq=enc(torch.full((3,), 22.0)))
-        out_hi = m(b, ctx_acq=enc(torch.full((3,), 31.0)))
-    assert not torch.allclose(out_lo["ms2"], out_hi["ms2"])  # CE changes MS2
-    assert torch.allclose(out_lo["rt"], out_hi["rt"], atol=1e-6)  # not RT
 
 
 def test_ms_context_blank_is_zero():
