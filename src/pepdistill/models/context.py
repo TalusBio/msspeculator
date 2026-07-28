@@ -200,3 +200,29 @@ class ContextEncoder(nn.Module):
         ana = torch.full((n,), self.analyzer_id(analyzer), device=device, dtype=torch.long)
         frag = torch.full((n,), self.frag_id(fragmentation), device=device, dtype=torch.long)
         return self(ce, ana, frag)
+
+
+class ChromRunbook(nn.Module):
+    """Per-dataset chromatography context for the RT head. One embedding keyed by dataset with
+    row 0 reserved as the iRT / neutral row (context-free). Zero-init, so an untrained book and
+    the neutral row both reproduce the base (iRT) RT; other rows learn each dataset's LC offset.
+    """
+
+    def __init__(self, n_datasets: int, context_dim: int = 16) -> None:
+        super().__init__()
+        self.emb = nn.Embedding(n_datasets + 1, context_dim)  # +1: index 0 = neutral (iRT)
+        nn.init.zeros_(self.emb.weight)
+
+    @property
+    def context_dim(self) -> int:
+        return self.emb.embedding_dim
+
+    @property
+    def n_datasets(self) -> int:
+        return self.emb.num_embeddings - 1
+
+    def forward(self, dataset_id: torch.Tensor) -> torch.Tensor:
+        return self.emb(dataset_id)
+
+    def neutral(self, n: int, device: torch.device | str) -> torch.Tensor:
+        return self.emb(torch.zeros(n, dtype=torch.long, device=device))

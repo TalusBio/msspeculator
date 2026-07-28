@@ -8,6 +8,7 @@ from pepdistill.data.precursors import Precursor
 from pepdistill.models.context import (
     DEFAULT_FRAGMENTATIONS,
     DEFAULT_INSTRUMENTS,
+    ChromRunbook,
     ContextBook,
     ContextEncoder,
     MSContextEncoder,
@@ -214,3 +215,19 @@ def test_ms_context_energy_is_wired_after_training_step():
     lo = enc(z, z, z, energy=torch.full((4,), 20.0))
     hi = enc(z, z, z, energy=torch.full((4,), 40.0))
     assert not torch.allclose(lo, hi)
+
+
+def test_chrom_runbook_neutral_row_zero():
+    book = ChromRunbook(n_datasets=3, context_dim=8)
+    out = book(torch.tensor([0, 0]))  # index 0 = neutral/iRT
+    assert out.shape == (2, 8)
+    assert torch.allclose(out, torch.zeros(2, 8))  # zero-init
+
+
+def test_chrom_runbook_rows_learn_independently():
+    book = ChromRunbook(n_datasets=3, context_dim=8)
+    torch.nn.init.normal_(book.emb.weight)  # simulate a trained book
+    a = book(torch.tensor([1]))
+    b = book(torch.tensor([2]))
+    assert not torch.allclose(a, b)
+    assert book.neutral(2, torch.device("cpu")).shape == (2, 8)
