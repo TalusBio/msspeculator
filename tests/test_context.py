@@ -5,7 +5,13 @@ import torch
 from pepdistill.chem import Peptide
 from pepdistill.data.encode import collate
 from pepdistill.data.precursors import Precursor
-from pepdistill.models.context import ContextBook, ContextEncoder
+from pepdistill.models.context import (
+    DEFAULT_FRAGMENTATIONS,
+    DEFAULT_INSTRUMENTS,
+    ContextBook,
+    ContextEncoder,
+    MSContextEncoder,
+)
 from pepdistill.models.registry import build_student, load_checkpoint, load_context, save_checkpoint
 from pepdistill.models.student import StudentConfig, StudentModel
 
@@ -180,3 +186,31 @@ def test_context_encoder_learns_ce_dependence():
         out_hi = m(b, ctx_acq=enc(torch.full((3,), 31.0)))
     assert not torch.allclose(out_lo["ms2"], out_hi["ms2"])  # CE changes MS2
     assert torch.allclose(out_lo["rt"], out_hi["rt"], atol=1e-6)  # not RT
+
+
+def test_ms_context_blank_is_zero():
+    enc = MSContextEncoder(context_dim=8)
+    z = torch.zeros(4, dtype=torch.long)
+    # all-unknown ids + no energy -> exact zero (the neutral "blank")
+    out = enc(z, z, z, energy=None)
+    assert out.shape == (4, 8)
+    assert torch.allclose(out, torch.zeros(4, 8))
+
+
+def test_ms_context_ids_and_unknown_fallback():
+    enc = MSContextEncoder(context_dim=8)
+    assert enc.instrument_id(DEFAULT_INSTRUMENTS[1]) == 1
+    assert enc.detector_id("nonsense") == 0  # unknown -> 0
+    assert enc.fragmentation_id(DEFAULT_FRAGMENTATIONS[1]) == 1
+
+
+def test_ms_context_energy_is_wired_after_training_step():
+    torch.manual_seed(0)
+    enc = MSContextEncoder(context_dim=8)
+    # force the (zero-init) energy path to become nonzero, then confirm energy changes output
+    for p in enc.energy_mlp.parameters():
+        torch.nn.init.normal_(p, std=0.1)
+    z = torch.zeros(4, dtype=torch.long)
+    lo = enc(z, z, z, energy=torch.full((4,), 20.0))
+    hi = enc(z, z, z, energy=torch.full((4,), 40.0))
+    assert not torch.allclose(lo, hi)
