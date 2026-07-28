@@ -51,7 +51,6 @@ class MSContextEncoder(nn.Module):
         self.inst_emb = nn.Embedding(len(self.instruments), context_dim)
         self.det_emb = nn.Embedding(len(self.detectors), context_dim)
         self.frag_emb = nn.Embedding(len(self.fragmentations), context_dim)
-        self.energy_norm = nn.BatchNorm1d(1)
         self.energy_mlp = nn.Sequential(
             nn.Linear(1, context_dim), nn.GELU(), nn.Linear(context_dim, context_dim)
         )
@@ -86,10 +85,7 @@ class MSContextEncoder(nn.Module):
             + self.frag_emb(fragmentation_id)
         )
         if energy is not None:
-            was_training = self.energy_norm.training
-            self.energy_norm.eval()
-            out = out + self.energy_mlp(self.energy_norm(energy.unsqueeze(-1)))
-            self.energy_norm.train(was_training)
+            out = out + self.energy_mlp(energy.unsqueeze(-1))  # first Linear = learned affine
         return out
 
 
