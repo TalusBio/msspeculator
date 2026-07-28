@@ -7,7 +7,13 @@ from pathlib import Path
 
 import torch
 
-from .context import DEFAULT_ANALYZERS, DEFAULT_FRAGMENTATIONS, ContextBook, ContextEncoder
+from .context import (
+    DEFAULT_DETECTORS,
+    DEFAULT_FRAGMENTATIONS,
+    DEFAULT_INSTRUMENTS,
+    ChromRunbook,
+    MSContextEncoder,
+)
 from .student import StudentConfig, StudentModel
 
 # Size presets. Swap freely; benchmark decides the winner.
@@ -37,27 +43,25 @@ class ContextBundle:
     """Trained acquisition context that rides alongside a checkpoint. Either half may be
     ``None`` (e.g. stream pretrain saves an encoder but no per-run book)."""
 
-    encoder: ContextEncoder | None = None
-    book: ContextBook | None = None
-    source_index: dict | None = None  # raw_file -> ctx_lc row (matches book.lc)
+    encoder: MSContextEncoder | None = None
+    runbook: ChromRunbook | None = None
+    dataset_index: dict | None = None  # dataset name -> ChromRunbook row (0 = iRT/neutral)
 
 
-def _encoder_blob(enc: ContextEncoder) -> dict:
+def _encoder_blob(enc: MSContextEncoder) -> dict:
     return {
-        "context_dim": enc.proj.out_features,
-        "ce_center": enc.ce_center,
-        "ce_scale": enc.ce_scale,
-        "analyzers": enc.analyzers,
+        "context_dim": enc.context_dim,
+        "instruments": enc.instruments,
+        "detectors": enc.detectors,
         "fragmentations": enc.fragmentations,
         "state_dict": enc.state_dict(),
     }
 
 
-def _book_blob(book: ContextBook) -> dict:
+def _runbook_blob(book: ChromRunbook) -> dict:
     return {
-        "n_acq": book.acq.num_embeddings,
-        "n_lc": book.lc.num_embeddings,
-        "context_dim": book.lc.embedding_dim,
+        "n_datasets": book.n_datasets,
+        "context_dim": book.context_dim,
         "state_dict": book.state_dict(),
     }
 
@@ -66,22 +70,22 @@ def save_checkpoint(
     model: StudentModel,
     path: str | Path,
     *,
-    encoder: ContextEncoder | None = None,
-    book: ContextBook | None = None,
-    source_index: dict | None = None,
+    encoder: MSContextEncoder | None = None,
+    runbook: ChromRunbook | None = None,
+    dataset_index: dict | None = None,
 ) -> None:
     """Save the student, plus any trained acquisition context so the artifact is complete.
 
-    The context projections live inside StudentModel, but the CE ``ContextEncoder`` and the
-    per-run ``ContextBook`` that *produce* the context vectors are separate modules — persist
-    them here or a loaded model can only make base (context-free) predictions.
+    The context projections live inside StudentModel, but the ``MSContextEncoder`` that
+    *produces* the context vectors are separate modules — persist them here or a loaded model
+    can only make base (context-free) predictions.
     """
     blob: dict = {"config": model.cfg.to_dict(), "state_dict": model.state_dict()}
-    if encoder is not None or book is not None or source_index is not None:
+    if encoder is not None or runbook is not None or dataset_index is not None:
         blob["context"] = {
             "encoder": _encoder_blob(encoder) if encoder is not None else None,
-            "book": _book_blob(book) if book is not None else None,
-            "source_index": source_index,
+            "runbook": _runbook_blob(runbook) if runbook is not None else None,
+            "dataset_index": dataset_index,
         }
     torch.save(blob, path)
 
@@ -100,21 +104,20 @@ def load_context(path: str | Path, map_location: str = "cpu") -> ContextBundle |
     ctx = ckpt.get("context")
     if not ctx:
         return None
-    encoder = book = None
+    encoder = runbook = None
     if ctx.get("encoder"):
         e = ctx["encoder"]
-        encoder = ContextEncoder(
+        encoder = MSContextEncoder(
             e["context_dim"],
-            e["ce_center"],
-            e["ce_scale"],
-            analyzers=tuple(e.get("analyzers", DEFAULT_ANALYZERS)),
+            instruments=tuple(e.get("instruments", DEFAULT_INSTRUMENTS)),
+            detectors=tuple(e.get("detectors", DEFAULT_DETECTORS)),
             fragmentations=tuple(e.get("fragmentations", DEFAULT_FRAGMENTATIONS)),
         )
         encoder.load_state_dict(e["state_dict"])
         encoder.eval()
-    if ctx.get("book"):
-        b = ctx["book"]
-        book = ContextBook(b["n_acq"], b["n_lc"], b["context_dim"])
-        book.load_state_dict(b["state_dict"])
-        book.eval()
-    return ContextBundle(encoder=encoder, book=book, source_index=ctx.get("source_index"))
+    if ctx.get("runbook"):
+        r = ctx["runbook"]
+        runbook = ChromRunbook(r["n_datasets"], r["context_dim"])
+        runbook.load_state_dict(r["state_dict"])
+        runbook.eval()
+    return ContextBundle(encoder=encoder, runbook=runbook, dataset_index=ctx.get("dataset_index"))

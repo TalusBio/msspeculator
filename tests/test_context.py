@@ -13,11 +13,32 @@ from pepdistill.models.context import (
     ContextEncoder,
     MSContextEncoder,
 )
-from pepdistill.models.registry import build_student, load_checkpoint, load_context, save_checkpoint
+from pepdistill.models.registry import (
+    ContextBundle,
+    build_student,
+    load_context,
+    save_checkpoint,
+)
 
 
 def _batch():
     return collate([Precursor(Peptide("PEPTIDEK"), 2, "t"), Precursor(Peptide("ACDEFGHK"), 3, "t")])
+
+
+def test_context_roundtrip(tmp_path):
+    m = build_student("small")
+    enc = MSContextEncoder(context_dim=m.cfg.context_dim)
+    book = ChromRunbook(n_datasets=2, context_dim=m.cfg.context_dim)
+    torch.nn.init.normal_(enc.frag_emb.weight)
+    torch.nn.init.normal_(book.emb.weight)
+    p = tmp_path / "m.ckpt"
+    save_checkpoint(m, p, encoder=enc, runbook=book, dataset_index={"dsA": 1, "dsB": 2})
+
+    b: ContextBundle = load_context(p)
+    assert b.dataset_index == {"dsA": 1, "dsB": 2}
+    z = torch.zeros(1, dtype=torch.long)
+    assert torch.allclose(b.encoder(z, z, z, None), enc(z, z, z, None), atol=1e-6)
+    assert torch.allclose(b.runbook(torch.tensor([1])), book(torch.tensor([1])), atol=1e-6)
 
 
 def test_zero_ms_context_is_base_ms2():
@@ -47,27 +68,6 @@ def test_context_book_zero_init_is_noop():
     ids = torch.tensor([0, 1])
     acq, lc = book(ids, ids)
     assert torch.count_nonzero(acq) == 0 and torch.count_nonzero(lc) == 0
-
-
-def test_checkpoint_persists_context(tmp_path):
-    """save/load round-trips the CE encoder + per-run book so the artifact is complete."""
-    m = build_student("small")
-    enc = ContextEncoder(context_dim=m.cfg.context_dim, ce_center=30.0, ce_scale=10.0)
-    torch.nn.init.normal_(enc.proj.weight, std=0.3)
-    book = ContextBook(2, 2, m.cfg.context_dim)
-    torch.nn.init.normal_(book.lc.weight, std=0.3)
-    src = {"runA": 0, "runB": 1}
-
-    path = tmp_path / "m.ckpt"
-    save_checkpoint(m, path, encoder=enc, book=book, source_index=src)
-    assert load_checkpoint(path).cfg.d_model == m.cfg.d_model  # model still loads
-
-    ctx = load_context(path)
-    assert ctx is not None and ctx.source_index == src
-    assert ctx.encoder.ce_center == 30.0
-    ce = torch.tensor([22.0, 31.0])
-    assert torch.allclose(ctx.encoder(ce), enc(ce))  # reproduces ctx_acq exactly
-    assert torch.allclose(ctx.book.lc.weight, book.lc.weight)
 
 
 def test_checkpoint_without_context_is_none(tmp_path):
