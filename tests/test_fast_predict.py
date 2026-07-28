@@ -45,7 +45,7 @@ def test_fast_empty_on_high_threshold():
     assert list(lib.columns)  # still has the schema
 
 
-def test_ms_context_grammar_changes_ms2(tmp_path):
+def test_torch_runner_stores_ms_context(tmp_path):
     from pepdistill.models.context import MSContextEncoder
     from pepdistill.models.registry import build_student
     import torch

@@ -383,7 +383,7 @@ class ProspectSource:
 @dataclass
 class RealLabels:
     """Decoded real examples. ``labels[i].rt`` is iRT (context-free base target); ``raw_rt``
-    is the run-dependent retention time (the ctx_lc target). ``source_ids`` (raw_file) is the
+    is the run-dependent retention time (the ``chrom_context`` target). ``source_ids`` (raw_file) is the
     context stratification key; ``acquisition`` maps raw_file -> analyzer/fragmentation/NCE,
     so per-raw_file context vectors can later be regressed onto those factors."""
 

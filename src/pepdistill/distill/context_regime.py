@@ -102,9 +102,19 @@ class RealSpeclibDataset:
                 [self.examples[i].label for i in idx],
             )
             energy_slice = self.energy[idx]
+            nan_mask = np.isnan(energy_slice)
             # Every energy NaN -> this run carries no collision energy -> omit the term
-            # entirely (None) rather than fabricate a center value.
-            energy = None if np.isnan(energy_slice).all() else torch.from_numpy(energy_slice)
+            # entirely (None) rather than fabricate a center value. A PARTIAL mix (some
+            # examples carry energy, some don't) within the same batch has no safe encoding —
+            # passing NaN into MSContextEncoder would silently poison the whole batch — so
+            # fail loud instead of guessing.
+            if nan_mask.any() and not nan_mask.all():
+                raise ValueError(
+                    "batch has partially-missing collision energy "
+                    f"({int(nan_mask.sum())}/{len(nan_mask)} NaN); energy must be all-present "
+                    "or all-absent within a batch"
+                )
+            energy = None if nan_mask.all() else torch.from_numpy(energy_slice)
             ms_factors = MSFactors(
                 instrument_id=torch.from_numpy(self.instrument_id[idx]),
                 detector_id=torch.from_numpy(self.detector_id[idx]),

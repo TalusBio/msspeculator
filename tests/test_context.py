@@ -9,7 +9,6 @@ from pepdistill.models.context import (
     DEFAULT_FRAGMENTATIONS,
     DEFAULT_INSTRUMENTS,
     ChromRunbook,
-    ContextBook,
     MSContextEncoder,
 )
 from pepdistill.models.registry import (
@@ -60,13 +59,6 @@ def test_ms_context_moves_ms2_not_ccs():
     base, cond = m.forward(b), m.forward(b, ms_context=ctx)
     assert not torch.allclose(base["ms2"], cond["ms2"])  # MS context reaches fragments
     assert torch.allclose(base["ccs"], cond["ccs"], atol=1e-6)  # ...but never CCS
-
-
-def test_context_book_zero_init_is_noop():
-    book = ContextBook(2, 2, 8)
-    ids = torch.tensor([0, 1])
-    acq, lc = book(ids, ids)
-    assert torch.count_nonzero(acq) == 0 and torch.count_nonzero(lc) == 0
 
 
 def test_checkpoint_without_context_is_none(tmp_path):

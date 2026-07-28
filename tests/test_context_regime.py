@@ -5,6 +5,7 @@ base RT head (context-free) should track iRT; the runbook's dataset row should a
 per-dataset offset.
 """
 
+import pytest
 import torch
 from pepdistill.distill.dataset import MSFactors
 
@@ -13,7 +14,12 @@ from pepdistill.data.config import SplitConfig
 from pepdistill.data.encode import collate
 from pepdistill.data.precursors import Precursor
 from pepdistill.data.split import assign_split
-from pepdistill.distill.context_regime import RealSpeclibModule, fit_realspeclib
+from pepdistill.distill.context_regime import (
+    RealExample,
+    RealSpeclibDataset,
+    RealSpeclibModule,
+    fit_realspeclib,
+)
 from pepdistill.data.prospect import RealLabels
 from pepdistill.models.context import ChromRunbook, MSContextEncoder
 from pepdistill.models.registry import build_student
@@ -50,7 +56,7 @@ def test_runbook_learns_dataset_offset():
         dataset_name="dsA",
         enable_progress_bar=False,
     )
-    assert 0 in module.dataset_index.values() or 0 not in module.dataset_index.values()
+    assert module.dataset_index == {"dsA": 1}
 
     # raw RT (dataset row) shifts vs iRT (row 0) for the same peptide
     m = module.model.eval()
@@ -91,3 +97,26 @@ def test_ms_factors_to_device_handles_none_energy():
     moved = f.to("cpu")
     assert moved.energy is None
     assert moved.instrument_id.shape == (2,)
+
+
+def test_batches_raises_on_partially_missing_energy():
+    """A batch mixing energy-present and energy-absent examples has no safe encoding — never
+    pass NaN into MSContextEncoder, fail loud instead."""
+    prec = Precursor(Peptide("PEPTIDEK"), 2, "t")
+    label = FakeTeacher().predict([prec])[0]
+    examples = [
+        RealExample(
+            precursor=prec,
+            label=label,
+            raw_rt=0.0,
+            instrument_id=0,
+            detector_id=0,
+            fragmentation_id=0,
+            energy=energy,
+            dataset_id=1,
+        )
+        for energy in (25.0, float("nan"))
+    ]
+    ds = RealSpeclibDataset(examples)
+    with pytest.raises(ValueError, match="partially-missing"):
+        next(ds.batches(batch_size=2, shuffle=False, generator=torch.Generator()))
