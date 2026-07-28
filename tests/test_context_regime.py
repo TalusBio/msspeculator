@@ -5,6 +5,7 @@ base RT head (context-free) should track iRT; ctx_lc should absorb the per-run o
 """
 
 import torch
+from pepdistill.distill.dataset import MSFactors
 
 from pepdistill.chem import Peptide
 from pepdistill.data.config import SplitConfig
@@ -80,3 +81,15 @@ def test_freeze_backbone_trains_only_context():
     optimized = {id(p) for group in opt.param_groups for p in group["params"]}
     context_params = {id(p) for p in (*book.parameters(), *encoder.parameters())}
     assert optimized == context_params
+
+
+def test_ms_factors_to_device_handles_none_energy():
+    f = MSFactors(
+        instrument_id=torch.zeros(2, dtype=torch.long),
+        detector_id=torch.zeros(2, dtype=torch.long),
+        fragmentation_id=torch.zeros(2, dtype=torch.long),
+        energy=None,
+    )
+    moved = f.to("cpu")
+    assert moved.energy is None
+    assert moved.instrument_id.shape == (2,)

@@ -15,12 +15,32 @@ from ..teacher.base import PrecursorLabels
 
 
 @dataclass(slots=True)
+class MSFactors:
+    """Per-example MS acquisition factors that feed MSContextEncoder. ``energy`` may be None
+    (collision energy omitted -> that term contributes zero; nothing is fabricated)."""
+
+    instrument_id: torch.Tensor
+    detector_id: torch.Tensor
+    fragmentation_id: torch.Tensor
+    energy: torch.Tensor | None
+
+    def to(self, device) -> "MSFactors":
+        e = None if self.energy is None else self.energy.to(device)
+        return MSFactors(
+            self.instrument_id.to(device),
+            self.detector_id.to(device),
+            self.fragmentation_id.to(device),
+            e,
+        )
+
+
+@dataclass(slots=True)
 class LabeledBatch:
     inputs: Batch
     ms2_target: torch.Tensor  # (B, L-1, n_ion)
     rt_target: torch.Tensor  # (B,)
     ccs_target: torch.Tensor  # (B,)
-    ce: torch.Tensor | None = None  # (B,) collision energy, set by streaming NCE-sweep pretrain
+    ms_factors: MSFactors | None = None
 
     def to(self, device: torch.device | str) -> "LabeledBatch":
         return LabeledBatch(
@@ -28,7 +48,7 @@ class LabeledBatch:
             self.ms2_target.to(device),
             self.rt_target.to(device),
             self.ccs_target.to(device),
-            None if self.ce is None else self.ce.to(device),
+            None if self.ms_factors is None else self.ms_factors.to(device),
         )
 
 
