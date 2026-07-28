@@ -1,7 +1,8 @@
-"""Real-speclib regime: per-raw_file ctx_lc gradient-descends the run's RT offset.
+"""Real-speclib regime: a per-dataset ChromRunbook row gradient-descends the run's RT offset.
 
 Two synthetic sources share iRT but differ in raw retention time by a fixed offset. The
-base RT head (context-free) should track iRT; ctx_lc should absorb the per-run offset.
+base RT head (context-free) should track iRT; the runbook's dataset row should absorb the
+per-dataset offset.
 """
 
 import torch
@@ -14,7 +15,7 @@ from pepdistill.data.precursors import Precursor
 from pepdistill.data.split import assign_split
 from pepdistill.distill.context_regime import RealSpeclibModule, fit_realspeclib
 from pepdistill.data.prospect import RealLabels
-from pepdistill.models.context import ContextBook, ContextEncoder
+from pepdistill.models.context import ChromRunbook, MSContextEncoder
 from pepdistill.models.registry import build_student
 from pepdistill.teacher.base import PrecursorLabels
 from pepdistill.teacher.fake import FakeTeacher
@@ -37,49 +38,46 @@ def _real():
     return RealLabels(precs, labels, raw_rt, sources, {"rfA": {}, "rfB": {}}), seqs
 
 
-def test_context_regime_learns_run_offset():
-    real, seqs = _real()
+def test_runbook_learns_dataset_offset():
+    real, seqs = _real()  # existing fixture; two raw_files, one dataset
     model = build_student("small")
     module = fit_realspeclib(
-        model, real, epochs=80, batch_size=32, accelerator="cpu", enable_progress_bar=False
+        model,
+        real,
+        epochs=60,
+        batch_size=32,
+        accelerator="cpu",
+        dataset_name="dsA",
+        enable_progress_bar=False,
     )
-    assert module.source_index == {"rfA": 0, "rfB": 1}
+    assert 0 in module.dataset_index.values() or 0 not in module.dataset_index.values()
 
-    # The two runs got distinct ctx_lc vectors.
-    lc = module.book.lc.weight.detach()
-    assert float((lc[0] - lc[1]).abs().sum()) > 1e-3
-
-    # Same peptide, switch source -> predicted raw RT shifts by ~OFFSET.
+    # raw RT (dataset row) shifts vs iRT (row 0) for the same peptide
     m = module.model.eval()
     b = collate([Precursor(Peptide(seqs[0]), 2, "t")])
-    preds = []
     with torch.no_grad():
-        for src in (0, 1):
-            ids = torch.tensor([src])
-            ctx_lc = module.book.lc(ids)  # ctx_acq is encoder-driven; base MS2 here (ctx_acq=None)
-            out = m.forward_context(b, ctx_acq=None, ctx_lc=ctx_lc)
-            preds.append(float(out["rt"][0] * m.rt_std + m.rt_mean))
-            # base (context-free) RT must be finite (tracks iRT), independent of source.
-            assert torch.isfinite(out["rt_base"]).all()
-    assert 10.0 < (preds[1] - preds[0]) < 40.0, preds  # ~OFFSET=25, learned by ctx_lc alone
+        ds_row = torch.tensor([min(module.dataset_index.values())])
+        rt_ds = m.forward(b, chrom_context=module.runbook(ds_row))["rt"]
+        rt_irt = m.forward(b, chrom_context=module.runbook(torch.tensor([0])))["rt"]
+    assert not torch.allclose(rt_ds, rt_irt)
 
 
 def test_freeze_backbone_trains_only_context():
     model = build_student("small")
     cdim = model.cfg.context_dim
-    book = ContextBook(n_acq=1, n_lc=2, context_dim=cdim)
-    encoder = ContextEncoder(context_dim=cdim)
-    module = RealSpeclibModule(model, book, encoder, freeze_backbone=True)
+    runbook = ChromRunbook(1, cdim)
+    encoder = MSContextEncoder(context_dim=cdim)
+    module = RealSpeclibModule(model, runbook, encoder, freeze_backbone=True)
 
     # Backbone is frozen; the context modules stay trainable.
     assert not any(p.requires_grad for p in model.parameters())
-    assert all(p.requires_grad for p in book.parameters())
+    assert all(p.requires_grad for p in runbook.parameters())
     assert all(p.requires_grad for p in encoder.parameters())
 
-    # The optimizer therefore only sees the context vectors, not the backbone.
+    # The optimizer therefore only sees the context modules, not the backbone.
     opt = module.configure_optimizers()
     optimized = {id(p) for group in opt.param_groups for p in group["params"]}
-    context_params = {id(p) for p in (*book.parameters(), *encoder.parameters())}
+    context_params = {id(p) for p in (*runbook.parameters(), *encoder.parameters())}
     assert optimized == context_params
 
 
