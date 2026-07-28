@@ -5,9 +5,11 @@
 //! matches `predict_library_fast`'s ordering and base-peak normalization.
 
 pub mod artifact;
+pub mod bucket;
 pub mod chem;
 pub mod model;
 pub mod peptide;
+pub mod tokenize;
 
 use anyhow::Result;
 
