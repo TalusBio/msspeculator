@@ -10,7 +10,6 @@ from pepdistill.models.context import (
     DEFAULT_INSTRUMENTS,
     ChromRunbook,
     ContextBook,
-    ContextEncoder,
     MSContextEncoder,
 )
 from pepdistill.models.registry import (
@@ -77,22 +76,32 @@ def test_checkpoint_without_context_is_none(tmp_path):
 
 
 def test_context_aware_predict_changes_ms2_not_rt():
-    """TorchRunner with a ctx_acq shifts MS2 (and CCS) but leaves RT (context-free) alone."""
+    """TorchRunner with a ms_context shifts MS2 but leaves RT and CCS (context-free) alone."""
     from pepdistill.predict.fast import TorchRunner, _bucket_arrays
 
     m = build_student("small").eval()
     m.set_norm(30.0, 10.0, 400.0, 50.0)
-    enc = ContextEncoder(context_dim=m.cfg.context_dim)
-    torch.nn.init.normal_(enc.proj.weight, std=0.5)  # nonzero -> real ctx_acq
-    ctx_vec = enc(torch.tensor([25.0])).detach().numpy()[0]
+    enc = MSContextEncoder(context_dim=m.cfg.context_dim)
+    torch.nn.init.normal_(enc.frag_emb.weight, std=0.5)  # nonzero -> real ms_context
+    ms_vec = (
+        enc(
+            torch.tensor([enc.instrument_id("Lumos")]),
+            torch.tensor([enc.detector_id("FTMS")]),
+            torch.tensor([enc.fragmentation_id("HCD")]),
+            torch.tensor([25.0]),
+        )
+        .detach()
+        .numpy()[0]
+    )
 
     precs = [Precursor(Peptide("PEPTIDEK"), 2, "t"), Precursor(Peptide("ACDEFGHK"), 2, "t")]
     tok, md, ch, _ = _bucket_arrays(precs, 8)
-    ms2_base, rt_base, _ = TorchRunner(m).run(tok, md, ch)
-    ms2_ctx, rt_ctx, _ = TorchRunner(m, ctx_acq=ctx_vec).run(tok, md, ch)
+    ms2_base, rt_base, ccs_base = TorchRunner(m).run(tok, md, ch)
+    ms2_ctx, rt_ctx, ccs_ctx = TorchRunner(m, ms_context=ms_vec).run(tok, md, ch)
 
-    assert not (ms2_base == ms2_ctx).all()  # CE context moved MS2
-    assert (rt_base == rt_ctx).all()  # RT is context-free (no ctx_lc)
+    assert not (ms2_base == ms2_ctx).all()  # MS context moved MS2
+    assert (rt_base == rt_ctx).all()  # RT is context-free (no chrom context)
+    assert (ccs_base == ccs_ctx).all()  # CCS is peptide+charge only, no acquisition context
 
 
 def test_ms_context_blank_is_zero():
