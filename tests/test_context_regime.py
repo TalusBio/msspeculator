@@ -18,6 +18,7 @@ from pepdistill.distill.context_regime import (
     RealExample,
     RealSpeclibDataset,
     RealSpeclibModule,
+    _build_examples,
     fit_realspeclib,
 )
 from pepdistill.data.prospect import RealLabels
@@ -66,6 +67,37 @@ def test_runbook_learns_dataset_offset():
         rt_ds = m.forward(b, chrom_context=module.runbook(ds_row))["rt"]
         rt_irt = m.forward(b, chrom_context=module.runbook(torch.tensor([0])))["rt"]
     assert not torch.allclose(rt_ds, rt_irt)
+
+
+def test_build_examples_uses_config_instrument_not_per_run_metadata():
+    """PROSPECT acquisition metadata carries no instrument column, so instrument must come from
+    the config constant (threaded through fit_realspeclib) rather than a per-run lookup — every
+    example gets the same instrument_id regardless of source, even if a run's acquisition dict
+    happened to carry an 'instrument' key."""
+    real, _ = _real()
+    real.acquisition["rfB"]["instrument"] = "QExactive"  # per-run value must be ignored
+    encoder = MSContextEncoder(context_dim=8)
+    examples = _build_examples(real, encoder, dataset_id=1, instrument="Lumos")
+    expected = encoder.instrument_id("Lumos")
+    assert all(e.instrument_id == expected for e in examples)
+
+
+def test_fit_realspeclib_threads_instrument_into_examples():
+    real, _ = _real()
+    model = build_student("small")
+    module = fit_realspeclib(
+        model,
+        real,
+        epochs=1,
+        batch_size=32,
+        accelerator="cpu",
+        dataset_name="dsA",
+        instrument="Lumos",
+        enable_progress_bar=False,
+    )
+    expected = module.encoder.instrument_id("Lumos")
+    examples = _build_examples(real, module.encoder, dataset_id=1, instrument="Lumos")
+    assert all(e.instrument_id == expected for e in examples)
 
 
 def test_freeze_backbone_trains_only_context():

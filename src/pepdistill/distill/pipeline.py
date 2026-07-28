@@ -91,6 +91,9 @@ class TrainCfg:
     loss_weights: tuple[float, float, float] = (1.0, 1.0, 1.0)  # ms2, irt, raw_rt
     ce_context: bool = True  # ms_context from collision energy; shared with pretrain
     dataset: str | None = None  # label for the val best-per-entry reduction
+    instrument: str = (
+        "Lumos"  # pool-level MS instrument (PROSPECT ~ Lumos); set per-source as more are added
+    )
 
 
 @dataclass
@@ -241,6 +244,7 @@ def run_pipeline(cfg: RunConfig, log=print) -> dict:
             model,
             real,
             dataset_name=cfg.train.dataset,
+            instrument=cfg.train.instrument,
             epochs=cfg.train.epochs,
             batch_size=cfg.train.batch_size,
             lr=cfg.train.lr,

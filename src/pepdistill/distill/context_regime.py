@@ -215,17 +215,19 @@ class RealSpeclibModule(L.LightningModule):
 
 
 def _build_examples(
-    real: RealLabels, encoder: MSContextEncoder, dataset_id: int
+    real: RealLabels, encoder: MSContextEncoder, dataset_id: int, instrument: str
 ) -> list[RealExample]:
     """Turn ``RealLabels`` (parallel columns) into per-example records, resolving each run's
     acquisition factors ONCE (few runs, many examples) and reusing them across its examples.
-    Every example shares the same ``dataset_id`` (RT is keyed per dataset, not per raw_file)."""
+    Every example shares the same ``dataset_id`` (RT is keyed per dataset, not per raw_file) and
+    the same ``instrument`` — a pool-level constant threaded from config, not per-run metadata
+    (PROSPECT carries no instrument column)."""
 
     def acq(name: str, key: str, default):
         return real.acquisition.get(name, {}).get(key, default)
 
     names = set(real.source_ids)
-    inst_of = {n: encoder.instrument_id(acq(n, "instrument", "")) for n in names}
+    inst_id = encoder.instrument_id(instrument)
     det_of = {n: encoder.detector_id(acq(n, "mass_analyzer", "")) for n in names}
     frag_of = {n: encoder.fragmentation_id(acq(n, "fragmentation", "")) for n in names}
     energy_of = {n: float(acq(n, "collision_energy", float("nan"))) for n in names}
@@ -235,7 +237,7 @@ def _build_examples(
             precursor=p,
             label=lab,
             raw_rt=float(rrt),
-            instrument_id=inst_of[s],
+            instrument_id=inst_id,
             detector_id=det_of[s],
             fragmentation_id=frag_of[s],
             energy=energy_of[s],
@@ -267,6 +269,7 @@ def fit_realspeclib(
     seed: int = 0,
     accelerator: str = "auto",
     dataset_name: str | None = None,
+    instrument: str = "Lumos",
     encoder: MSContextEncoder | None = None,
     runbook: ChromRunbook | None = None,
     freeze_backbone: bool = False,
@@ -279,7 +282,9 @@ def fit_realspeclib(
     model's. Set ``freeze_backbone`` to adapt to a run by fitting only the context (PEFT).
     ``dataset_name`` is both the val dedup key's dataset label and the runbook row key (one
     dataset -> one row for now; RT is keyed per dataset, not per raw_file — coarser but good
-    enough to start). Returns the module (``.model``/``.encoder``/``.runbook`` trained;
+    enough to start). ``instrument`` is a pool-level constant (default "Lumos" for PROSPECT,
+    which has no per-run instrument metadata) applied to every example, on equal footing with
+    detector/fragmentation. Returns the module (``.model``/``.encoder``/``.runbook`` trained;
     ``.dataset_index`` maps dataset name -> chrom_context row)."""
     L.seed_everything(seed, verbose=False)
     cdim = context_dim or model.cfg.context_dim
@@ -296,7 +301,7 @@ def fit_realspeclib(
     dataset_index = {key: 1}
     runbook = runbook or ChromRunbook(n_datasets=len(dataset_index), context_dim=cdim)
 
-    examples = _build_examples(real, encoder, dataset_index[key])
+    examples = _build_examples(real, encoder, dataset_index[key], instrument)
     train = [e for e in examples if e.precursor.split != "val"]
     val = [e for e in examples if e.precursor.split == "val"]
 
