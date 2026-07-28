@@ -1,25 +1,30 @@
-"""Real-speclib training regime with per-source acquisition context.
+"""Real-speclib training regime with per-run context conditioning.
 
 A second Lightning regime over the SAME StudentModel backbone (see lightning.py). It trains
-on real experimental spectra (e.g. PROSPECT) and gradient-descends a per-source context via
-a :class:`ContextBook`, keyed by raw_file:
+on real experimental spectra (e.g. PROSPECT) and conditions the backbone on two context
+vectors, each generated from metadata rather than gradient-descended per source id:
 
-- MS2 uses ``ctx_acq`` (acquisition: analyzer/fragmentation/collision energy — per raw_file).
-- RT is dual-target: the context-free base head is pinned to iRT, and the ctx_lc-conditioned
-  head is fit to the raw retention_time. So ctx_lc learns ONLY each run's LC deviation, and
-  base RT stays the run-independent peptide property. (iRT is context-free.)
+- ``ms_context`` (MS2 side) comes from a run's acquisition factors — instrument, detector,
+  fragmentation (categorical) plus collision energy (continuous) — via :class:`MSContextEncoder`.
+  Energy is never fabricated: a run with no recorded collision energy passes ``energy=None``,
+  so that term contributes zero rather than an invented center value.
+- ``chrom_context`` (RT side) comes from a per-DATASET :class:`ChromRunbook` row (dataset,
+  not raw_file — coarser but good enough to start). Row 0 is reserved as the neutral/iRT row.
+  RT is dual-target: the context-free base head (``rt_base``, no chrom_context) is pinned to
+  iRT, and the runbook-conditioned head (``rt``) is fit to each example's raw retention_time.
+  So the runbook learns ONLY the dataset's LC deviation, and base RT stays the run-independent
+  peptide property.
 - CCS is unsupervised here (real DDA has none) — left to teacher distillation.
 
-Backbone + context vectors are optimized together. To fine-tune only the context (adapt to a
-new run), freeze the model and step only the book.
+Backbone + context modules are optimized together. To fine-tune only the context (adapt to a
+new run), freeze the model and step only the encoder/runbook.
 """
 
 from __future__ import annotations
 
-import math
 from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, TypeVar
+from typing import TYPE_CHECKING
 
 import lightning as L
 import numpy as np
@@ -28,51 +33,47 @@ from torch.utils.data import DataLoader
 
 from ..data.precursors import Precursor
 from ..eval import best_per_key, ms2_intensity, precursor_key
-from ..models.context import ContextBook, ContextEncoder
+from ..models.context import ChromRunbook, MSContextEncoder
 from ..models.student import StudentModel
 from ..teacher.base import PrecursorLabels
-from .dataset import BatchIterable, LabeledBatch, collate_with_labels, iter_batch_indices
+from .dataset import BatchIterable, LabeledBatch, MSFactors, collate_with_labels, iter_batch_indices
 from .lightning import build_trainer
 from .losses import ms2_cosine_loss, spectral_angle
 
 if TYPE_CHECKING:
     from ..data.prospect import RealLabels
 
-_T = TypeVar("_T")
-
 
 @dataclass(slots=True)
 class RealExample:
-    """One real observation: the peptide, its teacher/experimental labels, and the acquisition
-    factors that condition the two context vectors. ``ce``/``analyzer_id``/``frag_id`` drive
-    ``ctx_acq`` (MS2/CCS); ``source_id`` drives ``ctx_lc`` (RT / chromatography)."""
+    """One real observation: the peptide, its teacher/experimental labels, and the factors
+    that condition the two context vectors. ``instrument_id``/``detector_id``/
+    ``fragmentation_id``/``energy`` drive ``ms_context`` (MS2); ``dataset_id`` drives
+    ``chrom_context`` (RT / chromatography)."""
 
     precursor: Precursor
     label: PrecursorLabels  # ms2 + rt(=iRT) + ccs(NaN for real DDA)
-    raw_rt: float  # run-dependent retention time (the ctx_lc target)
-    source_id: int  # raw_file index -> ctx_lc
-    ce: float  # collision energy (absolute NCE) -> ctx_acq
-    analyzer_id: int  # mass-analyzer factor -> ctx_acq
-    frag_id: int  # fragmentation factor -> ctx_acq
+    raw_rt: float  # run-dependent retention time (the chrom_context target)
+    instrument_id: int  # -> ms_context
+    detector_id: int  # -> ms_context
+    fragmentation_id: int  # -> ms_context
+    energy: float  # collision energy (NaN if the run carries none -> ms_context omits it)
+    dataset_id: int  # -> chrom_context (ChromRunbook row; 0 reserved for iRT/neutral)
 
 
 @dataclass(slots=True)
 class RealBatch:
     base: LabeledBatch  # inputs + ms2_target + rt_target(=iRT) + ccs_target(NaN)
     raw_rt: torch.Tensor  # (B,) run-dependent retention time
-    source_id: torch.Tensor  # (B,) long, raw_file index (for ctx_lc / chromatography)
-    ce: torch.Tensor  # (B,) collision energy (absolute NCE) -> ctx_acq
-    analyzer_id: torch.Tensor  # (B,) long, mass-analyzer factor -> ctx_acq
-    frag_id: torch.Tensor  # (B,) long, fragmentation factor -> ctx_acq
+    dataset_id: torch.Tensor  # (B,) long, ChromRunbook row (for chrom_context)
+    ms_factors: MSFactors  # instrument/detector/fragmentation/energy -> ms_context
 
     def to(self, device: torch.device | str) -> RealBatch:
         return RealBatch(
             base=self.base.to(device),
             raw_rt=self.raw_rt.to(device),
-            source_id=self.source_id.to(device),
-            ce=self.ce.to(device),
-            analyzer_id=self.analyzer_id.to(device),
-            frag_id=self.frag_id.to(device),
+            dataset_id=self.dataset_id.to(device),
+            ms_factors=self.ms_factors.to(device),
         )
 
 
@@ -83,10 +84,11 @@ class RealSpeclibDataset:
     def __init__(self, examples: list[RealExample]) -> None:
         self.examples = examples
         self.raw_rt = np.array([e.raw_rt for e in examples], dtype=np.float32)
-        self.source_id = np.array([e.source_id for e in examples], dtype=np.int64)
-        self.ce = np.array([e.ce for e in examples], dtype=np.float32)
-        self.analyzer_id = np.array([e.analyzer_id for e in examples], dtype=np.int64)
-        self.frag_id = np.array([e.frag_id for e in examples], dtype=np.int64)
+        self.dataset_id = np.array([e.dataset_id for e in examples], dtype=np.int64)
+        self.instrument_id = np.array([e.instrument_id for e in examples], dtype=np.int64)
+        self.detector_id = np.array([e.detector_id for e in examples], dtype=np.int64)
+        self.fragmentation_id = np.array([e.fragmentation_id for e in examples], dtype=np.int64)
+        self.energy = np.array([e.energy for e in examples], dtype=np.float32)
 
     def __len__(self) -> int:
         return len(self.examples)
@@ -99,44 +101,63 @@ class RealSpeclibDataset:
                 [self.examples[i].precursor for i in idx],
                 [self.examples[i].label for i in idx],
             )
+            energy_slice = self.energy[idx]
+            nan_mask = np.isnan(energy_slice)
+            # Every energy NaN -> this run carries no collision energy -> omit the term
+            # entirely (None) rather than fabricate a center value. A PARTIAL mix (some
+            # examples carry energy, some don't) within the same batch has no safe encoding —
+            # passing NaN into MSContextEncoder would silently poison the whole batch — so
+            # fail loud instead of guessing.
+            if nan_mask.any() and not nan_mask.all():
+                raise ValueError(
+                    "batch has partially-missing collision energy "
+                    f"({int(nan_mask.sum())}/{len(nan_mask)} NaN); energy must be all-present "
+                    "or all-absent within a batch"
+                )
+            energy = None if nan_mask.all() else torch.from_numpy(energy_slice)
+            ms_factors = MSFactors(
+                instrument_id=torch.from_numpy(self.instrument_id[idx]),
+                detector_id=torch.from_numpy(self.detector_id[idx]),
+                fragmentation_id=torch.from_numpy(self.fragmentation_id[idx]),
+                energy=energy,
+            )
             yield RealBatch(
                 base=base,
                 raw_rt=torch.from_numpy(self.raw_rt[idx]),
-                source_id=torch.from_numpy(self.source_id[idx]),
-                ce=torch.from_numpy(self.ce[idx]),
-                analyzer_id=torch.from_numpy(self.analyzer_id[idx]),
-                frag_id=torch.from_numpy(self.frag_id[idx]),
+                dataset_id=torch.from_numpy(self.dataset_id[idx]),
+                ms_factors=ms_factors,
             )
 
 
 class RealSpeclibModule(L.LightningModule):
     """Fit the shared backbone on real spectra while learning per-run context: MS2 on
-    ``ctx_acq`` (from acquisition factors), the dual RT targets on the base head (iRT) and the
-    ``ctx_lc``-conditioned head (raw RT). Set ``freeze_backbone`` to adapt to a new run by
-    training only the context (ctx_lc book + ctx_acq encoder) — the PEFT path from the module
-    docstring — leaving the backbone fixed."""
+    ``ms_context`` (from acquisition factors via :class:`MSContextEncoder`), the dual RT
+    targets on the base head (iRT) and the ``chrom_context``-conditioned head (raw RT, via
+    :class:`ChromRunbook`). Set ``freeze_backbone`` to adapt to a new run by training only the
+    context (runbook + encoder) — the PEFT path from the module docstring — leaving the
+    backbone fixed."""
 
     def __init__(
         self,
         model: StudentModel,
-        book: ContextBook,
-        encoder: ContextEncoder,
+        runbook: ChromRunbook,
+        encoder: MSContextEncoder,
         lr: float = 1e-3,
         weight_decay: float = 1e-5,
         loss_weights: tuple[float, float, float] = (1.0, 1.0, 1.0),  # ms2, irt, raw_rt
-        source_index: dict[str, int] | None = None,
+        dataset_index: dict[str, int] | None = None,
         freeze_backbone: bool = False,
     ) -> None:
         super().__init__()
         self.model = model
-        self.book = book  # ctx_lc (chromatography, per raw_file)
-        self.encoder = encoder  # ctx_acq (MS2/CCS, from acquisition factors)
+        self.runbook = runbook  # chrom_context (RT, per dataset)
+        self.encoder = encoder  # ms_context (MS2, from acquisition factors)
         self.lr = lr
         self.weight_decay = weight_decay
         self.loss_weights = loss_weights
-        # raw_file -> ctx_lc row; needed to address a trained run's context at inference.
-        self.source_index = source_index
-        if freeze_backbone:  # PEFT: fit only the context vectors, backbone stays fixed.
+        # dataset name -> chrom_context row; needed to address a trained dataset at inference.
+        self.dataset_index = dataset_index
+        if freeze_backbone:  # PEFT: fit only the context modules, backbone stays fixed.
             self.model.requires_grad_(False)
 
     def transfer_batch_to_device(
@@ -145,16 +166,23 @@ class RealSpeclibModule(L.LightningModule):
         return batch.to(device)
 
     def _forward(self, rb: RealBatch) -> dict[str, torch.Tensor]:
-        ctx_acq = self.encoder(rb.ce, rb.analyzer_id, rb.frag_id)  # MS2/CCS acquisition factors
-        ctx_lc = self.book.lc(rb.source_id)  # RT context per run (chromatography)
-        return self.model.forward_context(rb.base.inputs, ctx_acq=ctx_acq, ctx_lc=ctx_lc)
+        ms_context = self.encoder(
+            rb.ms_factors.instrument_id,
+            rb.ms_factors.detector_id,
+            rb.ms_factors.fragmentation_id,
+            rb.ms_factors.energy,
+        )
+        chrom_context = self.runbook(rb.dataset_id)  # RT context per dataset (chromatography)
+        return self.model.forward_context(
+            rb.base.inputs, ms_context=ms_context, chrom_context=chrom_context
+        )
 
     def training_step(self, rb: RealBatch, batch_idx: int) -> torch.Tensor:
         w_ms2, w_irt, w_raw = self.loss_weights
         out = self._forward(rb)
         lb = rb.base
         loss_ms2 = ms2_cosine_loss(out["ms2"], lb.ms2_target, lb.inputs.frag_mask)
-        # rt_base (context-free) -> iRT; the ctx_lc-conditioned rt -> this run's raw RT.
+        # rt_base (context-free) -> iRT; the chrom_context-conditioned rt -> this dataset's raw RT.
         loss_irt = torch.nn.functional.mse_loss(
             out["rt_base"], self.model.standardize_rt(lb.rt_target)
         )
@@ -179,38 +207,41 @@ class RealSpeclibModule(L.LightningModule):
         )
 
     def configure_optimizers(self) -> torch.optim.Optimizer:
-        # Optimize every trainable parameter across the registered submodules (model + book +
+        # Optimize every trainable parameter across the registered submodules (model + runbook +
         # encoder); with freeze_backbone the model's are already requires_grad=False, so this
-        # narrows to the context vectors without listing them by hand.
+        # narrows to the context modules without listing them by hand.
         params = [p for p in self.parameters() if p.requires_grad]
         return torch.optim.AdamW(params, lr=self.lr, weight_decay=self.weight_decay)
 
 
 def _build_examples(
-    real: RealLabels, encoder: ContextEncoder, source_index: dict[str, int]
+    real: RealLabels, encoder: MSContextEncoder, dataset_id: int, instrument: str
 ) -> list[RealExample]:
     """Turn ``RealLabels`` (parallel columns) into per-example records, resolving each run's
-    acquisition factors ONCE (few runs, many examples) and reusing them across its examples."""
+    acquisition factors ONCE (few runs, many examples) and reusing them across its examples.
+    Every example shares the same ``dataset_id`` (RT is keyed per dataset, not per raw_file) and
+    the same ``instrument`` — a pool-level constant threaded from config, not per-run metadata
+    (PROSPECT carries no instrument column)."""
 
-    def acq(name: str, key: str, default: _T) -> _T:
+    def acq(name: str, key: str, default):
         return real.acquisition.get(name, {}).get(key, default)
 
-    def ce(name: str) -> float:  # missing CE -> encoder center (its zero-point) -> base ctx_acq
-        v = float(acq(name, "collision_energy", encoder.ce_center))
-        return encoder.ce_center if math.isnan(v) else v
+    names = set(real.source_ids)
+    inst_id = encoder.instrument_id(instrument)
+    det_of = {n: encoder.detector_id(acq(n, "mass_analyzer", "")) for n in names}
+    frag_of = {n: encoder.fragmentation_id(acq(n, "fragmentation", "")) for n in names}
+    energy_of = {n: float(acq(n, "collision_energy", float("nan"))) for n in names}
 
-    ce_of = {n: ce(n) for n in source_index}
-    ana_of = {n: encoder.analyzer_id(acq(n, "mass_analyzer", "")) for n in source_index}
-    frag_of = {n: encoder.frag_id(acq(n, "fragmentation", "")) for n in source_index}
     return [
         RealExample(
             precursor=p,
             label=lab,
             raw_rt=float(rrt),
-            source_id=source_index[s],
-            ce=ce_of[s],
-            analyzer_id=ana_of[s],
-            frag_id=frag_of[s],
+            instrument_id=inst_id,
+            detector_id=det_of[s],
+            fragmentation_id=frag_of[s],
+            energy=energy_of[s],
+            dataset_id=dataset_id,
         )
         for p, lab, rrt, s in zip(real.precursors, real.labels, real.raw_rt, real.source_ids)
     ]
@@ -238,34 +269,39 @@ def fit_realspeclib(
     seed: int = 0,
     accelerator: str = "auto",
     dataset_name: str | None = None,
-    encoder: ContextEncoder | None = None,
-    book: ContextBook | None = None,
+    instrument: str = "Lumos",
+    encoder: MSContextEncoder | None = None,
+    runbook: ChromRunbook | None = None,
     freeze_backbone: bool = False,
     **trainer_kwargs,
 ) -> RealSpeclibModule:
-    """Train on real spectra with per-run context. ``ctx_acq`` comes from the acquisition
-    factors via a :class:`ContextEncoder`; ``ctx_lc`` from a per-raw_file :class:`ContextBook`.
-    Pass an existing ``encoder``/``book`` to continue a curriculum (share them with the warmup);
-    their ``context_dim`` must match the model's. Set ``freeze_backbone`` to adapt to a run by
-    fitting only the context (PEFT). ``dataset_name`` is the val dedup key's dataset label.
-    Returns the module (``.model``/``.encoder``/``.book`` trained; ``.source_index`` maps
-    raw_file -> ctx_lc row)."""
+    """Train on real spectra with per-run context. ``ms_context`` comes from the acquisition
+    factors via a :class:`MSContextEncoder`; ``chrom_context`` from a per-dataset
+    :class:`ChromRunbook` (row 0 = iRT/neutral). Pass an existing ``encoder``/``runbook`` to
+    continue a curriculum (share them with the warmup); their ``context_dim`` must match the
+    model's. Set ``freeze_backbone`` to adapt to a run by fitting only the context (PEFT).
+    ``dataset_name`` is both the val dedup key's dataset label and the runbook row key (one
+    dataset -> one row for now; RT is keyed per dataset, not per raw_file — coarser but good
+    enough to start). ``instrument`` is a pool-level constant (default "Lumos" for PROSPECT,
+    which has no per-run instrument metadata) applied to every example, on equal footing with
+    detector/fragmentation. Returns the module (``.model``/``.encoder``/``.runbook`` trained;
+    ``.dataset_index`` maps dataset name -> chrom_context row)."""
     L.seed_everything(seed, verbose=False)
     cdim = context_dim or model.cfg.context_dim
     if cdim <= 0:
         raise ValueError(f"context_dim must be positive to condition on acquisition, got {cdim}")
-    if encoder is not None and encoder.proj.out_features != cdim:
-        raise ValueError(f"encoder context_dim {encoder.proj.out_features} != model's {cdim}")
-    if book is not None and book.lc.embedding_dim != cdim:
-        raise ValueError(f"book context_dim {book.lc.embedding_dim} != model's {cdim}")
-    encoder = encoder or ContextEncoder(context_dim=cdim)
+    if encoder is not None and encoder.context_dim != cdim:
+        raise ValueError(f"encoder context_dim {encoder.context_dim} != model's {cdim}")
+    if runbook is not None and runbook.context_dim != cdim:
+        raise ValueError(f"runbook context_dim {runbook.context_dim} != model's {cdim}")
+    encoder = encoder or MSContextEncoder(context_dim=cdim)
 
-    # raw_file -> ctx_lc row. ctx_acq comes from the encoder, so the book only holds ctx_lc
-    # (one row per run); its acq table is unused here -> size it to 1, not per-raw_file.
-    source_index = {name: i for i, name in enumerate(sorted(set(real.source_ids)))}
-    book = book or ContextBook(n_acq=1, n_lc=len(source_index), context_dim=cdim)
+    # One dataset -> one runbook row (row 0 is reserved for iRT/neutral).
+    key = dataset_name or "default"
+    dataset_index = {key: 1}
+    runbook = runbook or ChromRunbook(n_datasets=len(dataset_index), context_dim=cdim)
 
-    examples = _build_examples(real, encoder, source_index)
+    examples = _build_examples(real, encoder, dataset_index[key], instrument)
     train = [e for e in examples if e.precursor.split != "val"]
     val = [e for e in examples if e.precursor.split == "val"]
 
@@ -275,12 +311,12 @@ def fit_realspeclib(
 
     module = RealSpeclibModule(
         model,
-        book,
+        runbook,
         encoder,
         lr=lr,
         weight_decay=weight_decay,
         loss_weights=loss_weights,
-        source_index=source_index,
+        dataset_index=dataset_index,
         freeze_backbone=freeze_backbone,
     )
     train_ds = RealSpeclibDataset(train)

@@ -44,11 +44,12 @@ class StudentConfig:
     # False wins on library self-consistency (in_trunk wobbles RT ~0.02min across charges).
     charge_in_trunk: bool = False
     # Acquisition-context conditioning. A per-source context VECTOR (not id) enters at the
-    # heads as a zero-init additive bias: ctx_acq drives MS2 + CCS (instrument / collision
-    # energy / ion mobility), ctx_lc drives RT (chromatography). Zero-init => an untrained
-    # or absent source reproduces the base model exactly. Fit only these 16-d vectors to
-    # adapt to a new instrument/gradient (backbone frozen); swap a vector to swap setups.
-    # 0 disables the context projections entirely.
+    # heads as a zero-init additive bias: ms_context drives MS2 fragments (instrument /
+    # collision energy / fragmentation), chrom_context drives RT (chromatography). CCS takes
+    # no acquisition context (peptide + charge only). Zero-init => an untrained or absent
+    # source reproduces the base model exactly. Fit only these 16-d vectors to adapt to a
+    # new instrument/gradient (backbone frozen); swap a vector to swap setups. 0 disables the
+    # context projections entirely.
     context_dim: int = 16
 
     def to_dict(self) -> dict:
@@ -137,17 +138,14 @@ class StudentModel(nn.Module):
         self.rt_head = nn.Sequential(nn.Linear(d, d), cfg.act_module(), nn.Linear(d, 1))
         self.ccs_head = nn.Sequential(nn.Linear(ccs_in, d), cfg.act_module(), nn.Linear(d, 1))
 
-        # Context projections: 16-d source vector -> per-head additive bias (d). Shared
-        # ctx_acq feeds MS2 and CCS through separate projections; ctx_lc feeds RT. Only the
-        # BIAS is zero-init (weights keep their random init): a zero context vector then maps
-        # to a zero bias == base model, while the nonzero weights still pass gradient to the
-        # context embeddings (zeroing weights too would strand the whole subsystem at 0).
-        self.acq_to_ms2 = self.acq_to_ccs = self.lc_to_rt = None
+        # Context projections (zero-init bias -> zero context = base). ms_context feeds the
+        # per-fragment features; chrom_context feeds the RT head. CCS takes NO acquisition
+        # context (peptide + charge only).
+        self.ms_to_frag = self.chrom_to_rt = None
         if cfg.context_dim:
-            self.acq_to_ms2 = nn.Linear(cfg.context_dim, d)
-            self.acq_to_ccs = nn.Linear(cfg.context_dim, d)
-            self.lc_to_rt = nn.Linear(cfg.context_dim, d)
-            for lin in (self.acq_to_ms2, self.acq_to_ccs, self.lc_to_rt):
+            self.ms_to_frag = nn.Linear(cfg.context_dim, d)
+            self.chrom_to_rt = nn.Linear(cfg.context_dim, d)
+            for lin in (self.ms_to_frag, self.chrom_to_rt):
                 nn.init.zeros_(lin.bias)
 
         # Target normalization stats (set by the trainer, saved in the checkpoint).
@@ -199,23 +197,19 @@ class StudentModel(nn.Module):
         h: torch.Tensor,
         pooled: torch.Tensor,
         charge: torch.Tensor,
-        ctx_acq: torch.Tensor | None = None,
-        ctx_lc: torch.Tensor | None = None,
+        ms_context: torch.Tensor | None = None,
+        chrom_context: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Run the three heads on backbone output. Returns standardized (ms2, rt, ccs).
-
-        When charge is factored out of the trunk it re-enters here: added per fragment
-        site for MS2, concatenated for CCS, and never for RT (charge-invariant). Optional
-        acquisition context enters the same way (zero-init additive bias): ctx_acq shifts
-        the MS2 and CCS head inputs, ctx_lc shifts the RT head input.
+        """Run the three heads. ms_context (broadcast) shifts the per-fragment features;
+        chrom_context shifts the RT head; CCS is peptide + charge only. Charge, when factored
+        out of the trunk, re-enters here (added per fragment site for MS2, concatenated for CCS).
         """
         frag_feat = 0.5 * (h[:, :-1] + h[:, 1:])  # (B, L-1, d)
         ms2_feat, ccs_feat, rt_feat = frag_feat, pooled, pooled
-        if ctx_acq is not None:
-            ms2_feat = ms2_feat + self.acq_to_ms2(ctx_acq).unsqueeze(1)
-            ccs_feat = ccs_feat + self.acq_to_ccs(ctx_acq)
-        if ctx_lc is not None:
-            rt_feat = rt_feat + self.lc_to_rt(ctx_lc)
+        if ms_context is not None:
+            ms2_feat = ms2_feat + self.ms_to_frag(ms_context).unsqueeze(1)
+        if chrom_context is not None:
+            rt_feat = rt_feat + self.chrom_to_rt(chrom_context)
 
         if self.cfg.charge_in_trunk:
             ms2 = torch.sigmoid(self.ms2_head(ms2_feat))
@@ -235,14 +229,14 @@ class StudentModel(nn.Module):
         tokens: torch.Tensor,
         mod_delta: torch.Tensor,
         charge: torch.Tensor,
-        ctx_acq: torch.Tensor | None = None,
-        ctx_lc: torch.Tensor | None = None,
+        ms_context: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Mask-free forward for same-length batches; returns denormalized (ms2, rt, ccs).
 
         This is the inference/ONNX path: no padding, so no masks — attention and pooling
-        run dense. Returns plain tensors (not a dict) so it exports cleanly to ONNX. Context
-        vectors are optional; bake them as constants for a fixed-instrument export.
+        run dense. Returns plain tensors (not a dict) so it exports cleanly to ONNX. Takes
+        MS context only (RT/CCS need no acquisition context here); bake it as a constant for
+        a fixed-instrument export.
         """
         x = self._embed_tensors(tokens, mod_delta, charge)
         # Dense/bucketed inputs have no padding, so no mask. Passing None (vs an all-False
@@ -250,7 +244,7 @@ class StudentModel(nn.Module):
         # aten::_nested_tensor_from_mask_left_aligned op is unimplemented on MPS.
         h = self.backbone(x, None)
         pooled = h.mean(dim=1)
-        ms2, rt, ccs = self._apply_heads(h, pooled, charge, ctx_acq, ctx_lc)
+        ms2, rt, ccs = self._apply_heads(h, pooled, charge, ms_context, None)
         rt = rt * self.rt_std + self.rt_mean
         ccs = ccs * self.ccs_std + self.ccs_mean
         return ms2, rt, ccs
@@ -263,31 +257,29 @@ class StudentModel(nn.Module):
     def forward(
         self,
         batch: Batch,
-        ctx_acq: torch.Tensor | None = None,
-        ctx_lc: torch.Tensor | None = None,
+        ms_context: torch.Tensor | None = None,
+        chrom_context: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor]:
         x = self._embed(batch)
         h = self.backbone(x, batch.pad_mask)  # (B, L, d)
         pooled = self._masked_mean(h, batch.pad_mask)  # (B, d)
-        ms2, rt, ccs = self._apply_heads(h, pooled, batch.charge, ctx_acq, ctx_lc)
+        ms2, rt, ccs = self._apply_heads(h, pooled, batch.charge, ms_context, chrom_context)
         return {"ms2": ms2, "rt": rt, "ccs": ccs}
 
     def forward_context(
         self,
         batch: Batch,
-        ctx_acq: torch.Tensor | None = None,
-        ctx_lc: torch.Tensor | None = None,
+        ms_context: torch.Tensor | None = None,
+        chrom_context: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor]:
-        """One backbone pass giving BOTH the context-conditioned heads and the context-free
-        base RT. Used by the real-speclib regime: ``rt`` (ctx_lc-conditioned) is supervised
-        against raw retention time, while ``rt_base`` (no ctx_lc) is supervised against the
-        run-independent iRT — so ctx_lc learns only each run's LC deviation.
-        """
+        """One backbone pass giving the chrom-conditioned heads AND the context-free base RT
+        (``rt_base``, no chrom_context = iRT frame), so the real regime supervises rt->raw RT
+        and rt_base->iRT."""
         x = self._embed(batch)
         h = self.backbone(x, batch.pad_mask)
         pooled = self._masked_mean(h, batch.pad_mask)
-        ms2, rt, ccs = self._apply_heads(h, pooled, batch.charge, ctx_acq, ctx_lc)
-        rt_base = self.rt_head(pooled).squeeze(-1)  # context-free (iRT frame)
+        ms2, rt, ccs = self._apply_heads(h, pooled, batch.charge, ms_context, chrom_context)
+        rt_base = self.rt_head(pooled).squeeze(-1)
         return {"ms2": ms2, "rt": rt, "ccs": ccs, "rt_base": rt_base}
 
     def num_parameters(self) -> int:

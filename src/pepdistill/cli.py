@@ -72,7 +72,10 @@ def predict(
     ms_context: Optional[str] = typer.Option(
         None,
         "--ms-context",
-        help="Full acquisition context 'ANALYZER::FRAGMENTATION::CE', e.g. FTMS::HCD::30.",
+        help=(
+            "Full acquisition context 'INSTRUMENT::DETECTOR::FRAGMENTATION::ENERGY', "
+            "e.g. Lumos::FTMS::HCD::30."
+        ),
     ),
     enzyme: str = "trypsin",
     missed: int = 2,
@@ -100,13 +103,16 @@ def predict(
     else:
         precs = frame_to_precursors(pd.read_parquet(precursors))
 
-    # Resolve acquisition context: --ms-context "ANALYZER::FRAG::CE" wins; else --nce (CE only).
-    analyzer, fragmentation = "", ""
+    # Resolve MS context: --ms-context "INSTRUMENT::DETECTOR::FRAGMENTATION::ENERGY" wins;
+    # else --nce is a shorthand for unknown categoricals + energy only.
+    instrument, detector, fragmentation = "", "", ""
     if ms_context is not None:
         parts = ms_context.split("::")
-        if len(parts) != 3:
-            raise typer.BadParameter("--ms-context must be 'ANALYZER::FRAGMENTATION::CE'")
-        analyzer, fragmentation, nce = parts[0], parts[1], float(parts[2])
+        if len(parts) != 4:
+            raise typer.BadParameter(
+                "--ms-context must be 'INSTRUMENT::DETECTOR::FRAGMENTATION::ENERGY'"
+            )
+        instrument, detector, fragmentation, nce = parts[0], parts[1], parts[2], float(parts[3])
 
     if runtime == "onnx" or str(model).endswith(".onnx"):
         from .predict.onnx import OnnxRunner  # optional [onnx] extra — import only if used
@@ -117,7 +123,7 @@ def predict(
             )
         runner = OnnxRunner(model)
     else:
-        ctx_acq = None
+        ms_ctx_vec = None
         if nce is not None:
             from .models.registry import load_context
 
@@ -127,13 +133,22 @@ def predict(
                     f"{model} has no saved acquisition encoder; can't condition MS2"
                 )
             enc = ctx.encoder
-            ce = torch.tensor([float(nce)])
-            ctx_acq = enc.encode_batch(ce, analyzer, fragmentation, "cpu").detach().numpy()[0]
-            typer.echo(
-                f"context-aware: {analyzer or '-'}::{fragmentation or '-'}::{nce} "
-                f"-> ctx_acq |v|={float((ctx_acq**2).sum() ** 0.5):.3f}"
+            ms_ctx_vec = (
+                enc(
+                    torch.tensor([enc.instrument_id(instrument)]),
+                    torch.tensor([enc.detector_id(detector)]),
+                    torch.tensor([enc.fragmentation_id(fragmentation)]),
+                    torch.tensor([float(nce)]),
+                )
+                .detach()
+                .numpy()[0]
             )
-        runner = TorchRunner(load_checkpoint(model), resolve_device(device), ctx_acq=ctx_acq)
+            typer.echo(
+                f"context-aware: {instrument or '-'}::{detector or '-'}::"
+                f"{fragmentation or '-'}::{nce} "
+                f"-> ms_context |v|={float((ms_ctx_vec**2).sum() ** 0.5):.3f}"
+            )
+        runner = TorchRunner(load_checkpoint(model), resolve_device(device), ms_context=ms_ctx_vec)
 
     t0 = time.perf_counter()
     lib = predict_library_fast(runner, precs, batch_size=batch_size, min_intensity=min_intensity)

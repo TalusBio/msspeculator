@@ -45,6 +45,28 @@ def test_fast_empty_on_high_threshold():
     assert list(lib.columns)  # still has the schema
 
 
+def test_torch_runner_stores_ms_context(tmp_path):
+    from pepdistill.models.context import MSContextEncoder
+    from pepdistill.models.registry import build_student
+    import torch
+
+    m = build_student("small")
+    enc = MSContextEncoder(context_dim=m.cfg.context_dim)
+    torch.nn.init.normal_(enc.frag_emb.weight, std=0.3)
+    ctx = (
+        enc(
+            torch.tensor([enc.instrument_id("Lumos")]),
+            torch.tensor([enc.detector_id("FTMS")]),
+            torch.tensor([enc.fragmentation_id("HCD")]),
+            torch.tensor([30.0]),
+        )
+        .detach()
+        .numpy()[0]
+    )
+    runner = TorchRunner(m, torch.device("cpu"), ms_context=ctx)
+    assert isinstance(runner.ms_context, np.ndarray)
+
+
 def test_onnx_roundtrip(tmp_path):
     pytest.importorskip("onnxruntime")
     pytest.importorskip("onnx")

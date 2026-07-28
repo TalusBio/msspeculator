@@ -56,7 +56,6 @@ meta   = "TUM_third_pool_meta_data.parquet"
 zip    = "TUM_third_pool.zip"
 shards = [0]
 epochs = 60
-ce_context = true             # ctx_acq from collision energy
 
 [export]                      # ONNX
 enabled = true
@@ -82,6 +81,21 @@ Standalone inference from a trained model (torch or ONNX):
 pepdistill predict --model work/model.ckpt  --fasta proteome.fasta -o library.parquet --device auto
 pepdistill predict --model work/model.onnx  --fasta proteome.fasta -o library.parquet --runtime onnx
 ```
+
+Condition MS2 on the run's acquisition context (torch runtime only, needs a checkpoint with a
+saved `MSContextEncoder` — i.e. one trained with `[train]` or `[pretrain]` enabled). Give the
+full factor grammar `INSTRUMENT::DETECTOR::FRAGMENTATION::ENERGY`, or just `--nce` as a
+shorthand for "unknown instrument/detector/fragmentation, only the energy":
+
+```bash
+pepdistill predict --model work/model.ckpt --fasta proteome.fasta -o library.parquet \
+  --ms-context "Lumos::FTMS::HCD::30"
+
+pepdistill predict --model work/model.ckpt --fasta proteome.fasta -o library.parquet --nce 30
+```
+
+RT and CCS are always predicted context-free (RT through the runbook's neutral/iRT row); only
+MS2 fragment intensities move with `--ms-context`/`--nce`.
 
 ## Output
 

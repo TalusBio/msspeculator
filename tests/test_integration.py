@@ -117,10 +117,14 @@ fasta = "{fasta}"
 
 [train]
 enabled = false
-ce_context = false
 """
     )
     result = CliRunner().invoke(app, ["run", str(config)])
     assert result.exit_code == 0, result.output
     assert (workdir / "model.ckpt").exists()
     assert (workdir / "summary.json").exists()
+
+    from pepdistill.models.registry import load_context
+
+    ctx = load_context(workdir / "model.ckpt")
+    assert ctx is not None and ctx.encoder is not None

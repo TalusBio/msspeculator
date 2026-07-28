@@ -1,5 +1,6 @@
-"""Streaming NCE-sweep pretrain: teacher labels live per batch, CE feeds the encoder."""
+"""Streaming NCE-sweep pretrain: teacher labels live per batch, energy feeds the encoder."""
 
+import numpy as np
 import torch
 
 from pepdistill.data.config import DigestConfig
@@ -7,10 +8,12 @@ from pepdistill.distill.lightning import DistillModule
 from pepdistill.distill.stream_pretrain import (
     StreamMix,
     StreamPretrainCfg,
+    _peptides,
+    _StreamingDataset,
     default_mixes,
     fit_stream_pretrain,
 )
-from pepdistill.models.context import ContextEncoder
+from pepdistill.models.context import MSContextEncoder
 from pepdistill.models.registry import build_student
 from pepdistill.teacher import FakeTeacher
 
@@ -32,7 +35,7 @@ def test_stream_pretrain_runs_and_moves_encoder(tmp_path):
     fasta = tmp_path / "t.fasta"
     fasta.write_text(FASTA)
     model = build_student("tiny")
-    enc = ContextEncoder(context_dim=model.cfg.context_dim)
+    enc = MSContextEncoder(context_dim=model.cfg.context_dim)
     mixes = [
         StreamMix(
             "immuno",
@@ -48,7 +51,7 @@ def test_stream_pretrain_runs_and_moves_encoder(tmp_path):
         mixes=mixes, nce_range=(20.0, 40.0), chunk_size=64, batch_size=8, passes=1, seed=0
     )
 
-    before = enc.proj.weight.detach().clone()
+    before = enc.energy_mlp[-1].weight.detach().clone()
     lines: list[str] = []
     module = fit_stream_pretrain(
         model, enc, FakeTeacher(), cfg, accelerator="cpu", log=lines.append, log_every=2
@@ -56,8 +59,8 @@ def test_stream_pretrain_runs_and_moves_encoder(tmp_path):
 
     assert isinstance(module, DistillModule)
     assert any("step" in ln for ln in lines)  # _StepLogger fired (guards the .log shadow bug)
-    # CE was fed through the projection -> encoder weights received gradient and moved.
-    assert not torch.allclose(before, enc.proj.weight.detach())
+    # energy was fed through the MLP -> encoder weights received gradient and moved.
+    assert not torch.allclose(before, enc.energy_mlp[-1].weight.detach())
     # rt/ccs norm was estimated from a teacher sample (not left at the 0/1 identity).
     assert float(model.rt_mean) != 0.0 or float(model.rt_std) != 1.0
 
@@ -67,7 +70,7 @@ def test_stream_pretrain_early_stops_on_plateau(tmp_path):
     fasta = tmp_path / "t.fasta"
     fasta.write_text(FASTA)
     model = build_student("tiny")
-    enc = ContextEncoder(context_dim=model.cfg.context_dim)
+    enc = MSContextEncoder(context_dim=model.cfg.context_dim)
     mixes = [StreamMix("tryptic", "tryptic", str(fasta), DigestConfig())]
     cfg = StreamPretrainCfg(
         mixes=mixes,
@@ -87,3 +90,39 @@ def test_stream_pretrain_early_stops_on_plateau(tmp_path):
     # min_delta huge -> every window "fails to improve" -> stops after patience windows.
     assert any("early-stop" in ln for ln in lines)
     assert module.trainer.global_step < 1000  # nowhere near 1000 passes
+
+
+def test_stream_pretrain_cfg_defaults_teacher_acquisition():
+    cfg = StreamPretrainCfg()
+    assert (cfg.instrument, cfg.detector, cfg.fragmentation) == ("Lumos", "FTMS", "HCD")
+
+
+def test_label_chunk_sets_ms_factors_with_swept_energy(tmp_path):
+    """Each yielded LabeledBatch carries ms_factors: constant categorical ids (the teacher's
+    fixed acquisition) but per-peptide swept energy, matching the NCEs the teacher was fed."""
+    fasta = tmp_path / "t.fasta"
+    fasta.write_text(FASTA)
+    model = build_student("tiny")
+    enc = MSContextEncoder(context_dim=model.cfg.context_dim)
+    mixes = [StreamMix("tryptic", "tryptic", str(fasta), DigestConfig())]
+    cfg = StreamPretrainCfg(mixes=mixes, nce_range=(20.0, 40.0), chunk_size=16, batch_size=4)
+    ds = _StreamingDataset(FakeTeacher(), enc, cfg)
+    rng = np.random.default_rng(cfg.seed)
+    iters = [_peptides(m, loop=False) for m in mixes]
+    items = list(ds._round_robin(iters))
+    batches = list(ds._label_chunk(items, rng))
+    assert batches, "expected at least one labeled batch"
+    seen_energy: list[float] = []
+    for lb in batches:
+        f = lb.ms_factors
+        assert f is not None
+        n = f.instrument_id.shape[0]
+        assert torch.equal(f.instrument_id, torch.full((n,), enc.instrument_id("Lumos")))
+        assert torch.equal(f.detector_id, torch.full((n,), enc.detector_id("FTMS")))
+        assert torch.equal(f.fragmentation_id, torch.full((n,), enc.fragmentation_id("HCD")))
+        assert f.energy is not None
+        assert f.energy.dtype == torch.float32
+        seen_energy.extend(f.energy.tolist())
+    # The energy sweep isn't constant across peptides — a genuine per-peptide NCE draw.
+    assert len(set(seen_energy)) > 1
+    assert all(cfg.nce_range[0] <= e <= cfg.nce_range[1] for e in seen_energy)
