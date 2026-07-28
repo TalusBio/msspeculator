@@ -89,7 +89,6 @@ class TrainCfg:
     batch_size: int = 256
     lr: float = 1e-3
     loss_weights: tuple[float, float, float] = (1.0, 1.0, 1.0)  # ms2, irt, raw_rt
-    ce_context: bool = True  # ms_context from collision energy; shared with pretrain
     dataset: str | None = None  # label for the val best-per-entry reduction
     instrument: str = (
         "Lumos"  # pool-level MS instrument (PROSPECT ~ Lumos); set per-source as more are added
@@ -224,9 +223,9 @@ def run_pipeline(cfg: RunConfig, log=print) -> dict:
     summary: dict = {}
 
     model = load_checkpoint(cfg.model_in) if cfg.model_in else build_student(cfg.preset)
-    # The MSContextEncoder is needed by the real-data sink (ce_context) AND by streaming
-    # pretrain (the NCE sweep); build once and share it across both.
-    need_encoder = cfg.train.ce_context or cfg.pretrain.enabled
+    # The MSContextEncoder is needed by the real-data sink AND by streaming pretrain (the NCE
+    # sweep); build once and share it across both. Either enabled stage conditions on it.
+    need_encoder = cfg.train.enabled or cfg.pretrain.enabled
     encoder = MSContextEncoder(context_dim=model.cfg.context_dim) if need_encoder else None
     log(f"student '{cfg.preset}' — {model.num_parameters():,} params (device={cfg.device})")
 

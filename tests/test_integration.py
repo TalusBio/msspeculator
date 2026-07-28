@@ -117,7 +117,6 @@ fasta = "{fasta}"
 
 [train]
 enabled = false
-ce_context = false
 """
     )
     result = CliRunner().invoke(app, ["run", str(config)])

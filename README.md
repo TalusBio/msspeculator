@@ -56,7 +56,6 @@ meta   = "TUM_third_pool_meta_data.parquet"
 zip    = "TUM_third_pool.zip"
 shards = [0]
 epochs = 60
-ce_context = true             # ms_context from collision energy
 
 [export]                      # ONNX
 enabled = true
