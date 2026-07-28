@@ -18,23 +18,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import torch
+from pepdistill_rs import AA_OFFSET, CTERM_IDX, MOD_SCALE, NTERM_IDX, PAD_IDX, N_TOKENS  # noqa: F401
 
-from ..chem import MOD_DELTA
 from .precursors import Precursor
 
-# Amino-acid token id = ord(aa) - ord('A'), so A=0 .. Z=25. No lookup table: this is a
-# vectorized subtract on the raw sequence bytes (np.frombuffer view), the exact op the
-# future Rust tokenizer will do when it packs the numpy array directly. Indices 26..28 sit
-# just past 'Z': 26 = padding, 27/28 = the N/C-term tokens. Contract is soft (greenfield) —
-# change freely, but keep encode/decode/fast in sync via these constants.
-AA_OFFSET = ord("A")  # 65
-AA_VOCAB: dict[str, int] = {aa: ord(aa) - AA_OFFSET for aa in "ACDEFGHIKLMNPQRSTVWY"}
-PAD_IDX = 26
-NTERM_IDX = 27
-CTERM_IDX = 28
-N_TOKENS = 29
-# Scale mod deltas into a friendly range for the network.
-MOD_SCALE = 100.0
+# Vocab/token layout (AA_OFFSET, PAD_IDX, NTERM_IDX, CTERM_IDX, N_TOKENS) and MOD_SCALE
+# are single-sourced in Rust (pepdistill_rs); re-exported above for existing importers
+# (student.py, fast.py).
 
 # Whether to wrap peptides with N/C-term tokens. Default off: A/B on random and real
 # (E. coli) peptides showed no accuracy benefit (pad_mask already encodes the boundary),
@@ -78,44 +68,21 @@ class Batch:
         )
 
 
-def _mod_delta_vector(prec: Precursor, length: int) -> list[float]:
-    vec = [0.0] * length
-    for site, name in prec.peptide.mods:
-        vec[site] += MOD_DELTA[name] / MOD_SCALE
-    return vec
-
-
 def collate(precursors: list[Precursor]) -> Batch:
-    """Pad a list of precursors into a single :class:`Batch`.
+    """Pad a list of precursors into a single :class:`Batch` (delegates to the ext).
 
     With termini, layout is [N] r1..rL [C]; residues sit at positions 1..L and the first
     fragment site is adjacent-pool index 1. Without termini, residues start at 0.
     """
-    off = frag_offset()  # 1 with termini, else 0
-    extra = 2 if use_termini() else 0
-    lengths = [p.peptide.length for p in precursors]
-    max_len = max(lengths)
-    tok_len = max_len + extra
-    b = len(precursors)
+    import pepdistill_rs as _rs
 
-    tokens = torch.full((b, tok_len), PAD_IDX, dtype=torch.long)
-    mod_delta = torch.zeros(b, tok_len, dtype=torch.float32)
-    charge = torch.tensor([p.charge for p in precursors], dtype=torch.long)
-    length_t = torch.tensor(lengths, dtype=torch.long)
-    pad_mask = torch.ones(b, tok_len, dtype=torch.bool)
-    frag_mask = torch.zeros(b, tok_len - 1, dtype=torch.bool)
-
-    for i, prec in enumerate(precursors):
-        seq = prec.peptide.sequence
-        n = len(seq)
-        if use_termini():
-            tokens[i, 0] = NTERM_IDX
-            tokens[i, 1 + n] = CTERM_IDX
-        tokens[i, off : off + n] = torch.tensor([ord(a) - AA_OFFSET for a in seq], dtype=torch.long)
-        mod_delta[i, off : off + n] = torch.tensor(_mod_delta_vector(prec, n), dtype=torch.float32)
-        pad_mask[i, : n + extra] = False
-        # Inter-residue site between residue j and j+1 is adjacent-pool index off+j-1 for
-        # j=1..n-1, i.e. valid range [off, off+n-1).
-        frag_mask[i, off : off + n - 1] = True
-
-    return Batch(tokens, mod_delta, charge, length_t, pad_mask, frag_mask)
+    seqs = [p.peptide.sequence for p in precursors]
+    charges = [int(p.charge) for p in precursors]
+    mod_sites = [[int(s) for s, _ in p.peptide.mods] for p in precursors]
+    mod_names = [[n for _, n in p.peptide.mods] for p in precursors]
+    a = _rs.collate(seqs, charges, mod_sites, mod_names, use_termini())
+    return Batch(
+        torch.from_numpy(a["tokens"]), torch.from_numpy(a["mod_delta"]),
+        torch.from_numpy(a["charge"]), torch.from_numpy(a["lengths"]),
+        torch.from_numpy(a["pad_mask"]), torch.from_numpy(a["frag_mask"]),
+    )

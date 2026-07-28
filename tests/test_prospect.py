@@ -146,7 +146,7 @@ def test_to_labels_decoding(tmp_path):
     assert math.isnan(lab.ccs)  # PROSPECT has no ion mobility
 
     ps, _ = by_seq["SPEPK"]
-    assert ps.peptide.mods == ((0, "Phospho"),)
+    assert ps.peptide.mods == [(0, "Phospho")]
 
     # raw_file is the context stratification key; per-run acquisition captured.
     assert set(out.source_ids) == {"rfA", "rfB"}

@@ -50,7 +50,7 @@ def predict_library(
         for k, prec in enumerate(chunk):
             pep = prec.peptide
             n = pep.length
-            mz_matrix = fragment_mz_matrix(pep)  # (n-1, n_ion)
+            mz_matrix = fragment_mz_matrix(pep.sequence, list(pep.mods))  # (n-1, n_ion)
             # Fragment sites live at adjacent-pool indices [off, off+n-1).
             off = frag_offset()
             intensities = ms2[k, off : off + n - 1]  # (n-1, n_ion)

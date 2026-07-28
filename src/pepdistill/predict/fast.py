@@ -16,28 +16,13 @@ from collections import defaultdict
 import numpy as np
 import pandas as pd
 
-from ..chem import H2O, MOD_DELTA, PROTON, RESIDUE_MASS, ION_TYPES
-from ..data.encode import (
-    AA_OFFSET,
-    CTERM_IDX,
-    MOD_SCALE,
-    NTERM_IDX,
-    PAD_IDX,
-    frag_offset,
-    use_termini,
-)
+from ..chem import ION_TYPES
+from ..data.encode import frag_offset, use_termini
 from ..data.precursors import Precursor
 from .library import LIBRARY_COLUMNS
 
-# Token id is just ord(aa) - AA_OFFSET (no lookup). Residue mass still needs a table,
-# indexed by ord(aa) so it vectorizes over the raw sequence bytes of a bucket.
-_AA_MASS = np.zeros(256, dtype=np.float64)
-for _aa, _m in RESIDUE_MASS.items():
-    _AA_MASS[ord(_aa)] = _m
-
-# Per-column (ion, charge) metadata in ION_TYPES order.
+# Per-column ion-type metadata in ION_TYPES order (used for the output ordinal/ion grid).
 _ION_IS_B = np.array([ion == "b" for ion, _ in ION_TYPES], dtype=bool)
-_ION_Z = np.array([z for _, z in ION_TYPES], dtype=np.float64)
 
 
 class ModelRunner:
@@ -78,53 +63,29 @@ class TorchRunner(ModelRunner):
 
 
 def _bucket_arrays(precs: list[Precursor], length: int):
-    """Dense token/mod/charge arrays for a same-length bucket (vectorized).
+    """Dense token/mod/charge/residue-mass arrays for a same-length bucket (via the ext).
 
     Tokens are wrapped with N/C-term ids -> shape (B, length+2). ``residue_mass`` stays
     (B, length): termini carry no mass and never enter m/z.
     """
-    b = len(precs)
-    off = frag_offset()
-    extra = 2 if use_termini() else 0
-    # Sequences share a length -> one contiguous byte matrix, then table lookup.
-    seq_bytes = np.frombuffer("".join(p.peptide.sequence for p in precs).encode(), dtype=np.uint8)
-    codes = seq_bytes.reshape(b, length)
-    residue_mass = _AA_MASS[codes].copy()  # (B, L) float64, residues only
+    import pepdistill_rs as _rs
 
-    tok = np.full((b, length + extra), PAD_IDX, dtype=np.int64)
-    if use_termini():
-        tok[:, 0] = NTERM_IDX
-        tok[:, 1 + length] = CTERM_IDX
-    tok[:, off : off + length] = codes.astype(np.int64) - AA_OFFSET  # ord(aa) - ord('A')
-
-    mod_delta = np.zeros((b, length + extra), dtype=np.float32)
-    for i, p in enumerate(precs):  # O(precursors), not O(fragments)
-        for site, name in p.peptide.mods:
-            d = MOD_DELTA[name]
-            residue_mass[i, site] += d
-            mod_delta[i, off + site] += d / MOD_SCALE
-    charge = np.array([p.charge for p in precs], dtype=np.int64)
-    return tok, mod_delta, charge, residue_mass
+    seqs = [p.peptide.sequence for p in precs]
+    charges = [int(p.charge) for p in precs]
+    mod_sites = [[int(s) for s, _ in p.peptide.mods] for p in precs]
+    mod_names = [[n for _, n in p.peptide.mods] for p in precs]
+    a = _rs.bucket_arrays(seqs, charges, mod_sites, mod_names, length, use_termini())
+    return a["tokens"], a["mod_delta"], a["charge"], a["residue_mass"]
 
 
 def _fragment_mz(residue_mass: np.ndarray, charge: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Vectorized fragment m/z and precursor m/z for a same-length bucket.
+    """Vectorized fragment m/z and precursor m/z for a same-length bucket (via the ext).
 
     Returns (mz (B, L-1, n_ion), precursor_mz (B,)).
     """
-    prefix = np.cumsum(residue_mass, axis=1)  # (B, L); prefix[:,k] = sum residues 0..k
-    total = prefix[:, -1]  # (B,)
-    # position i (0..L-2): b ordinal i+1 -> prefix[:, i]; y -> total - prefix[:, i] + H2O
-    b_neutral = prefix[:, :-1]  # (B, L-1)
-    y_neutral = total[:, None] - prefix[:, :-1] + H2O  # (B, L-1)
+    import pepdistill_rs as _rs
 
-    # (B, L-1, n_ion): pick b or y neutral per column, then charge arithmetic.
-    neutral = np.where(_ION_IS_B[None, None, :], b_neutral[..., None], y_neutral[..., None])
-    z = _ION_Z[None, None, :]
-    mz = (neutral + z * PROTON) / z
-
-    precursor_mz = (total + H2O + charge * PROTON) / charge
-    return mz.astype(np.float64), precursor_mz
+    return _rs.bucket_fragment_mz(residue_mass, charge)
 
 
 def predict_library_fast(
