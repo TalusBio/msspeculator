@@ -35,14 +35,6 @@ class StudentConfig:
     # transformer default and what the arch sweeps used; relu is cheaper to fuse and
     # quantize, so revisit it when the candle/int8 runtime lands.
     activation: str = "gelu"
-    # Where charge enters. False (default): charge leaves the trunk entirely — RT reads a
-    # charge-free pooled rep so RT is *structurally* charge-invariant (a peptide's RT is a
-    # per-peptide property; same stripped peptide at multiple charges must share one RT for
-    # a self-consistent library — inductive bias, not something we hope training learns).
-    # CCS concatenates charge_emb at its head, MS2 adds charge_emb per fragment site. True:
-    # charge_emb added to every trunk position (all heads see it). A/B showed equal MAE;
-    # False wins on library self-consistency (in_trunk wobbles RT ~0.02min across charges).
-    charge_in_trunk: bool = False
     # Acquisition-context conditioning. A per-source context VECTOR (not id) enters at the
     # heads as a zero-init additive bias: ms_context drives MS2 fragments (instrument /
     # collision energy / fragmentation), chrom_context drives RT (chromatography). CCS takes
@@ -130,10 +122,10 @@ class StudentModel(nn.Module):
         else:
             raise ValueError(f"unknown backbone {cfg.backbone!r}")
 
-        # CCS head sees charge either from the trunk (in_dim=d) or concatenated at the head
-        # (in_dim=2d) when charge is factored out. MS2/RT always take d (charge, when
-        # factored out, is added — not concatenated — to the MS2 fragment features).
-        ccs_in = d if cfg.charge_in_trunk else 2 * d
+        # Charge is factored out of the trunk (RT must stay charge-invariant — the RT label is
+        # id-time, so its charge-dependence is measurement artifact, not signal), so it re-enters
+        # only at the heads: concatenated to CCS (in_dim=2d) and added per fragment site to MS2.
+        ccs_in = 2 * d
         self.ms2_head = nn.Sequential(nn.Linear(d, d), cfg.act_module(), nn.Linear(d, cfg.n_ion))
         self.rt_head = nn.Sequential(nn.Linear(d, d), cfg.act_module(), nn.Linear(d, 1))
         self.ccs_head = nn.Sequential(nn.Linear(ccs_in, d), cfg.act_module(), nn.Linear(d, 1))
@@ -181,15 +173,11 @@ class StudentModel(nn.Module):
             "ccs": out["ccs"] * self.ccs_std + self.ccs_mean,
         }
 
-    def _embed_tensors(
-        self, tokens: torch.Tensor, mod_delta: torch.Tensor, charge: torch.Tensor
-    ) -> torch.Tensor:
+    def _embed_tensors(self, tokens: torch.Tensor, mod_delta: torch.Tensor) -> torch.Tensor:
         length = tokens.shape[1]
         pos = torch.arange(length, device=tokens.device).unsqueeze(0)
         x = self.token_emb(tokens) + self.pos_emb(pos)
         x = x + self.mod_proj(mod_delta.unsqueeze(-1))
-        if self.cfg.charge_in_trunk:
-            x = x + self.charge_emb(charge).unsqueeze(1)
         return x
 
     def _apply_heads(
@@ -201,8 +189,9 @@ class StudentModel(nn.Module):
         chrom_context: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Run the three heads. ms_context (broadcast) shifts the per-fragment features;
-        chrom_context shifts the RT head; CCS is peptide + charge only. Charge, when factored
-        out of the trunk, re-enters here (added per fragment site for MS2, concatenated for CCS).
+        chrom_context shifts the RT head; CCS is peptide + charge only. Charge re-enters here
+        (it is factored out of the trunk): added per fragment site for MS2, concatenated for CCS.
+        RT never sees charge — it stays structurally charge-invariant.
         """
         frag_feat = 0.5 * (h[:, :-1] + h[:, 1:])  # (B, L-1, d)
         ms2_feat, ccs_feat, rt_feat = frag_feat, pooled, pooled
@@ -211,18 +200,14 @@ class StudentModel(nn.Module):
         if chrom_context is not None:
             rt_feat = rt_feat + self.chrom_to_rt(chrom_context)
 
-        if self.cfg.charge_in_trunk:
-            ms2 = torch.sigmoid(self.ms2_head(ms2_feat))
-            ccs = self.ccs_head(ccs_feat).squeeze(-1)
-        else:
-            ce = self.charge_emb(charge)  # (B, d)
-            ms2 = torch.sigmoid(self.ms2_head(ms2_feat + ce.unsqueeze(1)))
-            ccs = self.ccs_head(torch.cat([ccs_feat, ce], dim=-1)).squeeze(-1)
+        ce = self.charge_emb(charge)  # (B, d)
+        ms2 = torch.sigmoid(self.ms2_head(ms2_feat + ce.unsqueeze(1)))
+        ccs = self.ccs_head(torch.cat([ccs_feat, ce], dim=-1)).squeeze(-1)
         rt = self.rt_head(rt_feat).squeeze(-1)
         return ms2, rt, ccs
 
     def _embed(self, batch: Batch) -> torch.Tensor:
-        return self._embed_tensors(batch.tokens, batch.mod_delta, batch.charge)
+        return self._embed_tensors(batch.tokens, batch.mod_delta)
 
     def forward_dense(
         self,
@@ -238,7 +223,7 @@ class StudentModel(nn.Module):
         MS context only (RT/CCS need no acquisition context here); bake it as a constant for
         a fixed-instrument export.
         """
-        x = self._embed_tensors(tokens, mod_delta, charge)
+        x = self._embed_tensors(tokens, mod_delta)
         # Dense/bucketed inputs have no padding, so no mask. Passing None (vs an all-False
         # mask) also avoids TransformerEncoder's eval fast-path NestedTensor packing, whose
         # aten::_nested_tensor_from_mask_left_aligned op is unimplemented on MPS.
