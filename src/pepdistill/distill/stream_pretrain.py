@@ -8,9 +8,9 @@ rate isn't worth a proteome-scale seen-set). One pass = full coverage.
 Throughput is teacher-bound, and peptdeep amortizes per-call overhead over big batches
 (~4k pep/s at 10k vs ~340 at 256). So peptides are labeled in large CHUNKS (prefetcher-style)
 and fed to the student as small mini-batches. Each peptide in a chunk gets its OWN collision
-energy drawn from a range, so ``ctx_acq`` is conditioned on a genuine per-peptide NCE sweep
-(the shared ContextEncoder learns a real CE response). Stays on the Lightning engine: a finite
-``IterableDataset`` over ``passes`` enumerations feeds ``DistillModule``.
+energy drawn from a range, so ``ms_context`` is conditioned on a genuine per-peptide NCE sweep
+(the shared MSContextEncoder learns a real energy response). Stays on the Lightning engine: a
+finite ``IterableDataset`` over ``passes`` enumerations feeds ``DistillModule``.
 """
 
 from __future__ import annotations
@@ -28,9 +28,9 @@ from ..data.sources import (
     enumerate_unspecific_stream,
     precursors_from_sequences,
 )
-from ..models.context import ContextEncoder
+from ..models.context import MSContextEncoder
 from ..models.student import StudentModel
-from .dataset import DistillDataset, collate_with_labels
+from .dataset import DistillDataset, MSFactors, collate_with_labels
 from .lightning import DistillModule
 
 
@@ -55,7 +55,10 @@ class StreamPretrainCfg:
     passes: int = 1  # full enumerations of the digests
     lr: float = 1e-3
     seed: int = 0
-    analyzer: str = "FTMS"  # teacher's acquisition (peptdeep Orbitrap/HCD) -> ctx_acq factors
+    # The teacher's fixed acquisition (peptdeep Orbitrap Lumos, FTMS detector, HCD) -> ms_context
+    # factors; only the energy varies (per-peptide NCE sweep).
+    instrument: str = "Lumos"
+    detector: str = "FTMS"
     fragmentation: str = "HCD"
     # Early stop when the student saturates the teacher (MS2 loss plateaus) — avoids burning
     # teacher throughput on a converged model. patience=0 disables it. Patience counts
@@ -83,8 +86,9 @@ def _peptides(mix: StreamMix, loop: bool):
 
 
 class _StreamingDataset(IterableDataset):
-    def __init__(self, teacher, cfg: StreamPretrainCfg) -> None:
+    def __init__(self, teacher, encoder: MSContextEncoder, cfg: StreamPretrainCfg) -> None:
         self.teacher = teacher
+        self.encoder = encoder
         self.cfg = cfg
 
     def _round_robin(self, iters):
@@ -118,10 +122,19 @@ class _StreamingDataset(IterableDataset):
         nces = rng.uniform(*self.cfg.nce_range, size=len(precs))
         labels = self.teacher.predict(precs, nces=nces)
         triples = [(p, lab, float(n)) for p, lab, n in zip(precs, labels, nces) if lab is not None]
+        inst_id = self.encoder.instrument_id(self.cfg.instrument)
+        det_id = self.encoder.detector_id(self.cfg.detector)
+        frag_id = self.encoder.fragmentation_id(self.cfg.fragmentation)
         for start in range(0, len(triples), self.cfg.batch_size):
             sub = triples[start : start + self.cfg.batch_size]
             lb = collate_with_labels([p for p, _, _ in sub], [lab for _, lab, _ in sub])
-            lb.ce = torch.tensor([n for _, _, n in sub], dtype=torch.float32)
+            n = len(sub)
+            lb.ms_factors = MSFactors(
+                instrument_id=torch.full((n,), inst_id, dtype=torch.long),
+                detector_id=torch.full((n,), det_id, dtype=torch.long),
+                fragmentation_id=torch.full((n,), frag_id, dtype=torch.long),
+                energy=torch.tensor([nce for _, _, nce in sub], dtype=torch.float32),
+            )
             yield lb
 
     def __iter__(self):
@@ -138,10 +151,10 @@ class _StreamingDataset(IterableDataset):
                 yield from self._label_chunk(buf, rng)
 
 
-def _estimate_norm(teacher, cfg: StreamPretrainCfg, n: int = 512):
+def _estimate_norm(teacher, encoder: MSContextEncoder, cfg: StreamPretrainCfg, n: int = 512):
     """Label a mid-NCE sample to standardize rt/ccs (teacher frame); real train resets it."""
     rng = np.random.default_rng(cfg.seed + 1)
-    ds = _StreamingDataset(teacher, cfg)
+    ds = _StreamingDataset(teacher, encoder, cfg)
     iters = [_peptides(m, loop=False) for m in cfg.mixes]
     items = []
     for item in ds._round_robin(iters):
@@ -206,7 +219,7 @@ class _LossPlateauStop(L.Callback):
 
 def fit_stream_pretrain(
     model: StudentModel,
-    encoder: ContextEncoder,
+    encoder: MSContextEncoder,
     teacher,
     cfg: StreamPretrainCfg,
     *,
@@ -214,18 +227,17 @@ def fit_stream_pretrain(
     log=print,
     log_every: int = 100,
 ) -> DistillModule:
-    """Enumerate-and-chunk online teacher-distill warmup on the shared backbone + CE encoder."""
+    """Enumerate-and-chunk online teacher-distill warmup on the shared backbone + MS context
+    encoder."""
     L.seed_everything(cfg.seed, verbose=False)
     log("[stream] estimating rt/ccs norm from a teacher sample...")
-    model.set_norm(*_estimate_norm(teacher, cfg))
+    model.set_norm(*_estimate_norm(teacher, encoder, cfg))
     module = DistillModule(
         model,
         lr=cfg.lr,
         context_encoder=encoder,
-        distill_analyzer=cfg.analyzer,
-        distill_fragmentation=cfg.fragmentation,
     )
-    loader = DataLoader(_StreamingDataset(teacher, cfg), batch_size=None)
+    loader = DataLoader(_StreamingDataset(teacher, encoder, cfg), batch_size=None)
     callbacks: list[L.Callback] = [_StepLogger(log_every, log)]
     if cfg.patience > 0:
         callbacks.append(

@@ -16,6 +16,7 @@ import lightning as L
 import torch
 from torch.utils.data import DataLoader
 
+from ..models.context import MSContextEncoder
 from ..models.student import StudentModel
 from .dataset import BatchIterable, DistillDataset, LabeledBatch
 from .losses import distill_loss, spectral_angle
@@ -44,20 +45,16 @@ class DistillModule(L.LightningModule):
         lr: float = 1e-3,
         weight_decay: float = 1e-5,
         loss_weights: tuple[float, float, float] = (1.0, 1.0, 1.0),
-        context_encoder=None,
-        distill_analyzer: str = "FTMS",
-        distill_fragmentation: str = "HCD",
+        context_encoder: MSContextEncoder | None = None,
     ) -> None:
         super().__init__()
         self.model = model  # shared backbone; NOT a hyperparameter
-        # Optional: condition on acquisition via the shared ContextEncoder, so the teacher's
+        # Optional: condition on acquisition via the shared MSContextEncoder, so the teacher's
         # settings are factors rather than baked into the base. None -> context-free warmup.
-        # When set, each batch MUST carry its own collision energy (batch.ce) — CE is never
-        # fabricated; supply it from the data (streaming sweeps it per-peptide).
+        # When set, each batch MUST carry its own ms_factors (instrument/detector/fragmentation
+        # ids + collision energy) — factors are never fabricated; supply them from the data
+        # (streaming sweeps energy per-peptide).
         self.context_encoder = context_encoder
-        # The teacher's fixed analyzer/fragmentation (peptdeep defaults: Orbitrap FTMS + HCD).
-        self.distill_analyzer = distill_analyzer
-        self.distill_fragmentation = distill_fragmentation
         self.lr = lr
         self.weight_decay = weight_decay
         self.loss_weights = loss_weights
@@ -68,15 +65,16 @@ class DistillModule(L.LightningModule):
     def _predict(self, batch: LabeledBatch) -> dict:
         if self.context_encoder is None:
             return self.model(batch.inputs)
-        if batch.ce is None:
+        f = batch.ms_factors
+        if f is None:
             raise ValueError(
-                "context_encoder is set but the batch carries no collision energy; the dataset "
-                "must provide per-example CE (it is never fabricated)"
+                "context_encoder is set but the batch carries no ms_factors; the dataset must "
+                "provide acquisition factors (they are never fabricated)"
             )
-        ctx_acq = self.context_encoder.encode_batch(
-            batch.ce, self.distill_analyzer, self.distill_fragmentation, self.device
+        ms_context = self.context_encoder(
+            f.instrument_id, f.detector_id, f.fragmentation_id, f.energy
         )
-        return self.model.forward_context(batch.inputs, ctx_acq=ctx_acq, ctx_lc=None)
+        return self.model.forward(batch.inputs, ms_context=ms_context)
 
     def training_step(self, batch: LabeledBatch, batch_idx: int) -> torch.Tensor:
         out = self._predict(batch)
@@ -145,17 +143,14 @@ def fit_distill(
     grad_clip: float = 1.0,
     seed: int = 0,
     accelerator: str = "auto",
-    context_encoder=None,
-    distill_analyzer: str = "FTMS",
-    distill_fragmentation: str = "HCD",
+    context_encoder: MSContextEncoder | None = None,
     **trainer_kwargs,
 ) -> DistillModule:
     """Set target norm from ``train_ds`` and run a Lightning distillation fit in place.
 
     Returns the LightningModule (its ``.model`` is the trained shared backbone). Pass a
     ``context_encoder`` to condition on acquisition (shared with a later real-speclib sink);
-    the dataset must then carry per-example collision energy (``LabeledBatch.ce``).
-    ``distill_analyzer``/``distill_fragmentation`` are the teacher's fixed acquisition factors.
+    the dataset must then carry per-example ``ms_factors`` (``LabeledBatch.ms_factors``).
     """
     L.seed_everything(seed, verbose=False)
     model.set_norm(*train_ds.rt_ccs_stats())
@@ -165,8 +160,6 @@ def fit_distill(
         weight_decay=weight_decay,
         loss_weights=loss_weights,
         context_encoder=context_encoder,
-        distill_analyzer=distill_analyzer,
-        distill_fragmentation=distill_fragmentation,
     )
     dm = DistillDataModule(train_ds, val_ds, batch_size=batch_size, seed=seed)
     trainer = build_trainer(epochs, accelerator, grad_clip, **trainer_kwargs)
