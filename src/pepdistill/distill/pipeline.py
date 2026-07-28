@@ -1,17 +1,17 @@
 """One config-driven Lightning pipeline: pretrain -> train -> export -> bench.
 
 A single :class:`RunConfig` replaces the old per-stage CLI + hand-rolled trainer. Every stage
-is independently toggleable; the model and the collision-energy :class:`ContextEncoder` are
-built once and threaded through, so the teacher warmup and the real-data sink share one CE
-axis (the teacher's NCE is a factor, not a baked base).
+is independently toggleable; the model and the shared :class:`MSContextEncoder` are built once
+and threaded through, so the teacher warmup and the real-data sink share one acquisition-factor
+(instrument/detector/fragmentation/energy) axis (the teacher's NCE is a factor, not a baked base).
 
 Stages:
 - **pretrain** — online teacher-distill warmup. Enumerate the ``sources`` live (unspecific
   enzyme -> immunopeptidome windows, else tryptic) with the teacher labeling over an NCE sweep,
   so collision energy comes from the data (never fabricated) and the encoder learns a real CE
   axis. (A fixed-energy corpus would just be a dataset that carries its own CE — no special mode.)
-- **train** — real-speclib sink on a PROSPECT pool (streamed shard-by-shard), per-run ctx_lc
-  and CE-driven ctx_acq.
+- **train** — real-speclib sink on a PROSPECT pool (streamed shard-by-shard), per-run
+  ``chrom_context`` and factor-driven ``ms_context``.
 - **export** — ONNX. **bench** — library-generation throughput on a FASTA digest.
 
 Inference (predict a library from a finished model) is deliberately NOT here — it is the
@@ -30,7 +30,7 @@ from ..data.config import DigestConfig, SplitConfig
 from ..data.digest import digest_fasta
 from ..data.precursors import enumerate_precursors
 from ..data.prospect import ProspectSource, merge_real_labels
-from ..models.context import ContextEncoder
+from ..models.context import MSContextEncoder
 from ..models.registry import build_student, load_checkpoint, save_checkpoint
 from ..predict.fast import TorchRunner, predict_library_fast
 from ..teacher import get_teacher
@@ -62,7 +62,7 @@ class PretrainCfg:
     sources: list[DigestSource] = field(default_factory=list)
     teacher: str = "alphapeptdeep"  # fake | alphapeptdeep
     instrument: str = "Lumos"
-    analyzer: str = "FTMS"  # teacher acquisition -> ctx_acq factors (peptdeep = Orbitrap/HCD)
+    detector: str = "FTMS"  # teacher acquisition -> ms_context factors (peptdeep = Orbitrap/HCD)
     fragmentation: str = "HCD"
     device: str = "cpu"  # teacher device (peptdeep); student device is RunConfig.device
     batch_size: int = 256
@@ -202,7 +202,8 @@ def _run_pretrain(cfg: RunConfig, model, encoder, acc, log):
         min_delta=p.min_delta,
         check_every=p.check_every,
         warmup_steps=p.warmup_steps,
-        analyzer=p.analyzer,
+        instrument=p.instrument,
+        detector=p.detector,
         fragmentation=p.fragmentation,
     )
     log(
@@ -223,7 +224,7 @@ def run_pipeline(cfg: RunConfig, log=print) -> dict:
     # CE ContextEncoder is needed by the real-data sink (ce_context) AND by streaming pretrain
     # (the NCE sweep); build once and share it across both.
     need_encoder = cfg.train.ce_context or cfg.pretrain.enabled
-    encoder = ContextEncoder(context_dim=model.cfg.context_dim) if need_encoder else None
+    encoder = MSContextEncoder(context_dim=model.cfg.context_dim) if need_encoder else None
     log(f"student '{cfg.preset}' — {model.num_parameters():,} params (device={cfg.device})")
 
     if cfg.pretrain.enabled:
@@ -231,8 +232,8 @@ def run_pipeline(cfg: RunConfig, log=print) -> dict:
         summary["pretrain"] = {k: float(v) for k, v in mod.trainer.callback_metrics.items()}
         log(f"[pretrain] {summary['pretrain']}")
 
-    book = None
-    source_index = None
+    runbook = None
+    dataset_index = None
     if cfg.train.enabled:
         log(f"[train] streaming shards {cfg.train.shards} of {cfg.train.zip}")
         real = _load_real(cfg.train, log)
@@ -249,18 +250,18 @@ def run_pipeline(cfg: RunConfig, log=print) -> dict:
             encoder=encoder,
             enable_progress_bar=False,
         )
-        book = module.book
-        source_index = module.source_index
+        runbook = module.runbook
+        dataset_index = module.dataset_index
         summary["train"] = {k: float(v) for k, v in module.trainer.callback_metrics.items()}
-        summary["source_index"] = source_index
+        summary["dataset_index"] = dataset_index
         log(f"[train] {summary['train']}")
 
     if encoder is not None:
-        summary["ce_curve"] = _ce_curve(encoder, cfg.pretrain.nce_min, cfg.pretrain.nce_max)
+        summary["energy_curve"] = _energy_curve(encoder, cfg.pretrain.nce_min, cfg.pretrain.nce_max)
 
     ckpt = out / "model.ckpt"
     # Persist the context too, or the artifact can only make base (context-free) predictions.
-    save_checkpoint(model, ckpt, encoder=encoder, book=book, source_index=source_index)
+    save_checkpoint(model, ckpt, encoder=encoder, runbook=runbook, dataset_index=dataset_index)
     log(f"saved {ckpt}")
 
     if cfg.export.enabled:
@@ -278,13 +279,15 @@ def run_pipeline(cfg: RunConfig, log=print) -> dict:
     return summary
 
 
-def _ce_curve(encoder, ce_min: float, ce_max: float, n: int = 5) -> dict:
-    """ctx_acq magnitude across the CE range — a quick read on what the encoder learned."""
+def _energy_curve(encoder, ce_min: float, ce_max: float, n: int = 5) -> dict:
+    """ms_context magnitude across the energy range — a quick read on what the encoder learned."""
     import torch
 
     ces = [ce_min + (ce_max - ce_min) * i / (n - 1) for i in range(n)]
+    zeros = torch.zeros(n, dtype=torch.long)
+    energy = torch.tensor(ces, dtype=torch.float32)
     with torch.no_grad():
-        norms = encoder(torch.tensor(ces, dtype=torch.float32)).norm(dim=1)
+        norms = encoder(zeros, zeros, zeros, energy=energy).norm(dim=1)
     return {round(c, 1): round(float(v), 4) for c, v in zip(ces, norms)}
 
 
