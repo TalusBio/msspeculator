@@ -1659,6 +1659,7 @@ dependencies = [
     { name = "lightning" },
     { name = "numpy" },
     { name = "pandas" },
+    { name = "pepdistill-rs" },
     { name = "pyarrow" },
     { name = "safetensors" },
     { name = "torch" },
@@ -1691,6 +1692,7 @@ requires-dist = [
     { name = "onnx", marker = "extra == 'onnx'", specifier = ">=1.16,<1.18" },
     { name = "onnxruntime", marker = "extra == 'onnx'", specifier = ">=1.18" },
     { name = "pandas", specifier = ">=2.0" },
+    { name = "pepdistill-rs", editable = "rust" },
     { name = "peptdeep", marker = "extra == 'teacher'", specifier = ">=1.2" },
     { name = "pyarrow", specifier = ">=15.0" },
     { name = "s3fs", marker = "extra == 'prospect'", specifier = ">=2024.0" },
@@ -1705,6 +1707,11 @@ dev = [
     { name = "pytest", specifier = ">=8.0" },
     { name = "ruff", specifier = ">=0.6" },
 ]
+
+[[package]]
+name = "pepdistill-rs"
+version = "0.1.0"
+source = { editable = "rust" }
 
 [[package]]
 name = "peptdeep"

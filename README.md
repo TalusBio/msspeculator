@@ -23,9 +23,21 @@ teacher generates the training labels from in-silico digests.
 ## Install
 
 ```bash
-uv sync                     # core (torch, pandas, typer)
+uv sync                     # core (torch, pandas, typer) + the pepdistill_rs Rust ext
 uv sync --extra teacher     # + AlphaPeptDeep teacher (peptdeep)
 uv sync --extra onnx        # + ONNX export & onnxruntime inference
+```
+
+Chemistry, the `Peptide` type, tokenization, and batch-encoding are single-sourced in Rust
+(`rust/core`) and required at runtime — `pepdistill.chem` is just a re-export shim over the
+`pepdistill_rs` extension. `pepdistill-rs` is declared as a `[tool.uv.sources]` path
+dependency on `rust/` (build backend: maturin), so a plain `uv sync` compiles and installs
+it automatically. This means **a Rust toolchain (`cargo`) must be on `PATH`** the first time
+you sync; if `uv sync` ever can't drive the build in your environment, build the extension
+manually into the venv instead:
+
+```bash
+uv run maturin develop -m rust/Cargo.toml --release
 ```
 
 The `fake` teacher (deterministic, dependency-free) is always available for
@@ -113,7 +125,9 @@ fragment:
 
 ```
 pepdistill/
-  chem.py      masses, m/z, fragment-ion series (pure numeric)
+  chem.py      re-export shim over the Rust ext (pepdistill_rs): masses, m/z, fragment-ion
+               series, and the Peptide class all live in Rust (rust/core); no chemistry
+               logic left in Python
   data/        FASTA digest, precursor enumeration, deterministic split, tensor encoding,
                PROSPECT real-spectra source + tiered fsspec cache
   teacher/     Teacher ABC + FakeTeacher + PeptDeepTeacher (behind [teacher] extra)
