@@ -7,6 +7,7 @@
 pub mod artifact;
 pub mod chem;
 pub mod model;
+pub mod peptide;
 
 use anyhow::Result;
 
