@@ -13,6 +13,8 @@ name = "pepdistill_rs"
 crate-type = ["cdylib"]
 
 [dependencies]
+pepdistill-core = { path = "core" }
 pyo3 = { version = "0.22", features = ["extension-module"] }
 numpy = "0.22"
 ndarray = "0.16"
+anyhow = "1"

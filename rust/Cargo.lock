@@ -275,8 +275,10 @@ dependencies = [
 name = "pepdistill_rs"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "ndarray",
  "numpy",
+ "pepdistill-core",
  "pyo3",
 ]
 
