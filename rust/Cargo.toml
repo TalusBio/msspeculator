@@ -1,3 +1,7 @@
+[workspace]
+members = ["core", "cli"]
+resolver = "2"
+
 [package]
 name = "pepdistill_rs"
 version = "0.1.0"

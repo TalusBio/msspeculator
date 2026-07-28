@@ -1660,6 +1660,7 @@ dependencies = [
     { name = "numpy" },
     { name = "pandas" },
     { name = "pyarrow" },
+    { name = "safetensors" },
     { name = "torch" },
     { name = "typer" },
 ]
@@ -1693,6 +1694,7 @@ requires-dist = [
     { name = "peptdeep", marker = "extra == 'teacher'", specifier = ">=1.2" },
     { name = "pyarrow", specifier = ">=15.0" },
     { name = "s3fs", marker = "extra == 'prospect'", specifier = ">=2024.0" },
+    { name = "safetensors", specifier = ">=0.8.0" },
     { name = "torch", specifier = ">=2.2" },
     { name = "typer", specifier = ">=0.12" },
 ]

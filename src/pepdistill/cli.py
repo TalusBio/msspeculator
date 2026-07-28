@@ -162,5 +162,18 @@ def predict(
     )
 
 
+@app.command(name="export-rust")
+def export_rust(
+    model: Path = typer.Option(..., exists=True, readable=True, help="Checkpoint (.ckpt)."),
+    out: Path = typer.Option(..., "--out", "-o", help="Output .safetensors artifact."),
+) -> None:
+    """Export a checkpoint to a self-contained .safetensors for the Rust predict CLI."""
+    from .export import export_safetensors
+
+    out.parent.mkdir(parents=True, exist_ok=True)
+    export_safetensors(model, out)
+    typer.echo(f"exported -> {out}")
+
+
 if __name__ == "__main__":
     app()
