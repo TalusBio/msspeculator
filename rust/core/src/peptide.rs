@@ -15,10 +15,24 @@ pub enum Site {
 /// encoder; `MassOnly` carries a bare delta and can only drive the mass encoder. Keeping these
 /// distinct at the type level is what stops a mass-only mod from acquiring a composition it
 /// never had.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum ModSpec {
     Named(String),
     MassOnly(f64),
+}
+
+// PartialEq is hand-written (not derived) so it agrees bit-for-bit with Hash and Ord below,
+// both of which compare `f64` via `to_bits()`. Derived PartialEq would use IEEE equality
+// (-0.0 == 0.0, NaN != NaN), which disagrees with to_bits()-based Hash/Ord and would corrupt
+// HashMap/HashSet lookups keyed on Peptide (Python uses Peptide as a dict key and dedup key).
+impl PartialEq for ModSpec {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (ModSpec::Named(a), ModSpec::Named(b)) => a == b,
+            (ModSpec::MassOnly(a), ModSpec::MassOnly(b)) => a.to_bits() == b.to_bits(),
+            _ => false,
+        }
+    }
 }
 
 impl Eq for ModSpec {}
@@ -153,6 +167,37 @@ impl Peptide {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    fn hash_of<T: Hash>(v: &T) -> u64 {
+        let mut h = DefaultHasher::new();
+        v.hash(&mut h);
+        h.finish()
+    }
+
+    #[test]
+    fn mass_only_eq_ord_hash_agree_on_signed_zero() {
+        // -0.0 == 0.0 under IEEE float equality, but they're different bit patterns. PartialEq
+        // must agree with Ord/Hash (both to_bits()-based), so they must compare UNEQUAL
+        // everywhere, not just in Ord/Hash — a derived (IEEE) PartialEq would disagree here.
+        let neg = ModSpec::MassOnly(-0.0);
+        let pos = ModSpec::MassOnly(0.0);
+        assert_ne!(neg, pos);
+        assert_ne!(neg.cmp(&pos), std::cmp::Ordering::Equal);
+        assert_ne!(hash_of(&neg), hash_of(&pos));
+    }
+
+    #[test]
+    fn mass_only_peptide_equals_itself() {
+        // Reflexivity: in particular this must hold for NaN, where derived (IEEE) PartialEq
+        // would report NaN != NaN and break the Eq contract.
+        let p = Peptide::new("PEPTIDE".into(), vec![(Site::Residue(0), ModSpec::MassOnly(f64::NAN))]);
+        let q = Peptide::new("PEPTIDE".into(), vec![(Site::Residue(0), ModSpec::MassOnly(f64::NAN))]);
+        assert_eq!(p, p);
+        assert_eq!(p, q);
+        assert_eq!(hash_of(&p), hash_of(&q));
+    }
 
     #[test]
     fn sites_sort_nterm_first_cterm_last() {
