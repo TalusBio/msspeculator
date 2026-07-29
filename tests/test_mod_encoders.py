@@ -97,3 +97,61 @@ def test_forward_exposes_both_mod_vectors():
     assert "mod_g" in out and "mod_m" in out
     assert out["mod_g"].shape == out["mod_m"].shape
     assert out["mod_g"].shape[:2] == _batch().tokens.shape
+
+
+def test_mod_align_is_zero_with_no_named_sites():
+    from pepdistill.distill.losses import mod_align_loss
+
+    g = torch.randn(2, 5, 8)
+    m = torch.randn(2, 5, 8)
+    named = torch.zeros(2, 5, dtype=torch.bool)
+    assert float(mod_align_loss(g, m, named)) == 0.0
+
+
+def test_mod_align_ignores_unnamed_sites():
+    from pepdistill.distill.losses import mod_align_loss
+
+    g = torch.zeros(1, 3, 4)
+    m = torch.zeros(1, 3, 4)
+    m[0, 2] = 100.0  # a large error at an unnamed site must not register
+    named = torch.tensor([[True, True, False]])
+    assert float(mod_align_loss(g, m, named)) == 0.0
+
+
+def test_mod_align_measures_named_site_error():
+    from pepdistill.distill.losses import mod_align_loss
+
+    g = torch.zeros(1, 2, 4)
+    m = torch.full((1, 2, 4), 3.0)
+    named = torch.tensor([[True, False]])
+    assert abs(float(mod_align_loss(g, m, named)) - 9.0) < 1e-6
+
+
+def test_mod_align_does_not_train_the_comp_encoder():
+    """g is the teacher: the align term must leave comp_enc's gradients untouched."""
+    from pepdistill.distill.losses import mod_align_loss
+
+    model = build_student("tiny").train()
+    b = _batch()
+    out = model(b)
+    mod_align_loss(out["mod_g"], out["mod_m"], b.mod_named).backward()
+    assert model.comp_enc.weight.grad is None or float(model.comp_enc.weight.grad.abs().max()) == 0.0
+    assert float(model.mass_enc[-1].weight.grad.abs().max()) > 0.0
+
+
+def test_mod_align_decreases_when_fitted():
+    from pepdistill.distill.losses import mod_align_loss
+
+    torch.manual_seed(0)
+    model = build_student("tiny").train()
+    b = _batch()
+    opt = torch.optim.Adam(model.mass_enc.parameters(), lr=1e-2)
+    out = model(b)
+    first = float(mod_align_loss(out["mod_g"], out["mod_m"], b.mod_named))
+    for _ in range(50):
+        opt.zero_grad()
+        out = model(b)
+        loss = mod_align_loss(out["mod_g"], out["mod_m"], b.mod_named)
+        loss.backward()
+        opt.step()
+    assert float(loss) < first

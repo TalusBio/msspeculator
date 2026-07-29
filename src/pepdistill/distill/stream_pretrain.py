@@ -67,6 +67,9 @@ class StreamPretrainCfg:
     min_delta: float = 1e-3
     check_every: int = 200
     warmup_steps: int = 500
+    # Ties mass_enc onto a stop-gradiented comp_enc (see losses.mod_align_loss); this regime
+    # also drives a DistillModule, so it gets the same knob as fit_distill/fit_realspeclib.
+    mod_align_weight: float = 1.0
 
 
 def default_mixes(fasta: str) -> list[StreamMix]:
@@ -236,6 +239,7 @@ def fit_stream_pretrain(
         model,
         lr=cfg.lr,
         context_encoder=encoder,
+        mod_align_weight=cfg.mod_align_weight,
     )
     loader = DataLoader(_StreamingDataset(teacher, encoder, cfg), batch_size=None)
     callbacks: list[L.Callback] = [_StepLogger(log_every, log)]

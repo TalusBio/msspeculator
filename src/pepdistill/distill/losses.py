@@ -65,3 +65,24 @@ def distill_loss(
         raise ValueError("distill_loss: all term weights are zero")
     parts["total"] = float(total.detach())
     return total, parts
+
+
+def mod_align_loss(
+    mod_g: torch.Tensor, mod_m: torch.Tensor, mod_named: torch.Tensor
+) -> torch.Tensor:
+    """Pull the mass-only encoder onto the compositional encoder's shared space.
+
+    MSE between ``mod_m`` and a stop-gradiented ``mod_g``, over sites where a composition is
+    actually known. The stop-gradient is one-directional on purpose: ``g`` is shaped only by
+    the prediction task, and without it ``g`` could shrink toward zero to make alignment cheap.
+
+    Masked to named sites because unmodified positions are trivially aligned (both encoders
+    are zeroed there) and would otherwise dominate the mean, which is almost all of any batch.
+    """
+    mask = mod_named.unsqueeze(-1).expand_as(mod_m).to(mod_m.dtype)
+    n = mask.sum()
+    if float(n) == 0.0:
+        # No supervision available. Return a graph-connected zero so callers can add it
+        # unconditionally without a NaN or a detached-tensor surprise.
+        return mod_m.sum() * 0.0
+    return (((mod_m - mod_g.detach()) * mask) ** 2).sum() / n

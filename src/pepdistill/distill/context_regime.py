@@ -38,7 +38,7 @@ from ..models.student import StudentModel
 from ..teacher.base import PrecursorLabels
 from .dataset import BatchIterable, LabeledBatch, MSFactors, collate_with_labels, iter_batch_indices
 from .lightning import build_trainer
-from .losses import ms2_cosine_loss, spectral_angle
+from .losses import mod_align_loss, ms2_cosine_loss, spectral_angle
 
 if TYPE_CHECKING:
     from ..data.prospect import RealLabels
@@ -147,6 +147,7 @@ class RealSpeclibModule(L.LightningModule):
         loss_weights: tuple[float, float, float] = (1.0, 1.0, 1.0),  # ms2, irt, raw_rt
         dataset_index: dict[str, int] | None = None,
         freeze_backbone: bool = False,
+        mod_align_weight: float = 1.0,
     ) -> None:
         super().__init__()
         self.model = model
@@ -155,6 +156,9 @@ class RealSpeclibModule(L.LightningModule):
         self.lr = lr
         self.weight_decay = weight_decay
         self.loss_weights = loss_weights
+        # Ties mass_enc onto a stop-gradiented comp_enc (see losses.mod_align_loss); a separate
+        # scalar rather than a 4th slot in loss_weights, which already means (ms2, irt, raw_rt).
+        self.mod_align_weight = mod_align_weight
         # dataset name -> chrom_context row; needed to address a trained dataset at inference.
         self.dataset_index = dataset_index
         if freeze_backbone:  # PEFT: fit only the context modules, backbone stays fixed.
@@ -187,12 +191,14 @@ class RealSpeclibModule(L.LightningModule):
             out["rt_base"], self.model.standardize_rt(lb.rt_target)
         )
         loss_raw = torch.nn.functional.mse_loss(out["rt"], self.model.standardize_rt(rb.raw_rt))
-        self.log_dict(
-            {"train_ms2": loss_ms2, "train_irt": loss_irt, "train_rawrt": loss_raw},
-            prog_bar=False,
-            batch_size=rb.raw_rt.shape[0],
-        )
-        return w_ms2 * loss_ms2 + w_irt * loss_irt + w_raw * loss_raw
+        loss = w_ms2 * loss_ms2 + w_irt * loss_irt + w_raw * loss_raw
+        log = {"train_ms2": loss_ms2, "train_irt": loss_irt, "train_rawrt": loss_raw}
+        if self.mod_align_weight:
+            align = mod_align_loss(out["mod_g"], out["mod_m"], lb.inputs.mod_named)
+            log["train_mod_align"] = align.detach()
+            loss = loss + self.mod_align_weight * align
+        self.log_dict(log, prog_bar=False, batch_size=rb.raw_rt.shape[0])
+        return loss
 
     def validation_step(self, rb: RealBatch, batch_idx: int) -> None:
         out = self._forward(rb)
@@ -273,6 +279,7 @@ def fit_realspeclib(
     encoder: MSContextEncoder | None = None,
     runbook: ChromRunbook | None = None,
     freeze_backbone: bool = False,
+    mod_align_weight: float = 1.0,
     **trainer_kwargs,
 ) -> RealSpeclibModule:
     """Train on real spectra with per-run context. ``ms_context`` comes from the acquisition
@@ -318,6 +325,7 @@ def fit_realspeclib(
         loss_weights=loss_weights,
         dataset_index=dataset_index,
         freeze_backbone=freeze_backbone,
+        mod_align_weight=mod_align_weight,
     )
     train_ds = RealSpeclibDataset(train)
     val_ds = RealSpeclibDataset(_dedupe_val(val, dataset_name)) if val else None

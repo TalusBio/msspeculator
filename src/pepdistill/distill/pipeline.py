@@ -76,6 +76,7 @@ class PretrainCfg:
     min_delta: float = 1e-3
     check_every: int = 200
     warmup_steps: int = 500
+    mod_align_weight: float = 1.0
 
 
 @dataclass
@@ -93,6 +94,7 @@ class TrainCfg:
     instrument: str = (
         "Lumos"  # pool-level MS instrument (PROSPECT ~ Lumos); set per-source as more are added
     )
+    mod_align_weight: float = 1.0
 
 
 @dataclass
@@ -207,6 +209,7 @@ def _run_pretrain(cfg: RunConfig, model, encoder, acc, log):
         instrument=p.instrument,
         detector=p.detector,
         fragmentation=p.fragmentation,
+        mod_align_weight=p.mod_align_weight,
     )
     log(
         f"[pretrain] stream: {[m.name for m in spc.mixes]}, NCE {spc.nce_range}, "
@@ -251,6 +254,7 @@ def run_pipeline(cfg: RunConfig, log=print) -> dict:
             seed=cfg.seed,
             accelerator=acc,
             encoder=encoder,
+            mod_align_weight=cfg.train.mod_align_weight,
             enable_progress_bar=False,
         )
         runbook = module.runbook

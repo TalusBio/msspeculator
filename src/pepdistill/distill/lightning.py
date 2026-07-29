@@ -19,7 +19,7 @@ from torch.utils.data import DataLoader
 from ..models.context import MSContextEncoder
 from ..models.student import StudentModel
 from .dataset import BatchIterable, DistillDataset, LabeledBatch
-from .losses import distill_loss, spectral_angle
+from .losses import distill_loss, mod_align_loss, spectral_angle
 
 
 def build_trainer(epochs: int, accelerator: str, grad_clip: float, **trainer_kwargs) -> L.Trainer:
@@ -46,6 +46,7 @@ class DistillModule(L.LightningModule):
         weight_decay: float = 1e-5,
         loss_weights: tuple[float, float, float] = (1.0, 1.0, 1.0),
         context_encoder: MSContextEncoder | None = None,
+        mod_align_weight: float = 1.0,
     ) -> None:
         super().__init__()
         self.model = model  # shared backbone; NOT a hyperparameter
@@ -58,6 +59,9 @@ class DistillModule(L.LightningModule):
         self.lr = lr
         self.weight_decay = weight_decay
         self.loss_weights = loss_weights
+        # Ties mass_enc onto a stop-gradiented comp_enc (see losses.mod_align_loss); a separate
+        # scalar rather than a 4th slot in loss_weights, which already means (ms2, rt, ccs).
+        self.mod_align_weight = mod_align_weight
 
     def transfer_batch_to_device(self, batch: LabeledBatch, device, dataloader_idx: int):
         return batch.to(device)
@@ -83,6 +87,10 @@ class DistillModule(L.LightningModule):
         loss, parts = distill_loss(
             out, batch.ms2_target, rt_t, ccs_t, batch.inputs.frag_mask, self.loss_weights
         )
+        if self.mod_align_weight:
+            align = mod_align_loss(out["mod_g"], out["mod_m"], batch.inputs.mod_named)
+            parts["mod_align"] = float(align.detach())
+            loss = loss + self.mod_align_weight * align
         self.log_dict({f"train_{k}": v for k, v in parts.items()}, prog_bar=False)
         return loss
 
@@ -144,6 +152,7 @@ def fit_distill(
     seed: int = 0,
     accelerator: str = "auto",
     context_encoder: MSContextEncoder | None = None,
+    mod_align_weight: float = 1.0,
     **trainer_kwargs,
 ) -> DistillModule:
     """Set target norm from ``train_ds`` and run a Lightning distillation fit in place.
@@ -160,6 +169,7 @@ def fit_distill(
         weight_decay=weight_decay,
         loss_weights=loss_weights,
         context_encoder=context_encoder,
+        mod_align_weight=mod_align_weight,
     )
     dm = DistillDataModule(train_ds, val_ds, batch_size=batch_size, seed=seed)
     trainer = build_trainer(epochs, accelerator, grad_clip, **trainer_kwargs)
