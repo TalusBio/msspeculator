@@ -7,6 +7,7 @@
 pub mod artifact;
 pub mod bucket;
 pub mod chem;
+pub mod composition;
 pub mod model;
 pub mod peptide;
 pub mod tokenize;
