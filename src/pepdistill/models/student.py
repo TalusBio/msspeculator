@@ -137,7 +137,13 @@ class _TransformerBackbone(nn.Module):
             batch_first=True,
             activation=cfg.activation,
         )
-        self.net = nn.TransformerEncoder(layer, num_layers=cfg.n_layers)
+        # enable_nested_tensor=False: the eval fast path packs padded batches via
+        # aten::_nested_tensor_from_mask_left_aligned, which is unimplemented on MPS — it
+        # crashes the moment a masked batch is run in eval mode (i.e. every validation step
+        # of the real-speclib regime). The packing is a throughput optimization only, so
+        # disabling it is numerically identical. It was already off for presets with an odd
+        # head count, which torch refuses to pack; this makes every preset take one path.
+        self.net = nn.TransformerEncoder(layer, num_layers=cfg.n_layers, enable_nested_tensor=False)
 
     def forward(self, x: torch.Tensor, pad_mask: torch.Tensor) -> torch.Tensor:
         return self.net(x, src_key_padding_mask=pad_mask)
