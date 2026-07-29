@@ -19,3 +19,5 @@ rust/target/
 
 # Plans and specs are never in version control
 docs/
+runs/*
+!runs/*.toml
