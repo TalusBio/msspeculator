@@ -147,9 +147,15 @@ def test_parity_chrom_context(artifact, capsys):
 
     prec = Precursor(peptide=Peptide(PEPTIDE), charge=CHARGE, split="train")
     batch = collate([prec])
-    chrom = runbook(torch.tensor([1]))  # dsA -> row 1
+    ids = torch.tensor([1])  # dsA -> row 1
+    # A named dataset supplies BOTH runbook terms — the additive context vector and the output
+    # scale+shift. Passing only one here would test half of what the regime trains, and the
+    # fixture's normal_(std=0.3) over every parameter makes the affine decidedly non-identity.
+    chrom = runbook(ids)
     with torch.no_grad():
-        out = model.forward(batch, ms_context=None, chrom_context=chrom)
+        out = model.forward(
+            batch, ms_context=None, chrom_context=chrom, chrom_affine=runbook.affine(ids)
+        )
     rt_py = float(model.unstandardize_rt(out["rt"])[0])
 
     rj = _rust(binary, artifact["path"], ["--chrom-context", "dsA"])

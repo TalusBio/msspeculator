@@ -72,12 +72,24 @@ pub fn predict(
         )?),
         None => None,
     };
-    let chrom_vec = match chrom_context {
-        Some(name) => Some(predictor.chrom_context(name)?),
-        None => None,
+    // A named dataset supplies BOTH chromatography terms: the additive context vector and the
+    // output scale+shift. Resolving one without the other would silently apply half of what
+    // training fitted.
+    let (chrom_vec, chrom_affine) = match chrom_context {
+        Some(name) => (
+            Some(predictor.chrom_context(name)?),
+            Some(predictor.chrom_affine(name)?),
+        ),
+        None => (None, None),
     };
 
-    let (ms2, rt, ccs) = predictor.forward(&pep, charge, ms_vec.as_ref(), chrom_vec.as_ref())?;
+    let (ms2, rt, ccs) = predictor.forward(
+        &pep,
+        charge,
+        ms_vec.as_ref(),
+        chrom_vec.as_ref(),
+        chrom_affine,
+    )?;
 
     let mz = chem::fragment_mz_matrix(&rm); // [L-1, n_ion]
     let frag_pos = pep.sequence.len() - 1;

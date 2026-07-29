@@ -101,6 +101,15 @@ class ChromRunbook(nn.Module):
         super().__init__()
         self.emb = nn.Embedding(n_datasets + 1, context_dim)  # +1: index 0 = neutral (iRT)
         nn.init.zeros_(self.emb.weight)
+        # Per-dataset output affine on the RT head. `emb` above is an ADDITIVE bias in feature
+        # space, which can bend the mapping but cannot express a rescale — yet a dataset's raw
+        # RT differs from the iRT frame by SCALE as much as offset (gradient length, minutes vs
+        # indexed units, dead volume). Both zero-init, so scale=exp(0)=1 and shift=0: the
+        # neutral row and an untrained book are exactly identity.
+        self.log_scale = nn.Embedding(n_datasets + 1, 1)
+        self.shift = nn.Embedding(n_datasets + 1, 1)
+        nn.init.zeros_(self.log_scale.weight)
+        nn.init.zeros_(self.shift.weight)
 
     @property
     def context_dim(self) -> int:
@@ -112,6 +121,19 @@ class ChromRunbook(nn.Module):
 
     def forward(self, dataset_id: torch.Tensor) -> torch.Tensor:
         return self.emb(dataset_id)
+
+    def affine(self, dataset_id: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """``(scale, shift)``, each ``(B,)``, for the RT head's output.
+
+        Scale is ``exp(log_scale)``: strictly positive by construction, exactly 1.0 at init,
+        and well-behaved multiplicatively. Log space also means weight decay pulls the scale
+        toward 1 rather than toward 0, which is the right prior for a rescale.
+
+        Deliberately unclamped — a scale that runs away means the data disagrees with the
+        model, and clamping would bury that signal under a value that merely looks poorly fit.
+        """
+        scale = torch.exp(self.log_scale(dataset_id).squeeze(-1))
+        return scale, self.shift(dataset_id).squeeze(-1)
 
     def neutral(self, n: int, device: torch.device | str) -> torch.Tensor:
         return self.emb(torch.zeros(n, dtype=torch.long, device=device))

@@ -176,9 +176,17 @@ class RealSpeclibModule(L.LightningModule):
             rb.ms_factors.fragmentation_id,
             rb.ms_factors.energy,
         )
-        chrom_context = self.runbook(rb.dataset_id)  # RT context per dataset (chromatography)
+        # Two per-dataset chromatography terms, doing different jobs: the context vector is an
+        # additive bias in feature space (peptide-dependent, can reorder), the affine is a
+        # scale+shift on the head's output (global, absorbs gradient length / unit differences
+        # that an additive bias cannot express).
+        chrom_context = self.runbook(rb.dataset_id)
+        chrom_affine = self.runbook.affine(rb.dataset_id)
         return self.model.forward_context(
-            rb.base.inputs, ms_context=ms_context, chrom_context=chrom_context
+            rb.base.inputs,
+            ms_context=ms_context,
+            chrom_context=chrom_context,
+            chrom_affine=chrom_affine,
         )
 
     def training_step(self, rb: RealBatch, batch_idx: int) -> torch.Tensor:

@@ -138,3 +138,101 @@ def test_chrom_runbook_rows_learn_independently():
     b = book(torch.tensor([2]))
     assert not torch.allclose(a, b)
     assert book.neutral(2, torch.device("cpu")).shape == (2, 8)
+
+
+def test_runbook_affine_is_identity_at_init():
+    """Zero-init and the neutral row must both reproduce base RT EXACTLY, not approximately."""
+    import torch
+
+    from pepdistill.chem import Peptide
+    from pepdistill.data.encode import collate
+    from pepdistill.data.precursors import Precursor
+    from pepdistill.models.context import ChromRunbook
+    from pepdistill.models.registry import build_student
+
+    m = build_student("small").eval()
+    rb = ChromRunbook(2, m.cfg.context_dim)
+    batch = collate([Precursor(Peptide("SAMPLER"), 2, "t")])
+
+    for did in (0, 1, 2):  # 0 = neutral row, others untrained
+        ids = torch.tensor([did])
+        scale, shift = rb.affine(ids)
+        assert float(scale) == 1.0 and float(shift) == 0.0
+        with torch.no_grad():
+            base = m.forward_context(batch)["rt"]
+            cond = m.forward_context(
+                batch, chrom_context=rb(ids), chrom_affine=rb.affine(ids)
+            )["rt"]
+        assert torch.equal(base, cond), f"row {did} is not exactly identity"
+
+
+def test_runbook_affine_recovers_a_known_scale_and_shift():
+    """Fitting the runbook alone must recover an affine the data was generated with.
+
+    This is the whole point of the mechanism: an additive feature bias cannot express a
+    rescale, so if the target is a*base+b with a far from 1, only the affine can fit it.
+    """
+    import torch
+
+    from pepdistill.chem import Peptide
+    from pepdistill.data.encode import collate
+    from pepdistill.data.precursors import Precursor
+    from pepdistill.models.context import ChromRunbook
+    from pepdistill.models.registry import build_student
+
+    torch.manual_seed(0)
+    m = build_student("small").eval()
+    for p in m.parameters():  # freeze the student: only the runbook may learn
+        p.requires_grad_(False)
+    rb = ChromRunbook(1, m.cfg.context_dim)
+    # Zero the context vector's path so the affine is the only route -- otherwise the two
+    # mechanisms are partly interchangeable and the recovered numbers are not identifiable.
+    rb.emb.weight.requires_grad_(False)
+
+    precs = [Precursor(Peptide(s), 2, "t") for s in ("SAMPLER", "PEPTIDEK", "ACDEFGHIK")]
+    batch = collate(precs)
+    ids = torch.ones(len(precs), dtype=torch.long)
+    with torch.no_grad():
+        base = m.forward_context(batch)["rt"]
+    true_a, true_b = 3.5, -1.25
+    target = true_a * base + true_b
+
+    opt = torch.optim.Adam([rb.log_scale.weight, rb.shift.weight], lr=0.05)
+    for _ in range(600):
+        opt.zero_grad()
+        rt = m.forward_context(batch, chrom_context=rb(ids), chrom_affine=rb.affine(ids))["rt"]
+        loss = torch.nn.functional.mse_loss(rt, target)
+        loss.backward()
+        opt.step()
+
+    a, b = rb.affine(ids)
+    assert abs(float(a[0]) - true_a) < 0.05, f"scale {float(a[0])} != {true_a}"
+    assert abs(float(b[0]) - true_b) < 0.05, f"shift {float(b[0])} != {true_b}"
+    assert float(a[0]) > 0.0, "exp() must keep the scale positive"
+
+
+def test_affine_never_touches_rt_base():
+    """rt_base is the iRT anchor; conditioning it would destroy the frame it defines."""
+    import torch
+
+    from pepdistill.chem import Peptide
+    from pepdistill.data.encode import collate
+    from pepdistill.data.precursors import Precursor
+    from pepdistill.models.context import ChromRunbook
+    from pepdistill.models.registry import build_student
+
+    m = build_student("small").eval()
+    rb = ChromRunbook(1, m.cfg.context_dim)
+    with torch.no_grad():  # a decidedly non-identity affine
+        rb.log_scale.weight.fill_(1.0)
+        rb.shift.weight.fill_(5.0)
+    batch = collate([Precursor(Peptide("SAMPLER"), 2, "t")])
+    ids = torch.tensor([1])
+
+    with torch.no_grad():
+        plain = m.forward_context(batch)
+        conditioned = m.forward_context(
+            batch, chrom_context=rb(ids), chrom_affine=rb.affine(ids)
+        )
+    assert torch.equal(plain["rt_base"], conditioned["rt_base"]), "affine leaked into rt_base"
+    assert not torch.equal(plain["rt"], conditioned["rt"]), "affine did not affect rt"

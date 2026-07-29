@@ -224,6 +224,28 @@ impl<'a> Predictor<'a> {
             .to_owned())
     }
 
+    /// Per-dataset RT output affine `(scale, shift)` — the ChromRunbook's scale+shift row.
+    ///
+    /// `chrom_context` above is an additive bias in feature space and cannot express a
+    /// rescale; this carries the part of a dataset's raw-RT relationship that is a global
+    /// scale (gradient length, unit differences). Applied to the RT head's output in
+    /// standardized space, before denormalization, exactly as torch does it.
+    pub fn chrom_affine(&self, dataset: &str) -> Result<(f32, f32)> {
+        let index = self
+            .art
+            .meta
+            .dataset_index
+            .as_ref()
+            .ok_or_else(|| anyhow!("artifact has no dataset index"))?;
+        let row = *index
+            .get(dataset)
+            .ok_or_else(|| anyhow!("unknown --chrom-context {dataset:?}; known: {index:?}"))?
+            as usize;
+        let log_scale = self.art.get2("runbook.log_scale.weight")?[[row, 0]];
+        let shift = self.art.get2("runbook.shift.weight")?[[row, 0]];
+        Ok((log_scale.exp(), shift))
+    }
+
     /// `comp_enc`: `Linear(N_ELEMENTS, d)` over the element-composition delta (C,H,N,O,S,P).
     fn comp_vec(&self, comp: ndarray::ArrayView1<f32>) -> Result<Array1<f32>> {
         let w = self.art.get2("model.comp_enc.weight")?; // [d, N_ELEMENTS]
@@ -274,6 +296,7 @@ impl<'a> Predictor<'a> {
         charge: i64,
         ms_ctx: Option<&Array1<f32>>,
         chrom_ctx: Option<&Array1<f32>>,
+        chrom_affine: Option<(f32, f32)>,
     ) -> Result<(Array2<f32>, f32, f32)> {
         let cfg = self.cfg();
         let d = cfg.d_model;
@@ -411,7 +434,15 @@ impl<'a> Predictor<'a> {
         }
         let rt_2d = rt_feat.insert_axis(ndarray::Axis(0)); // [1,d]
         let rt_out = self.head(&rt_2d, "model.rt_head")?;
-        let rt = rt_out[[0, 0]] * self.art.meta.norm.rt_std + self.art.meta.norm.rt_mean;
+        // Per-dataset affine applies in STANDARDIZED space, before denormalization — same
+        // order as torch, where `rt = scale * rt_head(feat) + shift` is compared against
+        // standardize_rt(raw_rt). Applying it after denormalization would rescale the frame
+        // itself and silently disagree with the training-time semantics.
+        let rt_std_space = match chrom_affine {
+            Some((scale, shift)) => scale * rt_out[[0, 0]] + shift,
+            None => rt_out[[0, 0]],
+        };
+        let rt = rt_std_space * self.art.meta.norm.rt_std + self.art.meta.norm.rt_mean;
 
         Ok((ms2, rt, ccs))
     }

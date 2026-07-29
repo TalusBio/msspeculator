@@ -8,10 +8,17 @@ use ndarray::{Array1, Array2};
 use safetensors::SafeTensors;
 use serde::Deserialize;
 
-/// Artifact schema this build reads. v2 replaced the single scaled `mod_proj` scalar with the
-/// two-encoder (`comp_enc` / `mass_enc`) modification representation and made the N/C-term
-/// tokens mandatory, so a v1 artifact's tensors mean something different.
-pub const FORMAT_VERSION: u32 = 2;
+/// Artifact schema this build reads.
+///
+/// v2 replaced the single scaled `mod_proj` scalar with the two-encoder (`comp_enc` /
+/// `mass_enc`) modification representation and made the N/C-term tokens mandatory, so a v1
+/// artifact's tensors mean something different.
+///
+/// v3 added the ChromRunbook's per-dataset RT output affine (`runbook.log_scale.weight`,
+/// `runbook.shift.weight`). A v2 artifact simply lacks those tensors. Treating their absence
+/// as identity would be a plausible guess, but it is still a guess about what a file means —
+/// and a v2 checkpoint cannot load into the current runbook anyway. Reject and re-export.
+pub const FORMAT_VERSION: u32 = 3;
 
 #[derive(Debug, Deserialize)]
 pub struct Config {
@@ -87,8 +94,9 @@ impl Artifact {
         if meta.format_version != FORMAT_VERSION {
             return Err(anyhow!(
                 "artifact format_version {} is not supported (this build reads {}); \
-                 v1 artifacts predate the composition mod encoding and must be re-exported \
-                 from a retrained checkpoint",
+                 v1 predates the composition mod encoding and v2 predates the per-dataset RT \
+                 affine, so their tensors do not mean what this build expects — re-export from \
+                 a retrained checkpoint",
                 meta.format_version,
                 FORMAT_VERSION
             ));

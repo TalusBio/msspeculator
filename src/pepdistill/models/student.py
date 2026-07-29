@@ -320,11 +320,18 @@ class StudentModel(nn.Module):
         charge: torch.Tensor,
         ms_context: torch.Tensor | None = None,
         chrom_context: torch.Tensor | None = None,
+        chrom_affine: tuple[torch.Tensor, torch.Tensor] | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Run the three heads. ms_context (broadcast) shifts the per-fragment features;
         chrom_context shifts the RT head; CCS is peptide + charge only. Charge re-enters here
         (it is factored out of the trunk): added per fragment site for MS2, concatenated for CCS.
         RT never sees charge — it stays structurally charge-invariant.
+
+        chrom_affine is a per-dataset ``(scale, shift)`` applied to the RT head's OUTPUT, in
+        standardized space. It exists because chrom_context is an additive bias in feature
+        space and cannot express a rescale, while a dataset's raw RT differs from the iRT frame
+        by scale as well as offset. None means identity, so every context-free path is
+        bit-identical to a model without it.
         """
         frag_feat = 0.5 * (h[:, :-1] + h[:, 1:])  # (B, L-1, d)
         ms2_feat, ccs_feat, rt_feat = frag_feat, pooled, pooled
@@ -337,6 +344,9 @@ class StudentModel(nn.Module):
         ms2 = torch.sigmoid(self.ms2_head(ms2_feat + ce.unsqueeze(1)))
         ccs = self.ccs_head(torch.cat([ccs_feat, ce], dim=-1)).squeeze(-1)
         rt = self.rt_head(rt_feat).squeeze(-1)
+        if chrom_affine is not None:
+            scale, shift = chrom_affine
+            rt = scale * rt + shift
         return ms2, rt, ccs
 
     def _embed(self, batch: Batch) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -382,11 +392,14 @@ class StudentModel(nn.Module):
         batch: Batch,
         ms_context: torch.Tensor | None = None,
         chrom_context: torch.Tensor | None = None,
+        chrom_affine: tuple[torch.Tensor, torch.Tensor] | None = None,
     ) -> dict[str, torch.Tensor]:
         x, g, m = self._embed(batch)
         h = self.backbone(x, batch.pad_mask)  # (B, L, d)
         pooled = self._masked_mean(h, batch.pad_mask)  # (B, d)
-        ms2, rt, ccs = self._apply_heads(h, pooled, batch.charge, ms_context, chrom_context)
+        ms2, rt, ccs = self._apply_heads(
+            h, pooled, batch.charge, ms_context, chrom_context, chrom_affine
+        )
         return {"ms2": ms2, "rt": rt, "ccs": ccs, "mod_g": g, "mod_m": m}
 
     def forward_context(
@@ -394,14 +407,20 @@ class StudentModel(nn.Module):
         batch: Batch,
         ms_context: torch.Tensor | None = None,
         chrom_context: torch.Tensor | None = None,
+        chrom_affine: tuple[torch.Tensor, torch.Tensor] | None = None,
     ) -> dict[str, torch.Tensor]:
         """One backbone pass giving the chrom-conditioned heads AND the context-free base RT
         (``rt_base``, no chrom_context = iRT frame), so the real regime supervises rt->raw RT
-        and rt_base->iRT."""
+        and rt_base->iRT.
+
+        ``rt_base`` deliberately sees neither chrom_context nor chrom_affine: it is the iRT
+        anchor, and conditioning it on the dataset would destroy the frame it defines."""
         x, g, m = self._embed(batch)
         h = self.backbone(x, batch.pad_mask)
         pooled = self._masked_mean(h, batch.pad_mask)
-        ms2, rt, ccs = self._apply_heads(h, pooled, batch.charge, ms_context, chrom_context)
+        ms2, rt, ccs = self._apply_heads(
+            h, pooled, batch.charge, ms_context, chrom_context, chrom_affine
+        )
         rt_base = self.rt_head(pooled).squeeze(-1)
         return {"ms2": ms2, "rt": rt, "ccs": ccs, "rt_base": rt_base, "mod_g": g, "mod_m": m}
 
