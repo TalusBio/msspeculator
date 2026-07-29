@@ -1,0 +1,44 @@
+# Post-mod-representation-v2 retrain. Greenfield: every pre-v2 checkpoint is invalid.
+#
+# Coverage note: third pool shard 0 carries only UNIMOD 4 (Carbamidomethyl@C) and 35
+# (Oxidation@M). This run therefore exercises comp_enc, the mod_align loss, and the mandatory
+# N/C-term tokens structurally -- but never populates a terminal-mod column, and never routes
+# to mass_enc at inference. mass_enc IS trained, via the mass_swap_p=0.15 stochastic swap on
+# named sites. Exercising terminal mods or the 18 newly-resolvable types needs a TMT/PTM pool.
+
+out = "runs/modrep-v2"
+preset = "small"
+device = "auto"
+seed = 0
+
+[pretrain]
+enabled = true
+teacher = "alphapeptdeep"
+nce_min = 20.0
+nce_max = 40.0
+passes = 1
+chunk_size = 10000
+
+[[pretrain.sources]]
+# E. coli K-12 reference proteome (UP000000625), 4403 proteins -- the corpus prior runs used,
+# kept the same so MS2 spectral angle stays comparable to the pre-v2 baselines.
+fasta = "/Users/sebastianpaez/Downloads/ecoli_UP000000625.fasta"
+enzyme = "trypsin"
+missed = 2
+min_len = 7
+max_len = 30
+min_charge = 2
+max_charge = 4
+max_var_mods = 1
+
+[train]
+enabled = true
+record = "prospect"
+meta = "TUM_third_pool_meta_data.parquet"
+zip = "TUM_third_pool.zip"
+shards = [0]
+epochs = 60
+loss_weights = [1.0, 1.0, 1.0]
+
+[export]
+enabled = true
