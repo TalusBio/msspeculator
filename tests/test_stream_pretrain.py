@@ -62,7 +62,12 @@ def test_stream_pretrain_runs_and_moves_encoder(tmp_path):
     # energy was fed through the MLP -> encoder weights received gradient and moved.
     assert not torch.allclose(before, enc.energy_mlp[-1].weight.detach())
     # rt/ccs norm was estimated from a teacher sample (not left at the 0/1 identity).
-    assert float(model.rt_mean) != 0.0 or float(model.rt_std) != 1.0
+    # Pretrain establishes the CCS frame -- it is the only source of CCS -- but deliberately
+    # NOT the RT frame: iRT is canonical and the teacher's RT is a different quantity in its
+    # own normalized units. The first real dataset establishes RT.
+    assert float(model.ccs_mean) != 0.0 or float(model.ccs_std) != 1.0
+    assert float(model.rt_mean) == 0.0 and float(model.rt_std) == 1.0
+    assert not bool(model.norm_established), "RT frame must stay unclaimed for the real stage"
 
 
 def test_stream_pretrain_early_stops_on_plateau(tmp_path):

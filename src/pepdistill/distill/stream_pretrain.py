@@ -233,8 +233,19 @@ def fit_stream_pretrain(
     """Enumerate-and-chunk online teacher-distill warmup on the shared backbone + MS context
     encoder."""
     L.seed_everything(cfg.seed, verbose=False)
-    log("[stream] estimating rt/ccs norm from a teacher sample...")
-    model.set_norm(*_estimate_norm(teacher, encoder, cfg))
+    # CCS only. The teacher is the ONLY source of CCS, so its scale must be established here
+    # (teacher CCS is ~543+-122; under an identity norm that target would dominate the loss).
+    #
+    # RT is deliberately NOT established from the teacher. iRT is the canonical RT frame, and
+    # the teacher predicts RT in its own normalized 0-1 space (~0.49+-0.27) — a different
+    # quantity. Establishing the global affine from it forces every later real dataset to be
+    # standardized through the wrong units: measured, that drove train_irt from 0.031 to 379.8
+    # and val_spectral_angle from 0.617 to 0.476. Teacher RT under the identity norm is already
+    # well-conditioned, so pretrain trains fine without it and the first real dataset
+    # establishes the frame in iRT units.
+    log("[stream] estimating ccs norm from a teacher sample (RT frame comes from real iRT)...")
+    _, _, ccs_mean, ccs_std = _estimate_norm(teacher, encoder, cfg)
+    model.set_norm(ccs_mean=ccs_mean, ccs_std=ccs_std)
     module = DistillModule(
         model,
         lr=cfg.lr,
