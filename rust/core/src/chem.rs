@@ -1,8 +1,9 @@
 //! Monoisotopic mass and m/z arithmetic — the single source of truth for pepdistill's
 //! chemistry constants; `pepdistill.chem` (Python) is now a thin shim over this module.
 //!
-//! Supports the 20 standard amino acids plus a fixed table of named modifications
-//! (`MOD_TABLE`). Fragment ordering matches `chem.ION_TYPES` = (b,1),(y,1),(b,2),(y,2).
+//! Supports the 20 standard amino acids plus named modifications resolved against the vendored
+//! UNIMOD table (`unimod::by_name`, via `mod_delta`/`mod_element_comp`). Fragment ordering
+//! matches `chem.ION_TYPES` = (b,1),(y,1),(b,2),(y,2).
 
 pub const PROTON: f64 = 1.007_276_466_879;
 pub const H2O: f64 = 18.010_564_684_25;
