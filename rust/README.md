@@ -17,7 +17,11 @@ implementations.
   (`fragment_mz`, `fragment_mz_matrix`, `ms2_target_shape`, `collate`, ...). It adds no
   chemistry or tokenization logic of its own.
 - `cli/` (`pepdistill-cli`) — a standalone Rust binary (no Python) used for the
-  Python-vs-Rust prediction-parity check (`tests/test_rust_parity.py`).
+  Python-vs-Rust prediction-parity check (`tests/test_rust_parity.py`). `--peptide` takes a
+  **modified sequence** (`[TMT6plex]PEPC[Carbamidomethyl@C]IDER`, or a bare Dalton delta
+  `PEP[+42.010565]TIDER`), parsed by `Peptide::parse` — the inverse of `modified_sequence()`.
+  The `.safetensors` artifact carries a `format_version`; `core/src/artifact.rs` rejects any
+  version it does not read rather than filling in missing tensors.
 
 ## Build into the project venv
 

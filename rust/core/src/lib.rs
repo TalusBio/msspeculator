@@ -44,7 +44,8 @@ pub struct MsContext {
     pub energy: Option<f32>,
 }
 
-/// Run one peptide end to end.
+/// Run one peptide end to end. `peptide` is a modified sequence in the form
+/// [`peptide::Peptide::modified_sequence`] renders, e.g. `"[TMT6plex]PEPC[Carbamidomethyl@C]IDER"`.
 pub fn predict(
     art: &Artifact,
     peptide: &str,
@@ -53,11 +54,13 @@ pub fn predict(
     chrom_context: Option<&str>,
     min_intensity: f64,
 ) -> Result<Prediction> {
-    let seq = peptide.as_bytes();
-    if seq.len() < 2 {
+    // `peptide` is a modified sequence, not a bare one: parsing is what puts the mods on the
+    // sites the runtime will encode. An unparseable string is an error, never a bare fallback.
+    let pep = peptide::Peptide::parse(peptide)?;
+    if pep.sequence.len() < 2 {
         anyhow::bail!("peptide must have at least 2 residues");
     }
-    let rm = chem::residue_masses(seq)?;
+    let rm = pep.residue_masses()?;
 
     let predictor = Predictor::new(art);
     let ms_vec = match ms_context {
@@ -74,10 +77,10 @@ pub fn predict(
         None => None,
     };
 
-    let (ms2, rt, ccs) = predictor.forward(seq, charge, ms_vec.as_ref(), chrom_vec.as_ref())?;
+    let (ms2, rt, ccs) = predictor.forward(&pep, charge, ms_vec.as_ref(), chrom_vec.as_ref())?;
 
     let mz = chem::fragment_mz_matrix(&rm); // [L-1, n_ion]
-    let frag_pos = seq.len() - 1;
+    let frag_pos = pep.sequence.len() - 1;
 
     // Base peak over the whole spectrum (matches predict_library_fast).
     let peak = ms2.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
@@ -111,7 +114,9 @@ pub fn predict(
     }
 
     Ok(Prediction {
-        peptide: peptide.to_string(),
+        // Report the re-rendered form, not the caller's string, so the output shows how the
+        // input was actually read (e.g. a trailing `[mod]` resolved to the C-terminus).
+        peptide: pep.modified_sequence(),
         charge,
         precursor_mz: chem::precursor_mz(&rm, charge),
         rt,

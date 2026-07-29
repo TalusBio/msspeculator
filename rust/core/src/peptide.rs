@@ -99,6 +99,59 @@ impl Peptide {
         self.sequence.len()
     }
 
+    /// Parse the form [`Peptide::modified_sequence`] renders: a leading `[mod]` is the
+    /// N-terminus, a `[mod]` after the final residue is the C-terminus, and a body starting
+    /// with `+`/`-` is a bare mass delta rather than a name.
+    ///
+    /// A trailing `[mod]` becomes [`Site::CTerm`], not a side-chain mod on the last residue —
+    /// that is what makes the round trip exact, since `modified_sequence` renders both the same
+    /// way. A caller wanting a side-chain mod on the final residue must build the `Peptide`
+    /// directly.
+    pub fn parse(s: &str) -> anyhow::Result<Self> {
+        let mut sequence = String::new();
+        let mut mods: Vec<(Site, ModSpec)> = Vec::new();
+        let mut chars = s.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c == '[' {
+                let mut body = String::new();
+                let mut closed = false;
+                for c2 in chars.by_ref() {
+                    if c2 == ']' {
+                        closed = true;
+                        break;
+                    }
+                    body.push(c2);
+                }
+                if !closed {
+                    anyhow::bail!("unclosed '[' in peptide {s:?}");
+                }
+                let spec = if body.starts_with('+') || body.starts_with('-') {
+                    ModSpec::MassOnly(body.parse().map_err(|_| {
+                        anyhow::anyhow!("bad mass delta {body:?} in peptide {s:?}")
+                    })?)
+                } else {
+                    ModSpec::Named(body)
+                };
+                let site = if sequence.is_empty() {
+                    Site::NTerm
+                } else if chars.peek().is_none() {
+                    Site::CTerm
+                } else {
+                    Site::Residue(sequence.len() - 1)
+                };
+                mods.push((site, spec));
+            } else if c.is_ascii_uppercase() {
+                sequence.push(c);
+            } else {
+                anyhow::bail!("unexpected character {c:?} in peptide {s:?}");
+            }
+        }
+        if sequence.is_empty() {
+            anyhow::bail!("peptide {s:?} has no residues");
+        }
+        Ok(Self::new(sequence, mods))
+    }
+
     /// Per-residue masses with every modification's delta folded in. Terminal mods add to the
     /// first / last residue for mass purposes — they occupy their own embedding column, but
     /// chemically they sit on the peptide's ends.
@@ -263,6 +316,74 @@ mod tests {
         let p = Peptide::new("PEPTIDE".into(), vec![]);
         let expected = (799.35997 + 2.0 * crate::chem::PROTON) / 2.0;
         assert!((p.precursor_mz(2).unwrap() - expected).abs() < 0.01);
+    }
+
+    #[test]
+    fn parse_roundtrips_modified_sequence() {
+        for s in [
+            "PEPTIDE",
+            "AC[Carbamidomethyl@C]DEM[Oxidation@M]K",
+            "[TMT6plex]ET[Phospho]TLHLVLR",
+            "PEK[Phospho]",
+            "P[+79.96633]EPTIDE",
+        ] {
+            let p = Peptide::parse(s).unwrap();
+            assert_eq!(p.modified_sequence(), s, "roundtrip failed for {s}");
+        }
+    }
+
+    #[test]
+    fn parse_rejects_unclosed_bracket() {
+        assert!(Peptide::parse("PEP[Phospho").is_err());
+    }
+
+    #[test]
+    fn parse_rejects_lowercase_residue() {
+        assert!(Peptide::parse("pePTIDE").is_err());
+    }
+
+    #[test]
+    fn parse_places_sites_where_collate_expects_them() {
+        // The round-trip test cannot distinguish CTerm from Residue(last) — both render the
+        // same. Pin the documented choice explicitly, because they occupy different embedding
+        // columns.
+        let p = Peptide::parse("PEK[Phospho]").unwrap();
+        assert_eq!(p.mods, vec![(Site::CTerm, ModSpec::Named("Phospho".into()))]);
+        let q = Peptide::parse("[TMT6plex]PEPC[Carbamidomethyl@C]IDER").unwrap();
+        assert_eq!(
+            q.mods,
+            vec![
+                (Site::NTerm, ModSpec::Named("TMT6plex".into())),
+                (Site::Residue(3), ModSpec::Named("Carbamidomethyl@C".into())),
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_keeps_co_sited_mods_on_one_site() {
+        // Two brackets after one residue are two mods on that residue, not on consecutive
+        // ones. The runtime accumulates their compositions into a single encoder call, so the
+        // site must be shared.
+        let p = Peptide::parse("PEPC[Oxidation@M][Phospho]IDER").unwrap();
+        assert_eq!(
+            p.mods,
+            vec![
+                (Site::Residue(3), ModSpec::Named("Oxidation@M".into())),
+                (Site::Residue(3), ModSpec::Named("Phospho".into())),
+            ]
+        );
+        assert_eq!(p.modified_sequence(), "PEPC[Oxidation@M][Phospho]IDER");
+    }
+
+    #[test]
+    fn parse_rejects_empty_and_residue_free_input() {
+        assert!(Peptide::parse("").is_err());
+        assert!(Peptide::parse("[TMT6plex]").is_err());
+    }
+
+    #[test]
+    fn parse_rejects_a_bad_mass_delta() {
+        assert!(Peptide::parse("PEP[+notanumber]TIDE").is_err());
     }
 
     #[test]

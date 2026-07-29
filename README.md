@@ -127,6 +127,12 @@ to stdout. Transformer presets only; RT is the context-free iRT base unless `--c
 NAME` selects a saved dataset. Parity with the torch path is measured by
 `tests/test_rust_parity.py`.
 
+`--peptide` accepts a modified sequence, not just a bare one — `PEPC[Carbamidomethyl@C]IDER`,
+`[TMT6plex]PEPTIDER`, `PEPTIDER[Amidated]`, or a bare Dalton delta `PEP[+42.010565]TIDER`. A
+named mod is encoded from its element composition, a `+`/`-` delta from its mass; the JSON's
+`peptide` field echoes back how the input was parsed. Artifacts carry a `format_version` and
+the reader refuses one it does not understand rather than guessing at missing tensors.
+
 ## Output
 
 `library.parquet` is a tidy long-format spectral library — one row per retained

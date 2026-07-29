@@ -15,7 +15,10 @@ from safetensors.torch import save_file
 
 from .models.registry import load_checkpoint, load_context
 
-FORMAT_VERSION = 1
+# v2: the two-encoder mod representation (comp_enc / mass_enc) replaced the single scaled
+# mod_proj scalar, and the N/C-term tokens became mandatory. A v1 artifact's tensors mean
+# something different, so the Rust reader rejects it rather than reading it with defaults.
+FORMAT_VERSION = 2
 # StudentModel registers these as buffers; they are 1-element scalars, hoisted into metadata
 # rather than shipped as tensors (simpler for the Rust reader).
 _NORM_KEYS = ("rt_mean", "rt_std", "ccs_mean", "ccs_std")

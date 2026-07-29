@@ -9,6 +9,8 @@ use anyhow::{anyhow, Result};
 use ndarray::{s, Array1, Array2};
 
 use crate::artifact::Artifact;
+use crate::peptide::Peptide;
+use crate::tokenize::{self, CTERM_IDX, NTERM_IDX};
 
 fn gelu(x: f32) -> f32 {
     let xf = x as f64;
@@ -222,29 +224,114 @@ impl<'a> Predictor<'a> {
             .to_owned())
     }
 
+    /// `comp_enc`: `Linear(N_ELEMENTS, d)` over the element-composition delta (C,H,N,O,S,P).
+    fn comp_vec(&self, comp: ndarray::ArrayView1<f32>) -> Result<Array1<f32>> {
+        let w = self.art.get2("model.comp_enc.weight")?; // [d, N_ELEMENTS]
+        let b = self.art.get1("model.comp_enc.bias")?; // [d]
+        if w.ncols() != comp.len() {
+            return Err(anyhow!(
+                "comp_enc expects {} elements, got {}",
+                w.ncols(),
+                comp.len()
+            ));
+        }
+        Ok(linear1(&comp.to_owned(), &w, &b))
+    }
+
+    /// `mass_enc`: FourierFeatures -> Linear -> activation -> Linear, over an unscaled Dalton
+    /// delta.
+    ///
+    /// The frequency ladder is read from the artifact buffer (`mass_enc.0.freq`) rather than
+    /// recomputed from WAVELENGTH_MIN/MAX here: a reconstructed ladder would be free to drift
+    /// away from the torch one, and the two runtimes would disagree silently.
+    fn mass_vec(&self, mass: f32) -> Result<Array1<f32>> {
+        let freq = self.art.get1("model.mass_enc.0.freq")?; // [k]
+        let k = freq.len();
+        let mut feat = Array1::<f32>::zeros(2 * k);
+        for i in 0..k {
+            let a = mass * freq[i];
+            feat[i] = a.sin();
+            feat[k + i] = a.cos();
+        }
+        let act = self.cfg().activation.clone();
+        let mut h = linear1(
+            &feat,
+            &self.art.get2("model.mass_enc.1.weight")?, // [d, 2k]
+            &self.art.get1("model.mass_enc.1.bias")?,
+        );
+        h.mapv_inplace(|v| act_scalar(v, &act));
+        Ok(linear1(
+            &h,
+            &self.art.get2("model.mass_enc.3.weight")?, // [d, d]
+            &self.art.get1("model.mass_enc.3.bias")?,
+        ))
+    }
+
     /// Forward pass. Returns (ms2 [L-1, n_ion] in (0,1), rt native, ccs native).
     pub fn forward(
         &self,
-        seq: &[u8],
+        pep: &Peptide,
         charge: i64,
         ms_ctx: Option<&Array1<f32>>,
         chrom_ctx: Option<&Array1<f32>>,
     ) -> Result<(Array2<f32>, f32, f32)> {
         let cfg = self.cfg();
         let d = cfg.d_model;
-        let t = seq.len();
+        let seq = pep.sequence.as_bytes();
+        // Guarded here, not just in `predict`: `forward` is public, and below `seq.len() - 1`
+        // would wrap to usize::MAX on an empty peptide and abort in an allocation.
+        if seq.len() < 2 {
+            return Err(anyhow!(
+                "peptide {:?} has {} residue(s); MS2 needs at least 2",
+                pep.sequence,
+                seq.len()
+            ));
+        }
+        // Token layout is always [N] r1..rL [C], so T = L + 2 and residue i sits at column 1+i.
+        let t = seq.len() + 2;
+        if t > cfg.max_len {
+            return Err(anyhow!(
+                "peptide of length {} needs {t} token columns, but the model's pos_emb holds \
+                 only max_len={}",
+                seq.len(),
+                cfg.max_len
+            ));
+        }
 
-        // --- embed: token + position + mod_proj(0) (the mod bias always applies) ---
+        // --- embed: token + position + routed mod vector ---
+        // Eval routing sends named mods through comp_enc and mass-only mods through mass_enc,
+        // never both; unmodified columns (termini included) contribute exactly zero (there is
+        // no unconditional bias term — the encoder only runs where mod_present).
+        //
+        // The four channels come from `tokenize::mod_arrays`, the same builder the torch path
+        // uses through the pyo3 ext, so this ACCUMULATES co-sited mods into one channel value
+        // and encodes once. Encoding each mod separately and summing the vectors would add
+        // comp_enc.bias once per mod, which torch does not do.
+        let mods = tokenize::mod_arrays(std::slice::from_ref(pep), t)?;
         let token_emb = self.art.get2("model.token_emb.weight")?;
         let pos_emb = self.art.get2("model.pos_emb.weight")?;
-        let mod_w = self.art.get2("model.mod_proj.weight")?; // [d,1]
-        let mod_b = self.art.get1("model.mod_proj.bias")?;
         let mut x = Array2::<f32>::zeros((t, d));
         for i in 0..t {
-            let tok = (seq[i] - b'A') as usize; // token id = ord(aa) - ord('A')
+            let tok = match i {
+                0 => NTERM_IDX as usize,
+                _ if i == t - 1 => CTERM_IDX as usize,
+                _ => (seq[i - 1] - b'A') as usize, // token id = ord(aa) - ord('A')
+            };
             for j in 0..d {
-                // mod_delta = 0 (v1 unmodified) -> mod_proj(0) = mod_b[j].
-                x[[i, j]] = token_emb[[tok, j]] + pos_emb[[i, j]] + mod_w[[j, 0]] * 0.0 + mod_b[j];
+                x[[i, j]] = token_emb[[tok, j]] + pos_emb[[i, j]];
+            }
+        }
+        for i in 0..t {
+            if !mods.mod_present[[0, i]] {
+                continue;
+            }
+            let v = if mods.mod_named[[0, i]] {
+                self.comp_vec(mods.mod_comp.slice(s![0, i, ..]))?
+            } else {
+                self.mass_vec(mods.mod_mass[[0, i]])?
+            };
+            for j in 0..d {
+                x[[i, j]] += v[j];
             }
         }
 
@@ -262,10 +349,17 @@ impl<'a> Predictor<'a> {
             .to_owned();
 
         // --- MS2 head: adjacent-pool fragment features + ms_context + charge (added) ---
-        let mut frag = Array2::<f32>::zeros((t - 1, d));
-        for i in 0..t - 1 {
+        // Adjacent-pool row p covers tokens (p, p+1). With the mandatory N-term token at column
+        // 0, the first inter-RESIDUE site is row 1 (residues 1 and 2), so the L-1 real fragment
+        // sites are rows [1, L). Rows 0 and L (the N-/C-term pools) are dropped, exactly as
+        // `predict_library_fast` slices them off with `off = 1`.
+        const FRAG_OFFSET: usize = 1;
+        let frag_pos = seq.len() - 1;
+        let mut frag = Array2::<f32>::zeros((frag_pos, d));
+        for i in 0..frag_pos {
+            let p = FRAG_OFFSET + i;
             for j in 0..d {
-                frag[[i, j]] = 0.5 * (x[[i, j]] + x[[i + 1, j]]);
+                frag[[i, j]] = 0.5 * (x[[p, j]] + x[[p + 1, j]]);
             }
         }
         if let Some(ctx) = ms_ctx {
@@ -285,7 +379,7 @@ impl<'a> Predictor<'a> {
                 *r += cc;
             }
         }
-        let mut ms2 = self.head(&frag, "model.ms2_head")?; // [t-1, n_ion]
+        let mut ms2 = self.head(&frag, "model.ms2_head")?; // [L-1, n_ion]
         ms2.mapv_inplace(sigmoid);
 
         // --- CCS head: concat[pooled, charge] ---

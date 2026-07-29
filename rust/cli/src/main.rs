@@ -14,7 +14,15 @@ struct Args {
     /// Path to the .safetensors artifact (from `pepdistill export-rust`).
     #[arg(long)]
     model: String,
-    /// Bare uppercase peptide sequence (20 standard AAs; no mods in v1).
+    /// Peptide as a modified sequence: uppercase residues with optional `[mod]` brackets.
+    ///
+    /// A leading bracket is the N-terminus and a trailing one the C-terminus; a bracket after
+    /// a residue modifies that residue. A body starting with `+`/`-` is a bare mass delta in
+    /// Daltons, routed through the mass encoder instead of the compositional one. The
+    /// `peptide` field of the JSON output echoes back how the string was read.
+    ///
+    /// Examples: `PEPTIDER`, `PEPC[Carbamidomethyl@C]IDER`, `[TMT6plex]PEPTIDER`,
+    /// `PEP[+42.010565]TIDER`.
     #[arg(long)]
     peptide: String,
     /// Precursor charge.

@@ -26,12 +26,6 @@ BIN = RUST_DIR / "target" / "release" / "pepdistill-cli"
 TOL = 1e-3
 PEPTIDE, CHARGE = "PEPTIDER", 2
 
-pytestmark_reason = (
-    "model.rs::forward does not wrap N/C-term tokens yet; termini became mandatory in the "
-    "encoder (Task 4) and the Rust runtime is rebuilt in Task 9. strict=True so this fails "
-    "loudly the moment Task 9 makes it pass, forcing the marker's removal."
-)
-
 
 def _binary() -> str:
     if BIN.exists():
@@ -69,9 +63,9 @@ def artifact(tmp_path_factory):
     return {"path": art, "model": model, "enc": enc, "runbook": runbook}
 
 
-def _rust(binary, art, extra):
+def _rust(binary, art, extra, peptide=PEPTIDE):
     r = subprocess.run(
-        [binary, "--model", str(art), "--peptide", PEPTIDE, "--charge", str(CHARGE), *extra],
+        [binary, "--model", str(art), "--peptide", peptide, "--charge", str(CHARGE), *extra],
         capture_output=True,
         text=True,
     )
@@ -105,7 +99,6 @@ def _frag_map_rust(rj):
         ("nce", ["--nce", "30"], ("", "", "", 30.0)),
     ],
 )
-@pytest.mark.xfail(reason=pytestmark_reason, strict=True)
 def test_parity(artifact, capsys, label, extra, ids):
     """MS2 + RT(base/iRT) + CCS + m/z match the vectorized Python reference."""
     binary = _binary()
@@ -147,7 +140,6 @@ def test_parity(artifact, capsys, label, extra, ids):
     assert worst < TOL, f"{label}: worst delta {worst:.2e} exceeds {TOL}"
 
 
-@pytest.mark.xfail(reason=pytestmark_reason, strict=True)
 def test_parity_chrom_context(artifact, capsys):
     """--chrom-context routes RT through the runbook -> raw RT (differs from base iRT)."""
     binary = _binary()
@@ -168,3 +160,87 @@ def test_parity_chrom_context(artifact, capsys):
     assert d_rt < TOL, f"chrom RT delta {d_rt:.2e} exceeds {TOL}"
     # chrom_context must actually move RT off the base (random runbook row is non-trivial).
     assert abs(rj["rt"] - base["rt"]) > 1e-4
+
+
+@pytest.mark.parametrize(
+    "label,modseq,mods",
+    [
+        ("side-chain", "PEPC[Carbamidomethyl@C]IDER", ((3, "Carbamidomethyl@C"),)),
+        ("n-terminal", "[TMT6plex]PEPTIDER", (("n", "TMT6plex"),)),
+        ("mass-only", "PEP[+42.010565]TIDER", ((2, 42.010565),)),
+        (
+            "terminal-plus-side-chain",
+            "[TMT6plex]PEPC[Carbamidomethyl@C]IDER",
+            (("n", "TMT6plex"), (3, "Carbamidomethyl@C")),
+        ),
+        # Two named mods on ONE site: torch accumulates the compositions and runs comp_enc
+        # once, so the site gets ONE comp_enc.bias. Encoding each mod separately and summing
+        # the vectors would add the bias twice — a whole-bias-sized error, not a rounding one.
+        (
+            "co-sited",
+            "PEPC[Oxidation@M][Phospho]IDER",
+            ((3, "Oxidation@M"), (3, "Phospho")),
+        ),
+    ],
+)
+def test_parity_modified_peptides(artifact, capsys, label, modseq, mods):
+    """The Rust runtime must encode modifications, not silently predict the bare peptide."""
+    binary = _binary()
+    model = artifact["model"]
+
+    pep = Peptide("PEPCIDER" if "C[" in modseq else "PEPTIDER", mods)
+    assert pep.modified_sequence() == modseq, "test fixture disagrees with the renderer"
+
+    lib = predict_library_fast(
+        TorchRunner(model, "cpu"),
+        [Precursor(peptide=pep, charge=CHARGE, split="train")],
+        min_intensity=0.01,
+    )
+    rj = _rust(binary, artifact["path"], [], peptide=modseq)
+    assert rj["peptide"] == modseq, "the CLI must echo back how it read the input"
+
+    py, rs = _frag_map_py(lib), _frag_map_rust(rj)
+    assert set(py) == set(rs), f"{label}: fragment sets differ"
+    d_rt = abs(float(lib["rt_pred"].iloc[0]) - rj["rt"])
+    d_ccs = abs(float(lib["ccs_pred"].iloc[0]) - rj["ccs"])
+    d_pmz = abs(float(lib["precursor_mz"].iloc[0]) - rj["precursor_mz"])
+    d_mz = max(abs(py[k][0] - rs[k][0]) for k in py)
+    d_rel = max(abs(py[k][1] - rs[k][1]) for k in py)
+    worst = max(d_rt, d_ccs, d_pmz, d_mz, d_rel)
+    with capsys.disabled():
+        print(f"\n[{label}] n={len(py)} worst={worst:.2e}")
+    assert worst < TOL, f"{label}: worst delta {worst:.2e} exceeds {TOL}"
+
+
+def test_modified_peptide_differs_from_the_bare_one(artifact):
+    """Guards the parity assertions above: if the mod were dropped on BOTH sides they would
+    still agree, and the test would prove nothing."""
+    binary = _binary()
+    bare = _rust(binary, artifact["path"], [])
+    modded = _rust(binary, artifact["path"], [], peptide="[TMT6plex]PEPTIDER")
+    assert abs(bare["rt"] - modded["rt"]) > 1e-4
+    assert abs(bare["precursor_mz"] - modded["precursor_mz"]) > 1e-4
+
+
+def test_rust_rejects_a_v1_artifact(artifact, tmp_path):
+    """A v1 artifact read as v2 would produce plausible, wrong numbers. It must refuse."""
+    import json as _json
+
+    from safetensors import safe_open
+    from safetensors.torch import save_file
+
+    src = artifact["path"]
+    with safe_open(str(src), framework="pt") as f:
+        meta = _json.loads(f.metadata()["pepdistill"])
+        tensors = {k: f.get_tensor(k) for k in f.keys()}
+    meta["format_version"] = 1
+    stale = tmp_path / "v1.safetensors"
+    save_file(tensors, str(stale), metadata={"pepdistill": _json.dumps(meta)})
+
+    r = subprocess.run(
+        [_binary(), "--model", str(stale), "--peptide", PEPTIDE, "--charge", str(CHARGE)],
+        capture_output=True,
+        text=True,
+    )
+    assert r.returncode != 0
+    assert "format_version" in r.stderr

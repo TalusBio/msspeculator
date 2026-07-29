@@ -8,6 +8,11 @@ use ndarray::{Array1, Array2};
 use safetensors::SafeTensors;
 use serde::Deserialize;
 
+/// Artifact schema this build reads. v2 replaced the single scaled `mod_proj` scalar with the
+/// two-encoder (`comp_enc` / `mass_enc`) modification representation and made the N/C-term
+/// tokens mandatory, so a v1 artifact's tensors mean something different.
+pub const FORMAT_VERSION: u32 = 2;
+
 #[derive(Debug, Deserialize)]
 pub struct Config {
     pub backbone: String,
@@ -79,10 +84,13 @@ impl Artifact {
             .get("pepdistill")
             .ok_or_else(|| anyhow!("__metadata__ missing 'pepdistill' key"))?;
         let meta: Meta = serde_json::from_str(blob).context("parsing pepdistill metadata JSON")?;
-        if meta.format_version != 1 {
+        if meta.format_version != FORMAT_VERSION {
             return Err(anyhow!(
-                "unsupported format_version {}",
-                meta.format_version
+                "artifact format_version {} is not supported (this build reads {}); \
+                 v1 artifacts predate the composition mod encoding and must be re-exported \
+                 from a retrained checkpoint",
+                meta.format_version,
+                FORMAT_VERSION
             ));
         }
         if meta.config.backbone != "transformer" {
