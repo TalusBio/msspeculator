@@ -1,0 +1,108 @@
+"""Regenerate the vendored UNIMOD tables. Network; run manually, commit the output.
+
+    uv run python tools/gen_unimod.py
+
+Emits two TSVs under rust/core/data/:
+  elements.tsv  symbol \t mono_mass          (from <umod:elem>)
+  unimod.tsv    accession \t title \t composition \t mono_mass   (from <umod:mod>)
+
+The mono_mass column of unimod.tsv is a TEST FIXTURE, not a source of truth: pepdistill
+computes mass from the composition and asserts agreement across every row, so a bad element
+mass or a parser bug fails loudly instead of hiding in one unused modification.
+
+Source: https://www.unimod.org/xml/unimod.xml
+Terms:  The header of unimod.xml itself (fetched 2026-07-28) reads, verbatim:
+
+            Copyright (C) 2002-2006 Unimod; this information may be copied, distributed and/or
+            modified under certain conditions, but it comes WITHOUT ANY WARRANTY; see the
+            accompanying Design Science License for more details
+
+        The referenced Design Science License (https://www.unimod.org/dsl.txt, mirrored at
+        https://www.gnu.org/licenses/dsl.html) grants, verbatim:
+
+            "Permission is granted to distribute, publish or otherwise present verbatim copies
+            of the entire Source Data of the Work, in any medium, provided that full copyright
+            notice and disclaimer of warranty, where applicable, is conspicuously published on
+            all copies, and a copy of this License is distributed along with the Work."
+
+        and, for derivative works:
+
+            "Permission is granted to modify or sample from a copy of the Work, producing a
+            derivative work, and to distribute the derivative work" provided the derivative is
+            published under the same License, is given a new name distinct from "Unimod", and
+            carries a notice of what was changed.
+
+        This generator produces a derivative work (two TSVs extracted and reformatted from the
+        source XML, not verbatim copies of it) under those terms: this file documents the
+        source, the copyright notice, and the license; the emitted tables are named
+        `elements.tsv` / `unimod.tsv`, distinct from "Unimod"; and this docstring records the
+        transformation applied (element-list and modification-list extraction into TSV).
+        Redistribution and modification are permitted under the Design Science License —
+        vendoring is allowed.
+"""
+
+from __future__ import annotations
+
+import urllib.request
+import xml.etree.ElementTree as ET
+from pathlib import Path
+
+URL = "https://www.unimod.org/xml/unimod.xml"
+NS = {"umod": "http://www.unimod.org/xmlns/schema/unimod_2"}
+OUT = Path(__file__).resolve().parent.parent / "rust" / "core" / "data"
+
+
+def _composition(parent: ET.Element) -> str:
+    """Render an element list as 'H(20) C(8) 13C(4) N 15N O(2)' (count omitted when 1)."""
+    terms = []
+    for el in parent.findall("umod:element", NS):
+        sym = el.attrib["symbol"]
+        n = int(el.attrib["number"])
+        terms.append(sym if n == 1 else f"{sym}({n})")
+    return " ".join(terms)
+
+
+def main() -> None:
+    with urllib.request.urlopen(URL, timeout=120) as fh:
+        root = ET.parse(fh).getroot()
+
+    OUT.mkdir(parents=True, exist_ok=True)
+
+    elements = root.find("umod:elements", NS)
+    if elements is None:
+        raise RuntimeError("unimod.xml has no <umod:elements> block; format changed")
+    rows = []
+    for el in elements.findall("umod:elem", NS):
+        rows.append((el.attrib["title"], float(el.attrib["mono_mass"])))
+    rows.sort()
+    (OUT / "elements.tsv").write_text("".join(f"{sym}\t{mass!r}\n" for sym, mass in rows))
+    print(f"elements.tsv: {len(rows)} nuclides")
+
+    mods = root.find("umod:modifications", NS)
+    if mods is None:
+        raise RuntimeError("unimod.xml has no <umod:modifications> block; format changed")
+    mrows = []
+    for mod in mods.findall("umod:mod", NS):
+        delta = mod.find("umod:delta", NS)
+        if delta is None:
+            continue
+        comp = _composition(delta)
+        if not comp:
+            continue
+        mrows.append(
+            (
+                int(mod.attrib["record_id"]),
+                mod.attrib["title"],
+                comp,
+                float(delta.attrib["mono_mass"]),
+            )
+        )
+    mrows.sort()
+    (OUT / "unimod.tsv").write_text(
+        "".join(f"{a}\t{t}\t{c}\t{m!r}\n" for a, t, c, m in mrows)
+    )
+    print(f"unimod.tsv: {len(mrows)} modifications")
+
+
+if __name__ == "__main__":
+    main()

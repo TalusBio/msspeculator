@@ -16,7 +16,7 @@ use std::hash::{Hash, Hasher};
 
 use pepdistill_core::chem;
 use pepdistill_core::peptide::Peptide as CorePeptide;
-use pepdistill_core::{bucket, tokenize};
+use pepdistill_core::{bucket, tokenize, unimod};
 
 fn to_pyerr(e: anyhow::Error) -> PyErr {
     pyo3::exceptions::PyValueError::new_err(e.to_string())
@@ -159,7 +159,9 @@ fn pepdistill_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("ION_TYPES", ion)?;
 
     let mods = PyDict::new_bound(py);
-    for &(name, delta) in chem::MOD_TABLE.iter() {
+    for &(name, _acc) in unimod::ALIASES.iter() {
+        let delta = chem::mod_delta(name)
+            .ok_or_else(|| pyo3::exceptions::PyValueError::new_err(format!("no delta for alias {name}")))?;
         mods.set_item(name, delta)?;
     }
     m.add("MOD_DELTA", mods)?;

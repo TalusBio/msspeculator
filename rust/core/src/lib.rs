@@ -11,6 +11,7 @@ pub mod composition;
 pub mod model;
 pub mod peptide;
 pub mod tokenize;
+pub mod unimod;
 
 use anyhow::Result;
 

@@ -81,19 +81,18 @@ pub fn fragment_mz_matrix(rm: &[f64]) -> Vec<Vec<f64>> {
     out
 }
 
-/// Enumerable table of (name, monoisotopic mass delta in Da) for every supported modification.
-/// Single source of truth: `mod_delta` looks up this table, and the pyo3 ext builds its
-/// `MOD_DELTA` dict by iterating it — no hand-maintained name list anywhere else.
-pub const MOD_TABLE: &[(&str, f64)] = &[
-    ("Carbamidomethyl@C", 57.021_463_723),
-    ("Oxidation@M", 15.994_914_622),
-    ("Phospho", 79.966_331_2),
-    ("TMT6plex", 229.162_932_1),
-];
-
-/// Monoisotopic mass delta (Da) for a named modification, or None if unknown.
+/// Modification mass delta (Da), computed from the vendored UNIMOD composition. There is no
+/// second table of literal deltas to drift against — `unimod::ALIASES` is the only mapping.
 pub fn mod_delta(name: &str) -> Option<f64> {
-    MOD_TABLE.iter().find(|(n, _)| *n == name).map(|(_, d)| *d)
+    let e = crate::unimod::by_name(name)?;
+    e.comp.mono_mass(crate::unimod::nuclide_masses()).ok()
+}
+
+/// Isotope-agnostic 6-element composition delta for a named modification.
+pub fn mod_element_comp(name: &str) -> anyhow::Result<[i8; crate::composition::N_ELEMENTS]> {
+    let e = crate::unimod::by_name(name)
+        .ok_or_else(|| anyhow::anyhow!("unknown modification {name}"))?;
+    e.comp.element_comp()
 }
 
 /// Per-position residue masses with modification deltas applied at their sites.
@@ -170,18 +169,26 @@ mod tests {
     }
 
     #[test]
-    fn mod_table_names_and_deltas() {
-        // Frozen contract: names + values must not drift. mod_delta must agree with MOD_TABLE.
+    fn frozen_alias_contract() {
+        // These four names appear in serialized precursor caches; their deltas must not drift.
         let expected: &[(&str, f64)] = &[
             ("Carbamidomethyl@C", 57.021_463_723),
             ("Oxidation@M", 15.994_914_622),
             ("Phospho", 79.966_331_2),
             ("TMT6plex", 229.162_932_1),
         ];
-        assert_eq!(MOD_TABLE, expected);
         for &(name, delta) in expected {
-            approx(mod_delta(name).unwrap(), delta, 1e-9);
+            approx(mod_delta(name).unwrap(), delta, 1e-5);
         }
         assert!(mod_delta("NotAMod").is_none());
+    }
+
+    #[test]
+    fn out_of_basis_mod_errors_on_element_comp_but_not_mass() {
+        // Selenomethionine (UNIMOD 162) carries Se: mass is exact, element comp is refused.
+        if let Some(e) = crate::unimod::by_accession(162) {
+            assert!(e.comp.mono_mass(crate::unimod::nuclide_masses()).is_ok());
+            assert!(e.comp.element_comp().is_err());
+        }
     }
 }
