@@ -20,6 +20,7 @@ standalone ``predict`` command.
 
 from __future__ import annotations
 
+import gc
 import json
 import time
 import tomllib
@@ -182,8 +183,29 @@ def _stream_mixes(cfg: PretrainCfg) -> list[StreamMix]:
     ]
 
 
+def _release_accelerator_cache(acc: str) -> None:
+    """Return cached device memory after dropping a stage's objects.
+
+    Freeing Python references does not hand accelerator memory back on its own, so a stage
+    boundary has to ask explicitly or the next stage allocates against a still-full cache.
+    """
+    import torch
+
+    if acc == "mps" and torch.backends.mps.is_available():
+        torch.mps.empty_cache()
+    elif acc == "cuda" and torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
 def _load_real(cfg: TrainCfg, log):
-    """Stream the chosen shards of a PROSPECT pool and decode them into one RealLabels."""
+    """Decode the chosen shards of a PROSPECT pool into one RealLabels, held in memory.
+
+    Only the shard *read* streams. Decoding accumulates: every shard's labels are materialized
+    in ``parts`` and ``merge_real_labels`` then builds a second full copy, so peak use is about
+    twice the final size, and the result (a list of per-example objects each carrying its own
+    MS2 array) stays resident for training. Shard count is therefore bounded by RAM, not by
+    download time — budget accordingly before adding shards.
+    """
     src = ProspectSource(cfg.record)
     meta = src.read(cfg.meta)
     parts = []
@@ -191,6 +213,8 @@ def _load_real(cfg: TrainCfg, log):
         parts.append(src.to_labels(meta, ann))
         log(f"  decoded {name.split('/')[-1]}: {len(parts[-1].precursors)} examples")
         del ann
+    del meta  # not needed past decoding; keeps it out of the merge's peak
+    gc.collect()
     return merge_real_labels(parts)
 
 
@@ -242,6 +266,15 @@ def run_pipeline(cfg: RunConfig, log=print) -> dict:
         mod = _run_pretrain(cfg, model, encoder, acc, log)
         summary["pretrain"] = {k: float(v) for k, v in mod.trainer.callback_metrics.items()}
         log(f"[pretrain] {summary['pretrain']}")
+        # Release the pretrain module before the train stage allocates. `mod` is needed only
+        # for the metrics just extracted, but it transitively pins the Lightning Trainer ->
+        # dataloader -> _StreamingDataset -> teacher -> peptdeep's models (hundreds of MB).
+        # Left alive, that sits resident through the whole real-data stage; observed as an OOM
+        # killing a single-shard train stage on a laptop. The student weights are unaffected —
+        # `model` is the shared backbone and is held separately.
+        del mod
+        gc.collect()
+        _release_accelerator_cache(acc)
 
     runbook = None
     dataset_index = None
