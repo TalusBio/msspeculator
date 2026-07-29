@@ -148,6 +148,13 @@ fn unimod_name(accession: u32) -> Option<String> {
     Some(alias.unwrap_or_else(|| e.title.clone()))
 }
 
+/// 6-element composition delta for a named modification, in `composition::ELEMENTS` order.
+/// Raises `ValueError` if the name is unknown or needs an element outside that basis.
+#[pyfunction]
+fn mod_element_comp(name: &str) -> PyResult<[i8; pepdistill_core::composition::N_ELEMENTS]> {
+    chem::mod_element_comp(name).map_err(to_pyerr)
+}
+
 #[pyfunction]
 fn collate<'py>(
     py: Python<'py>,
@@ -209,6 +216,7 @@ fn pepdistill_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(fragment_mz_matrix, m)?)?;
     m.add_function(wrap_pyfunction!(ms2_target_shape, m)?)?;
     m.add_function(wrap_pyfunction!(unimod_name, m)?)?;
+    m.add_function(wrap_pyfunction!(mod_element_comp, m)?)?;
     m.add_function(wrap_pyfunction!(collate, m)?)?;
     m.add_function(wrap_pyfunction!(bucket_arrays, m)?)?;
     m.add_function(wrap_pyfunction!(bucket_fragment_mz, m)?)?;

@@ -266,3 +266,51 @@ def test_streaming_reads_cached_zip_by_member(tmp_path):
         "TMT_TUM_perm_pT.zip", members=["pool/b_annotation.parquet"]
     )
     assert len(both) == len(ann)
+
+
+def test_every_prospect_accession_is_encodable():
+    """Accessions observed in the PROSPECT catalog (see tools/sweep_prospect_mods.py).
+
+    Frozen from a FULL sweep (``--records all``, all five ``RECORDS`` keys: prospect, tmt,
+    multi_ptm, tmt_ptm, test_ptm) run on 2026-07-28. Every accession resolved and had a valid
+    6-element composition -- nothing in the real data trips the frozen [C,H,N,O,S,P] basis.
+
+    This is offline and does not re-run the sweep: it asserts against the frozen list only, so
+    it runs in CI without network. A partial (default-args) sweep run later may legitimately
+    observe FEWER accessions than this list -- that is expected under-reporting, not evidence
+    this list is stale. Only a full ``--records all`` sweep is authoritative for changing it.
+
+    Note: accession 1848 resolves to "Gluratylation" -- that is UNIMOD's own spelling of what
+    is normally written "Glutarylation" in the vendored table's title, not a typo introduced
+    here. Do not "fix" the spelling; it would break the name-based lookup.
+    """
+    import pepdistill_rs as _rs
+
+    observed = [
+        737,  # TMT6plex
+        35,  # Oxidation@M
+        4,  # Carbamidomethyl@C
+        21,  # Phospho
+        121,  # GG
+        1,  # Acetyl
+        34,  # Methyl
+        28,  # Gln->pyro-Glu
+        43,  # HexNAc
+        7,  # Deamidated
+        27,  # Glu->pyro-Glu
+        36,  # Dimethyl
+        58,  # Propionyl
+        1289,  # Butyryl
+        747,  # Malonyl
+        1363,  # Crotonyl
+        1848,  # Gluratylation (UNIMOD's own spelling; not our typo)
+        64,  # Succinyl
+        122,  # Formyl
+        1849,  # hydroxyisobutyryl
+        354,  # Nitro
+        37,  # Trimethyl
+    ]
+    for acc in observed:
+        name = _rs.unimod_name(acc)
+        assert name is not None, f"accession {acc} no longer resolves"
+        _rs.mod_element_comp(name)  # raises if outside the 6-element basis
