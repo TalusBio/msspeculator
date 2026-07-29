@@ -34,3 +34,29 @@ def test_modified_peptide_gets_labels(teacher):
     (lab,) = teacher.predict([prec])
     assert lab.ms2.shape[0] == 5
     assert lab.rt == lab.rt  # not NaN
+
+
+def test_peptdeep_frame_refuses_mods_it_cannot_represent():
+    """peptdeep identifies mods by name and has its own terminal-site convention.
+
+    Both cases used to raise a bare TypeError from deep inside a string join. Now they name
+    the peptide and the reason. Terminal sites are refused rather than guessed: placing a real
+    modification on the wrong residue would yield a confident, plausible, wrong spectrum.
+    """
+    import pytest
+
+    from pepdistill.chem import Peptide
+    from pepdistill.teacher.peptdeep_teacher import _mod_name, _mod_site
+
+    mass_only = Peptide("PEPTIDE", ((2, 42.010565),))
+    with pytest.raises(ValueError, match="mass-only"):
+        _mod_name(mass_only, mass_only.mods[0][1])
+
+    nterm = Peptide("PEPTIDE", (("n", "TMT6plex"),))
+    with pytest.raises(NotImplementedError, match="terminal"):
+        _mod_site(nterm, nterm.mods[0][0])
+
+    # Residue sites still convert, 1-based.
+    named = Peptide("ACDEK", ((1, "Carbamidomethyl@C"),))
+    assert _mod_name(named, named.mods[0][1]) == "Carbamidomethyl@C"
+    assert _mod_site(named, named.mods[0][0]) == 2

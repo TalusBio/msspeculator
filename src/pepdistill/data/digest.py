@@ -64,8 +64,40 @@ def digest_fasta(path: str | Path, cfg: DigestConfig) -> list[str]:
     return digest_records(parse_fasta(path), cfg)
 
 
+def _check_length_window_reachable(cfg: DigestConfig) -> None:
+    """Refuse a digest whose length window no peptide can enter.
+
+    With ``unspecific`` every residue is a cleavage site, so a peptide spans at most
+    ``missed_cleavages + 1`` residues. Pair that with the default ``min_length`` and the digest
+    yields nothing — silently, because an empty result looks exactly like a proteome with no
+    matching peptides. Observed: ``DigestConfig(enzyme="unspecific")`` returned 0 peptides from
+    a 4,403-protein proteome.
+    """
+    enzyme = cfg.enzyme_rule()
+    if len(enzyme.cleave_after) < 20:
+        return  # a specific enzyme's peptide length is set by site spacing, not the MC count
+    max_span = cfg.missed_cleavages + 1
+    if max_span < cfg.min_length:
+        raise ValueError(
+            f"enzyme {cfg.enzyme!r} cleaves after every residue, so a peptide spans at most "
+            f"missed_cleavages + 1 = {max_span} residues — but min_length is {cfg.min_length}, "
+            f"so no peptide can qualify. Raise missed_cleavages to at least "
+            f"{cfg.min_length - 1}, or lower min_length."
+        )
+
+
 def digest_records(records: Iterable[tuple[str, str]], cfg: DigestConfig) -> list[str]:
+    _check_length_window_reachable(cfg)
     peptides: set[str] = set()
+    n_records = 0
     for _header, seq in records:
+        n_records += 1
         peptides.update(cleave_protein(seq, cfg))
+    if n_records and not peptides:
+        raise ValueError(
+            f"digest produced 0 peptides from {n_records} protein(s) with enzyme "
+            f"{cfg.enzyme!r}, missed_cleavages={cfg.missed_cleavages}, length window "
+            f"[{cfg.min_length}, {cfg.max_length}]. An empty digest is a configuration error, "
+            "not a result — check the length window against what this enzyme can produce."
+        )
     return sorted(peptides)

@@ -9,6 +9,39 @@ from ..chem import ION_TYPES
 from ..data.precursors import Precursor
 from .base import PrecursorLabels, Teacher
 
+
+def _mod_name(pep, spec) -> str:
+    """peptdeep identifies modifications by NAME, so a bare mass delta cannot be expressed.
+
+    Refuse rather than invent a name: a fabricated identifier would be silently mis-looked-up
+    against peptdeep's own modification table, producing a confident wrong spectrum.
+    """
+    if not isinstance(spec, str):
+        raise ValueError(
+            f"peptide {pep.modified_sequence()!r} carries a mass-only modification "
+            f"({spec:+}), which the peptdeep teacher cannot represent — it identifies "
+            "modifications by name. Supply a named modification, or label this peptide with a "
+            "teacher that accepts raw deltas."
+        )
+    return spec
+
+
+def _mod_site(pep, site) -> int:
+    """Residue sites are 1-based. Terminal sites are refused deliberately.
+
+    peptdeep/alphabase encode N- and C-terminal modifications with their own site convention,
+    and guessing it would place a real modification on the wrong residue — a wrong spectrum
+    that looks entirely plausible. Confirm the convention against peptdeep before supporting
+    these; until then this is a loud stop rather than a silent misplacement.
+    """
+    if not isinstance(site, int):
+        raise NotImplementedError(
+            f"peptide {pep.modified_sequence()!r} carries a {site!r}-terminal modification; "
+            "the peptdeep teacher does not yet map terminal sites onto peptdeep's convention. "
+            "Verify how alphabase encodes terminal mod_sites before enabling this."
+        )
+    return site + 1
+
 # peptdeep fragment-intensity columns matching our ION_TYPES, in order.
 _PEPTDEEP_ION_COLS = tuple(f"{ion}_z{z}" for ion, z in ION_TYPES)
 
@@ -48,9 +81,9 @@ class PeptDeepTeacher(Teacher):
             rows.append(
                 {
                     "sequence": pep.sequence,
-                    "mods": ";".join(name for _, name in pep.mods),
+                    "mods": ";".join(_mod_name(pep, spec) for _, spec in pep.mods),
                     # peptdeep/alphabase mod_sites are 1-based.
-                    "mod_sites": ";".join(str(site + 1) for site, _ in pep.mods),
+                    "mod_sites": ";".join(str(_mod_site(pep, site)) for site, _ in pep.mods),
                     "charge": p.charge,
                     "nce": self.nce if nces is None else float(nces[i]),
                     "instrument": self.instrument,

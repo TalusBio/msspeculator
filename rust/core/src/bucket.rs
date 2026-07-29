@@ -35,7 +35,7 @@ pub fn bucket_arrays(
     let b = peptides.len();
     // N/C-term tokens are mandatory: 2 extra columns, residues start at index 1.
     let extra = 2;
-    let off = 1usize;
+    let off = crate::tokenize::FRAG_OFFSET;
     let tok_len = length + extra;
     let mut tokens = Array2::<i64>::from_elem((b, tok_len), PAD_IDX);
     let mut residue_mass = Array2::<f64>::zeros((b, length));

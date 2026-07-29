@@ -113,3 +113,37 @@ def test_nterm_and_side_chain_mods_are_distinct_sites():
     assert len(p.mods) == 2
     bare = Peptide("KPEPTIDE").mono_mass()
     assert abs(p.mono_mass() - bare - 2 * 229.1629321) < 1e-4
+
+
+def test_unspecific_digest_refuses_an_unreachable_length_window():
+    """An empty digest is a config error, not a result.
+
+    `unspecific` cuts after every residue, so a peptide spans at most missed_cleavages + 1.
+    Against the default min_length=7 that silently yielded 0 peptides from a whole proteome.
+    """
+    import pytest
+
+    from pepdistill.data.config import DigestConfig
+    from pepdistill.data.digest import digest_records
+
+    records = [("p1", "MKWVTFISLLFLFSSAYSRGVFRRDTHKSEIAHRFKDLGEEHFK")]
+    with pytest.raises(ValueError, match="at most"):
+        digest_records(records, DigestConfig(enzyme="unspecific"))  # missed=2, min_length=7
+
+    # Raising missed_cleavages so the span can reach min_length makes it work.
+    peps = digest_records(
+        records, DigestConfig(enzyme="unspecific", missed_cleavages=10, min_length=8, max_length=11)
+    )
+    assert peps and all(8 <= len(p) <= 11 for p in peps)
+
+
+def test_digest_refuses_an_empty_result_from_real_proteins():
+    """A specific enzyme with an impossible window must also fail loudly, not return []."""
+    import pytest
+
+    from pepdistill.data.config import DigestConfig
+    from pepdistill.data.digest import digest_records
+
+    records = [("p1", "MKWVTFISLLFLFSSAYSRGVFRR")]
+    with pytest.raises(ValueError, match="0 peptides"):
+        digest_records(records, DigestConfig(min_length=200, max_length=300))
