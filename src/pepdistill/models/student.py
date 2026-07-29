@@ -7,6 +7,7 @@ Three heads share one encoder: MS2 fragment intensities, retention time, and CCS
 
 from __future__ import annotations
 
+import math
 from dataclasses import asdict, dataclass
 
 import torch
@@ -44,11 +45,48 @@ class StudentConfig:
     # context projections entirely.
     context_dim: int = 16
 
+    # Modification encoding. A mod enters the model through EITHER the compositional encoder
+    # (element counts over C,H,N,O,S,P) or the mass-only encoder — never both. They share one
+    # embedding space, held together by the mod_align loss. n_elements is a frozen input
+    # contract; changing it invalidates every checkpoint.
+    n_elements: int = 6
+    mass_fourier_k: int = 16
+    # Probability that a composition-bearing site is routed through the mass encoder during
+    # training, so the backbone experiences the fallback's error instead of meeting it cold at
+    # inference. Eval always routes to the compositional encoder.
+    mass_swap_p: float = 0.15
+
     def to_dict(self) -> dict:
         return asdict(self)
 
     def act_module(self) -> nn.Module:
         return {"gelu": nn.GELU, "relu": nn.ReLU}[self.activation]()
+
+
+class FourierFeatures(nn.Module):
+    """Sinusoidal expansion of a scalar over a geometric wavelength ladder.
+
+    Wavelengths run from WAVELENGTH_MAX down to WAVELENGTH_MIN Daltons, spanning the range
+    modification deltas actually occupy. This exists because a Linear(1, d) cannot work: it
+    maps every modification onto a single line through its bias, while the compositional
+    encoder's outputs are not collinear in mass, so the alignment target would be unreachable.
+    """
+
+    WAVELENGTH_MAX = 5000.0
+    WAVELENGTH_MIN = 0.1
+
+    def __init__(self, k: int) -> None:
+        super().__init__()
+        lam = torch.logspace(
+            math.log10(self.WAVELENGTH_MAX), math.log10(self.WAVELENGTH_MIN), k
+        )
+        # Buffer, not a parameter: the ladder is fixed, and it must travel with the module
+        # into checkpoints and ONNX exports.
+        self.register_buffer("freq", 2.0 * math.pi / lam)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        a = x.unsqueeze(-1) * self.freq  # (..., k)
+        return torch.cat([torch.sin(a), torch.cos(a)], dim=-1)  # (..., 2k)
 
 
 class _CNNBackbone(nn.Module):
@@ -113,7 +151,18 @@ class StudentModel(nn.Module):
         self.token_emb = nn.Embedding(N_TOKENS, d, padding_idx=PAD_IDX)
         self.pos_emb = nn.Embedding(cfg.max_len, d)
         self.charge_emb = nn.Embedding(cfg.max_charge + 1, d)
-        self.mod_proj = nn.Linear(1, d)
+        # Compositional encoder. Linear on purpose: it makes the space compositional, so the
+        # composition of two mods embeds as the sum of their vectors.
+        self.comp_enc = nn.Linear(cfg.n_elements, d)
+        # Mass-only fallback. Nonlinear over a Fourier expansion (see FourierFeatures).
+        self.mass_enc = nn.Sequential(
+            FourierFeatures(cfg.mass_fourier_k),
+            nn.Linear(2 * cfg.mass_fourier_k, d),
+            cfg.act_module(),
+            nn.Linear(d, d),
+        )
+        nn.init.zeros_(self.comp_enc.bias)
+        nn.init.zeros_(self.mass_enc[-1].bias)
 
         if cfg.backbone == "transformer":
             self.backbone: nn.Module = _TransformerBackbone(cfg)
@@ -173,6 +222,28 @@ class StudentModel(nn.Module):
             "ccs": out["ccs"] * self.ccs_std + self.ccs_mean,
         }
 
+    def _mod_vectors(
+        self,
+        mod_comp: torch.Tensor,
+        mod_mass: torch.Tensor,
+        mod_present: torch.Tensor,
+        mod_named: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Return (routed mod vector, comp-encoder output, mass-encoder output).
+
+        Both encoders always run — the align loss needs both — but only one reaches the
+        backbone per site. Unmodified positions are zeroed by mod_present, not by encoder
+        behavior: the Fourier expansion of a zero mass is not a zero vector.
+        """
+        g = self.comp_enc(mod_comp)  # (B, T, d)
+        m = self.mass_enc(mod_mass)  # (B, T, d)
+        use_g = mod_named
+        if self.training and self.cfg.mass_swap_p > 0.0:
+            swap = torch.rand_like(mod_mass) < self.cfg.mass_swap_p
+            use_g = use_g & ~swap
+        vec = torch.where(use_g.unsqueeze(-1), g, m)
+        return vec * mod_present.unsqueeze(-1).to(vec.dtype), g, m
+
     def _embed_tensors(
         self,
         tokens: torch.Tensor,
@@ -180,12 +251,11 @@ class StudentModel(nn.Module):
         mod_mass: torch.Tensor,
         mod_present: torch.Tensor,
         mod_named: torch.Tensor,
-    ) -> torch.Tensor:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         length = tokens.shape[1]
         pos = torch.arange(length, device=tokens.device).unsqueeze(0)
-        x = self.token_emb(tokens) + self.pos_emb(pos)
-        mod_vec = self.mod_proj(mod_mass.unsqueeze(-1))
-        return x + mod_vec * mod_present.unsqueeze(-1).to(x.dtype)
+        mod_vec, g, m = self._mod_vectors(mod_comp, mod_mass, mod_present, mod_named)
+        return self.token_emb(tokens) + self.pos_emb(pos) + mod_vec, g, m
 
     def _apply_heads(
         self,
@@ -213,7 +283,7 @@ class StudentModel(nn.Module):
         rt = self.rt_head(rt_feat).squeeze(-1)
         return ms2, rt, ccs
 
-    def _embed(self, batch: Batch) -> torch.Tensor:
+    def _embed(self, batch: Batch) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         return self._embed_tensors(
             batch.tokens, batch.mod_comp, batch.mod_mass, batch.mod_present, batch.mod_named,
         )
@@ -235,7 +305,7 @@ class StudentModel(nn.Module):
         MS context only (RT/CCS need no acquisition context here); bake it as a constant for
         a fixed-instrument export.
         """
-        x = self._embed_tensors(tokens, mod_comp, mod_mass, mod_present, mod_named)
+        x, _, _ = self._embed_tensors(tokens, mod_comp, mod_mass, mod_present, mod_named)
         # Dense/bucketed inputs have no padding, so no mask. Passing None (vs an all-False
         # mask) also avoids TransformerEncoder's eval fast-path NestedTensor packing, whose
         # aten::_nested_tensor_from_mask_left_aligned op is unimplemented on MPS.
@@ -257,11 +327,11 @@ class StudentModel(nn.Module):
         ms_context: torch.Tensor | None = None,
         chrom_context: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor]:
-        x = self._embed(batch)
+        x, g, m = self._embed(batch)
         h = self.backbone(x, batch.pad_mask)  # (B, L, d)
         pooled = self._masked_mean(h, batch.pad_mask)  # (B, d)
         ms2, rt, ccs = self._apply_heads(h, pooled, batch.charge, ms_context, chrom_context)
-        return {"ms2": ms2, "rt": rt, "ccs": ccs}
+        return {"ms2": ms2, "rt": rt, "ccs": ccs, "mod_g": g, "mod_m": m}
 
     def forward_context(
         self,
@@ -272,12 +342,12 @@ class StudentModel(nn.Module):
         """One backbone pass giving the chrom-conditioned heads AND the context-free base RT
         (``rt_base``, no chrom_context = iRT frame), so the real regime supervises rt->raw RT
         and rt_base->iRT."""
-        x = self._embed(batch)
+        x, g, m = self._embed(batch)
         h = self.backbone(x, batch.pad_mask)
         pooled = self._masked_mean(h, batch.pad_mask)
         ms2, rt, ccs = self._apply_heads(h, pooled, batch.charge, ms_context, chrom_context)
         rt_base = self.rt_head(pooled).squeeze(-1)
-        return {"ms2": ms2, "rt": rt, "ccs": ccs, "rt_base": rt_base}
+        return {"ms2": ms2, "rt": rt, "ccs": ccs, "rt_base": rt_base, "mod_g": g, "mod_m": m}
 
     def num_parameters(self) -> int:
         return sum(p.numel() for p in self.parameters())
