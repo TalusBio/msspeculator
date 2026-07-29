@@ -17,6 +17,13 @@ pub const NTERM_IDX: i64 = 27;
 pub const CTERM_IDX: i64 = 28;
 pub const N_TOKENS: i64 = 29;
 
+/// Column offset of the first residue in the `[N] r1..rL [C]` grid, and — because the MS2 head
+/// adjacent-pools columns `(p, p+1)` — equally the adjacent-pool row of the first inter-residue
+/// fragment site. Both runtimes slice their MS2 output with it, so it lives here rather than as
+/// a literal `1` at each use: this is precisely the number the torch and Rust paths must agree
+/// on to produce the same fragment table. The pyo3 ext re-exports it as `FRAG_OFFSET`.
+pub const FRAG_OFFSET: usize = 1;
+
 pub struct CollateArrays {
     pub tokens: Array2<i64>,
     pub mod_comp: Array3<f32>,
@@ -51,6 +58,11 @@ fn site_column(site: &Site, seq_len: usize) -> usize {
 /// Presence is tracked in its own boolean rather than inferred from `mod_mass != 0`: a float
 /// comparison would silently mislabel a near-zero delta, and a wrong model input is worse than
 /// a loud failure.
+///
+/// A site carrying both a `Named` mod and a `MassOnly` delta is refused up front — see
+/// [`Peptide::validate_mod_specs`] for why there is no correct silent behavior. `mod_named` is
+/// one boolean per column and both runtimes route the whole column on it, so the loser's
+/// channel would simply never reach the model.
 pub fn mod_arrays(peptides: &[Peptide], tok_len: usize) -> anyhow::Result<ModArrays> {
     let b = peptides.len();
     let mut mod_comp = Array3::<f32>::zeros((b, tok_len, N_ELEMENTS));
@@ -60,6 +72,7 @@ pub fn mod_arrays(peptides: &[Peptide], tok_len: usize) -> anyhow::Result<ModArr
 
     for (i, pep) in peptides.iter().enumerate() {
         let n = pep.sequence.len();
+        pep.validate_mod_specs()?;
         for (site, spec) in &pep.mods {
             // Validate against this peptide's own length first. `tok_len` is the batch's
             // padded width (driven by the longest peptide), so a short peptide's out-of-range
@@ -95,7 +108,7 @@ pub fn collate(peptides: &[Peptide], charges: &[i64]) -> anyhow::Result<CollateA
     let b = peptides.len();
     // N/C-term tokens are mandatory: 2 extra columns, residues start at index 1.
     let extra = 2;
-    let off = 1usize;
+    let off = FRAG_OFFSET;
     let lengths: Vec<i64> = peptides.iter().map(|p| p.sequence.len() as i64).collect();
     let max_len = lengths.iter().copied().max().unwrap_or(0) as usize;
     let tok_len = max_len + extra;
@@ -209,6 +222,108 @@ mod tests {
             &[2, 2],
         );
         assert!(res.is_err(), "mod site out of range for its own peptide must error");
+    }
+
+    #[test]
+    fn co_sited_named_and_mass_only_is_refused() {
+        // `mod_named` is one boolean per column: with a Named spec present the column routes
+        // through comp_enc, and the accumulated mass-only delta never reaches the model — while
+        // it still shifts mono_mass and every fragment m/z. Refuse instead of encoding a
+        // molecule the m/z table does not describe.
+        let p = Peptide::new(
+            "PEPCIDER".into(),
+            vec![
+                (Site::Residue(3), ModSpec::Named("Carbamidomethyl@C".into())),
+                (Site::Residue(3), ModSpec::MassOnly(15.994915)),
+            ],
+        );
+        let err = match collate(&[p.clone()], &[2]) {
+            Ok(_) => panic!("a co-sited Named + MassOnly must be refused"),
+            Err(e) => e.to_string(),
+        };
+        assert!(err.contains("Residue(3)"), "error must name the site: {err}");
+        assert!(err.contains("Carbamidomethyl@C"), "error must name the named mod: {err}");
+        assert!(err.contains("15.994915"), "error must name the mass delta: {err}");
+        // The mass path must agree: a peptide collate refuses is not silently mass-computable.
+        assert!(p.mono_mass().is_err(), "residue_masses must refuse the same peptide");
+    }
+
+    #[test]
+    fn co_sited_named_and_mass_only_is_refused_on_termini_too() {
+        for site in [Site::NTerm, Site::CTerm] {
+            let p = Peptide::new(
+                "PEPTIDE".into(),
+                vec![
+                    (site, ModSpec::Named("TMT6plex".into())),
+                    (site, ModSpec::MassOnly(1.5)),
+                ],
+            );
+            assert!(collate(&[p.clone()], &[2]).is_err(), "{site:?} must be refused");
+            assert!(p.residue_masses().is_err(), "{site:?} must be refused for mass too");
+        }
+    }
+
+    #[test]
+    fn nterm_named_and_residue_zero_mass_only_stay_legal() {
+        // Different sites, different columns — the refusal is per-site, not per-residue-index,
+        // even though `residue_masses` folds an N-term delta onto residue 0.
+        let p = Peptide::new(
+            "KPEPTIDE".into(),
+            vec![
+                (Site::NTerm, ModSpec::Named("TMT6plex".into())),
+                (Site::Residue(0), ModSpec::MassOnly(15.994915)),
+            ],
+        );
+        let a = collate(&[p.clone()], &[2]).unwrap();
+        assert!(a.mod_named[[0, 0]] && !a.mod_named[[0, 1]]);
+        assert!((a.mod_mass[[0, 1]] - 15.994915).abs() < 1e-5);
+        assert!(p.mono_mass().is_ok());
+    }
+
+    #[test]
+    fn two_named_mods_on_one_column_accumulate_composition() {
+        // Still legal and must not regress: both compositions land in one comp_enc input, and
+        // both masses sum, because a single column can be routed for both.
+        let a = collate(
+            &[Peptide::new(
+                "CPEPTIDE".into(),
+                vec![
+                    (Site::Residue(0), ModSpec::Named("Carbamidomethyl@C".into())),
+                    (Site::Residue(0), ModSpec::Named("Oxidation@M".into())),
+                ],
+            )],
+            &[2],
+        )
+        .unwrap();
+        let col = 1;
+        assert!(a.mod_named[[0, col]] && a.mod_present[[0, col]]);
+        // Carbamidomethyl C2H3NO + Oxidation O, in ELEMENTS order C,H,N,O,S,P.
+        let comp: Vec<f32> = (0..N_ELEMENTS).map(|k| a.mod_comp[[0, col, k]]).collect();
+        assert_eq!(comp, vec![2.0, 3.0, 1.0, 2.0, 0.0, 0.0]);
+        let expected = (chem::mod_delta("Carbamidomethyl@C").unwrap()
+            + chem::mod_delta("Oxidation@M").unwrap()) as f32;
+        assert!((a.mod_mass[[0, col]] - expected).abs() < 1e-4);
+    }
+
+    #[test]
+    fn two_mass_only_mods_on_one_column_sum_their_masses() {
+        let a = collate(
+            &[Peptide::new(
+                "CPEPTIDE".into(),
+                vec![
+                    (Site::Residue(0), ModSpec::MassOnly(57.021464)),
+                    (Site::Residue(0), ModSpec::MassOnly(15.994915)),
+                ],
+            )],
+            &[2],
+        )
+        .unwrap();
+        let col = 1;
+        assert!(a.mod_present[[0, col]] && !a.mod_named[[0, col]]);
+        assert!((a.mod_mass[[0, col]] - (57.021464 + 15.994915)).abs() < 1e-4);
+        for k in 0..N_ELEMENTS {
+            assert_eq!(a.mod_comp[[0, col, k]], 0.0);
+        }
     }
 
     #[test]

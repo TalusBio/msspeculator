@@ -228,6 +228,7 @@ fn pepdistill_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("NTERM_IDX", tokenize::NTERM_IDX)?;
     m.add("CTERM_IDX", tokenize::CTERM_IDX)?;
     m.add("N_TOKENS", tokenize::N_TOKENS)?;
+    m.add("FRAG_OFFSET", tokenize::FRAG_OFFSET)?;
 
     let py = m.py();
     let ion = PyList::empty_bound(py);
@@ -239,7 +240,7 @@ fn pepdistill_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     let mods = PyDict::new_bound(py);
     for &(name, _acc) in unimod::ALIASES.iter() {
         let delta = chem::mod_delta(name)
-            .ok_or_else(|| pyo3::exceptions::PyValueError::new_err(format!("no delta for alias {name}")))?;
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
         mods.set_item(name, delta)?;
     }
     m.add("MOD_DELTA", mods)?;

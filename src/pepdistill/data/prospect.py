@@ -47,6 +47,11 @@ def parse_modseq(modseq: str) -> tuple[str, tuple[tuple, ...]]:
     (``pepdistill_rs.unimod_name``: our alias if one exists, else the UNIMOD title) — an
     accession absent from that table raises ``ValueError`` rather than silently dropping the
     peptide later.
+
+    Resolving is not enough: the name must also be *encodable*, i.e. project onto the model's
+    six-element basis. Iodo (UNIMOD:129) and the Se-containing mods resolve to a perfectly good
+    name and then fail inside ``collate``. Checking here turns a multi-hour training run that
+    aborts mid-epoch into a ``ValueError`` at parse time, next to the row that caused it.
     """
     residues: list[str] = []
     mods: list[tuple] = []
@@ -64,6 +69,12 @@ def parse_modseq(modseq: str) -> tuple[str, tuple[tuple, ...]]:
                     f"unknown UNIMOD accession {n} in {modseq!r}: not in the vendored "
                     "unimod table (regenerate with tools/gen_unimod.py)"
                 )
+            try:
+                _rs.mod_element_comp(name)
+            except Exception as exc:
+                raise ValueError(
+                    f"UNIMOD:{n} ({name}) in {modseq!r} resolves but cannot be encoded: {exc}"
+                ) from exc
             site = "n" if pos < 0 else pos
             mods.append((site, name))
     return "".join(residues), tuple(mods)

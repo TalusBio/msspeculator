@@ -9,7 +9,7 @@ import numpy as np
 import torch
 from torch.utils.data import IterableDataset
 
-from ..data.encode import Batch, collate
+from ..data.encode import FRAG_OFFSET, Batch, collate
 from ..data.precursors import Precursor
 from ..teacher.base import PrecursorLabels
 
@@ -116,12 +116,11 @@ def collate_with_labels(precursors: list[Precursor], labels: list[PrecursorLabel
     b, frag_len = inputs.frag_mask.shape
     n_ion = labels[0].ms2.shape[1] if labels else 0
 
-    off = 1  # mandatory N-term token occupies index 0
     ms2 = torch.zeros(b, frag_len, n_ion, dtype=torch.float32)
     for i, lab in enumerate(labels):
         k = lab.ms2.shape[0]  # = residues - 1
         # Place the k label rows at the fragment-site indices matching Batch.frag_mask.
-        ms2[i, off : off + k] = torch.from_numpy(lab.ms2.astype(np.float32))
+        ms2[i, FRAG_OFFSET : FRAG_OFFSET + k] = torch.from_numpy(lab.ms2.astype(np.float32))
 
     rt = torch.tensor([lab.rt for lab in labels], dtype=torch.float32)
     ccs = torch.tensor([lab.ccs for lab in labels], dtype=torch.float32)

@@ -20,12 +20,25 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import torch
-from pepdistill_rs import AA_OFFSET, CTERM_IDX, NTERM_IDX, PAD_IDX, N_TOKENS  # noqa: F401
+from pepdistill_rs import (  # noqa: F401
+    AA_OFFSET,
+    CTERM_IDX,
+    FRAG_OFFSET,
+    NTERM_IDX,
+    PAD_IDX,
+    N_TOKENS,
+)
 
 from .precursors import Precursor
 
 # Vocab/token layout (AA_OFFSET, PAD_IDX, NTERM_IDX, CTERM_IDX, N_TOKENS) is single-sourced
 # in Rust (pepdistill_rs); re-exported above for existing importers (student.py, fast.py).
+#
+# FRAG_OFFSET is the same contract for the MS2 axis: with the mandatory N-term token at column
+# 0, adjacent-pool row 0 pools [N] with residue 1, so the L-1 real inter-residue fragment sites
+# start at row FRAG_OFFSET. Every slice of an MS2 output — here, predict/fast.py,
+# predict/library.py, distill/dataset.py, and the Rust runtime — reads this one constant, so
+# the torch and Rust paths cannot drift into off-by-one disagreement.
 
 @dataclass(slots=True)
 class Batch:

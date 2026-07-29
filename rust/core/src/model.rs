@@ -10,7 +10,7 @@ use ndarray::{s, Array1, Array2};
 
 use crate::artifact::Artifact;
 use crate::peptide::Peptide;
-use crate::tokenize::{self, CTERM_IDX, NTERM_IDX};
+use crate::tokenize::{self, CTERM_IDX, FRAG_OFFSET, NTERM_IDX};
 
 fn gelu(x: f32) -> f32 {
     let xf = x as f64;
@@ -297,6 +297,15 @@ impl<'a> Predictor<'a> {
                 cfg.max_len
             ));
         }
+        // charge_emb has max_charge + 1 rows. Without this the `.row(charge as usize)` below
+        // aborts the process on an ndarray bounds assertion (and a negative charge wraps to a
+        // huge usize first), which is not a diagnosis a CLI user can act on.
+        if charge < 1 || charge as usize > cfg.max_charge {
+            return Err(anyhow!(
+                "charge {charge} is out of range; this model's charge_emb covers 1..={}",
+                cfg.max_charge
+            ));
+        }
 
         // --- embed: token + position + routed mod vector ---
         // Eval routing sends named mods through comp_enc and mass-only mods through mass_enc,
@@ -352,8 +361,8 @@ impl<'a> Predictor<'a> {
         // Adjacent-pool row p covers tokens (p, p+1). With the mandatory N-term token at column
         // 0, the first inter-RESIDUE site is row 1 (residues 1 and 2), so the L-1 real fragment
         // sites are rows [1, L). Rows 0 and L (the N-/C-term pools) are dropped, exactly as
-        // `predict_library_fast` slices them off with `off = 1`.
-        const FRAG_OFFSET: usize = 1;
+        // `predict_library_fast` slices them off with the same `FRAG_OFFSET`, re-exported to
+        // Python by the pyo3 ext so the two runtimes cannot drift.
         let frag_pos = seq.len() - 1;
         let mut frag = Array2::<f32>::zeros((frag_pos, d));
         for i in 0..frag_pos {

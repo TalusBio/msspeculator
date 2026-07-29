@@ -84,9 +84,17 @@ pub fn fragment_mz_matrix(rm: &[f64]) -> Vec<Vec<f64>> {
 
 /// Modification mass delta (Da), computed from the vendored UNIMOD composition. There is no
 /// second table of literal deltas to drift against — `unimod::ALIASES` is the only mapping.
-pub fn mod_delta(name: &str) -> Option<f64> {
-    let e = crate::unimod::by_name(name)?;
-    e.comp.mono_mass(crate::unimod::nuclide_masses()).ok()
+///
+/// Two distinct failures, kept distinct: the name is not in the table, or the name resolves but
+/// its composition names a nuclide the mass table lacks. Collapsing the second into the first
+/// (as an `Option` return did) reports a broken table refresh as "unknown modification", which
+/// sends the reader looking for a typo in a name that is in fact present.
+pub fn mod_delta(name: &str) -> anyhow::Result<f64> {
+    let e = crate::unimod::by_name(name)
+        .ok_or_else(|| anyhow::anyhow!("unknown modification {name}"))?;
+    e.comp
+        .mono_mass(crate::unimod::nuclide_masses())
+        .map_err(|e| anyhow::anyhow!("modification {name} has no computable mass: {e}"))
 }
 
 /// Isotope-agnostic 6-element composition delta for a named modification.
@@ -175,7 +183,21 @@ mod tests {
         for &(name, delta) in expected {
             approx(mod_delta(name).unwrap(), delta, 1e-5);
         }
-        assert!(mod_delta("NotAMod").is_none());
+        let err = mod_delta("NotAMod").unwrap_err().to_string();
+        assert!(err.contains("unknown modification"), "{err}");
+    }
+
+    #[test]
+    fn mod_delta_distinguishes_unknown_name_from_uncomputable_mass() {
+        // A missing nuclide is not an unknown modification: the two diagnoses send a reader to
+        // different files (the alias list vs. the vendored nuclide table).
+        let unknown = mod_delta("NotAMod").unwrap_err().to_string();
+        assert!(unknown.contains("unknown modification"), "{unknown}");
+
+        let comp = crate::composition::AtomicComposition::parse("Xx(1)").unwrap();
+        let err = comp.mono_mass(crate::unimod::nuclide_masses()).unwrap_err().to_string();
+        assert!(err.contains("no monoisotopic mass for nuclide"), "{err}");
+        assert!(!err.contains("unknown modification"), "{err}");
     }
 
     #[test]

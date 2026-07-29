@@ -222,6 +222,31 @@ def test_modified_peptide_differs_from_the_bare_one(artifact):
     assert abs(bare["precursor_mz"] - modded["precursor_mz"]) > 1e-4
 
 
+def test_rust_rejects_an_out_of_range_charge(artifact):
+    """An out-of-range charge must be a named error, not an ndarray bounds abort (rc=101)."""
+    r = subprocess.run(
+        [_binary(), "--model", str(artifact["path"]), "--peptide", PEPTIDE, "--charge", "20"],
+        capture_output=True,
+        text=True,
+    )
+    assert r.returncode == 1, f"expected a clean error, got rc={r.returncode}: {r.stderr[-400:]}"
+    assert "charge 20" in r.stderr, r.stderr
+    assert str(artifact["model"].cfg.max_charge) in r.stderr, r.stderr
+
+
+def test_rust_refuses_a_site_carrying_a_named_and_a_mass_only_mod(artifact):
+    """`comp_enc`/`mass_enc` routing is per column, so the second mod would vanish from the
+    model input while still moving every m/z. Both runtimes must refuse instead."""
+    modseq = "PEPC[Carbamidomethyl@C][+15.994915]IDER"
+    r = subprocess.run(
+        [_binary(), "--model", str(artifact["path"]), "--peptide", modseq, "--charge", "2"],
+        capture_output=True,
+        text=True,
+    )
+    assert r.returncode == 1, f"expected a clean error, got rc={r.returncode}: {r.stderr[-400:]}"
+    assert "Carbamidomethyl@C" in r.stderr and "15.994915" in r.stderr, r.stderr
+
+
 def test_rust_rejects_a_v1_artifact(artifact, tmp_path):
     """A v1 artifact read as v2 would produce plausible, wrong numbers. It must refuse."""
     import json as _json

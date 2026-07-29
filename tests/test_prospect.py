@@ -106,6 +106,20 @@ def test_parse_modseq_raises_on_unresolvable_accession():
         parse_modseq("PEP[UNIMOD:99999999]TIDE")
 
 
+def test_parse_modseq_raises_on_a_resolvable_but_unencodable_accession():
+    """Iodo (UNIMOD:129) resolves to a name and then fails to project onto the six-element
+    basis. Catching that at parse time keeps it out of collate, where it would abort a
+    multi-hour training run mid-epoch instead of rejecting the offending row at ingest."""
+    import pepdistill_rs as _rs
+
+    assert _rs.unimod_name(129) == "Iodo", "fixture assumes 129 resolves"
+    with pytest.raises(ValueError) as e:
+        parse_modseq("PEPC[UNIMOD:129]TIDER")
+    msg = str(e.value)
+    assert "129" in msg and "Iodo" in msg, msg
+    assert '"I"' in msg or "'I'" in msg, f"must name the offending element: {msg}"
+
+
 def test_unimod_sentinel_map_is_gone():
     import pepdistill.data.prospect as p
 

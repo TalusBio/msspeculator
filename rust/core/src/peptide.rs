@@ -68,9 +68,7 @@ impl ModSpec {
     pub fn delta_mass(&self) -> anyhow::Result<f64> {
         match self {
             ModSpec::MassOnly(m) => Ok(*m),
-            ModSpec::Named(n) => {
-                chem::mod_delta(n).ok_or_else(|| anyhow::anyhow!("unknown modification {n}"))
-            }
+            ModSpec::Named(n) => chem::mod_delta(n),
         }
     }
 
@@ -107,6 +105,13 @@ impl Peptide {
     /// that is what makes the round trip exact, since `modified_sequence` renders both the same
     /// way. A caller wanting a side-chain mod on the final residue must build the `Peptide`
     /// directly.
+    ///
+    /// Known limitation: a mod NAME containing `]` cannot round-trip. Some UNIMOD titles do
+    /// (e.g. `Xlink:DSS[156]`); `modified_sequence` renders them unquoted and `parse` then
+    /// stops at the inner `]`. It fails loudly — the tail becomes an unexpected character or a
+    /// bad site rather than a silently wrong mod — and no such title is reachable from
+    /// PROSPECT's frozen accession set, so the delimiter stays unescaped. Escaping or quoting
+    /// the body is the fix if a bracketed name ever has to be supported.
     pub fn parse(s: &str) -> anyhow::Result<Self> {
         let mut sequence = String::new();
         let mut mods: Vec<(Site, ModSpec)> = Vec::new();
@@ -152,10 +157,55 @@ impl Peptide {
         Ok(Self::new(sequence, mods))
     }
 
+    /// Reject a site that carries both a `Named` mod and a `MassOnly` delta.
+    ///
+    /// Several `Named` mods on one site are fine (their compositions accumulate) and so are
+    /// several `MassOnly` deltas (their masses sum). One of each is not: the two route to
+    /// different encoders, and `tokenize::mod_arrays` has exactly one boolean per column to
+    /// choose with. Marking the column "named" would drop the mass-only delta from the model
+    /// input while it still moves `mono_mass` and every fragment m/z; folding the delta into
+    /// the mass channel instead would drop the named mod's composition. Neither is correct, so
+    /// refuse — the standing rule here is errors over degradation.
+    ///
+    /// Checked on `Site`, not on the residue index `residue_masses` folds onto, so this agrees
+    /// exactly with `mod_arrays`' notion of a column: an N-term mod and a `Residue(0)` mod are
+    /// different sites even though both add to residue 0's mass.
+    pub fn validate_mod_specs(&self) -> anyhow::Result<()> {
+        for (i, (site, spec)) in self.mods.iter().enumerate() {
+            for (other_site, other) in &self.mods[i + 1..] {
+                if site != other_site {
+                    continue;
+                }
+                let mixed = matches!(
+                    (spec, other),
+                    (ModSpec::Named(_), ModSpec::MassOnly(_))
+                        | (ModSpec::MassOnly(_), ModSpec::Named(_))
+                );
+                if mixed {
+                    anyhow::bail!(
+                        "site {site:?} of {} carries both a named modification and a mass-only \
+                         delta ([{}] and [{}]); named mods route through the composition \
+                         encoder and mass-only deltas through the mass encoder, so a single \
+                         site cannot carry one of each",
+                        self.modified_sequence(),
+                        spec.render(),
+                        other.render()
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Per-residue masses with every modification's delta folded in. Terminal mods add to the
     /// first / last residue for mass purposes — they occupy their own embedding column, but
     /// chemically they sit on the peptide's ends.
+    ///
+    /// Refuses the same mixed-spec sites [`Peptide::validate_mod_specs`] describes: a peptide
+    /// the tokenizer cannot encode must not be quietly mass-computable here either, or a
+    /// library row would carry m/z values for a molecule no model input ever described.
     pub fn residue_masses(&self) -> anyhow::Result<Vec<f64>> {
+        self.validate_mod_specs()?;
         let mut rm = chem::residue_masses(self.sequence.as_bytes())?;
         if rm.is_empty() {
             anyhow::bail!("empty peptide has no residue masses");

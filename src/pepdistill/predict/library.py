@@ -8,7 +8,7 @@ import pandas as pd
 import torch
 
 from ..chem import ION_TYPES, fragment_mz_matrix
-from ..data.encode import collate
+from ..data.encode import FRAG_OFFSET, collate
 from ..data.precursors import Precursor
 from ..models.student import StudentModel
 
@@ -51,10 +51,8 @@ def predict_library(
             pep = prec.peptide
             n = pep.length
             mz_matrix = fragment_mz_matrix(pep.sequence, list(pep.mods))  # (n-1, n_ion)
-            # Fragment sites live at adjacent-pool indices [off, off+n-1). Termini are
-            # mandatory, so the mandatory N-term token occupies index 0 and off is always 1.
-            off = 1
-            intensities = ms2[k, off : off + n - 1]  # (n-1, n_ion)
+            # Fragment sites live at adjacent-pool indices [FRAG_OFFSET, +n-1).
+            intensities = ms2[k, FRAG_OFFSET : FRAG_OFFSET + n - 1]  # (n-1, n_ion)
             peak = float(intensities.max()) if intensities.numel() else 0.0
             if peak <= 0:
                 continue

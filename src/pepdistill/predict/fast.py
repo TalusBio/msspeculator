@@ -17,6 +17,7 @@ import numpy as np
 import pandas as pd
 
 from ..chem import ION_TYPES
+from ..data.encode import FRAG_OFFSET
 from ..data.precursors import Precursor
 from .library import LIBRARY_COLUMNS
 
@@ -127,10 +128,8 @@ def predict_library_fast(
                 _bucket_arrays(chunk, length)
             )
             ms2, rt, ccs = runner.run(tokens, mod_comp, mod_mass, mod_present, mod_named, charge)
-            # Fragment sites are at adjacent-pool indices [off, off+frag_pos). Termini are
-            # mandatory, so the mandatory N-term token occupies index 0 and off is always 1.
-            off = 1
-            ms2 = ms2[:, off : off + frag_pos, :]
+            # Fragment sites are at adjacent-pool indices [FRAG_OFFSET, +frag_pos).
+            ms2 = ms2[:, FRAG_OFFSET : FRAG_OFFSET + frag_pos, :]
             mz, precursor_mz = _fragment_mz(residue_mass, charge)
 
             bsz = len(chunk)
