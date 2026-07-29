@@ -201,6 +201,13 @@ class StudentModel(nn.Module):
         self.register_buffer("rt_std", torch.ones(1))
         self.register_buffer("ccs_mean", torch.zeros(1))
         self.register_buffer("ccs_std", torch.ones(1))
+        # Whether the RT affine has been established. Explicit state, not inferred from
+        # rt_mean==0/rt_std==1: those are legitimate values for a standardized frame, and
+        # reading "unset" out of them is the sentinel-inference pattern this codebase
+        # rejects elsewhere. The rule this exists to enforce: RT/CCS scale is ONE global
+        # affine, set once at cold start, never re-established when a dataset is added —
+        # per-dataset RT variation belongs to the ChromRunbook.
+        self.register_buffer("norm_established", torch.zeros(1, dtype=torch.bool))
 
     def set_norm(
         self,
@@ -208,8 +215,16 @@ class StudentModel(nn.Module):
         rt_std: float | None = None,
         ccs_mean: float | None = None,
         ccs_std: float | None = None,
+        *,
+        force: bool = False,
     ) -> None:
         """Set target normalization; ``None`` leaves that statistic untouched.
+
+        The RT affine is set ONCE, at cold start. A second attempt to establish it raises
+        unless ``force=True``: re-standardizing mid-curriculum recalibrates an already-trained
+        head against a new frame, and per-dataset RT variation is the ChromRunbook's job, not
+        the norm's. Refusing loudly beats silently accepting the overwrite or silently
+        ignoring the call — either one leaves the caller believing something that is not true.
 
         A regime with no data for a property MUST pass None rather than a placeholder.
         Writing (0.0, 1.0) over a calibration an earlier stage learned does not disable the
@@ -220,6 +235,16 @@ class StudentModel(nn.Module):
         Non-finite values are rejected for the same reason: a NaN std would surface as a
         confident, meaningless prediction rather than a failure.
         """
+        sets_rt = rt_mean is not None or rt_std is not None
+        if sets_rt and bool(self.norm_established) and not force:
+            raise ValueError(
+                "set_norm: the RT affine is already established "
+                f"(mean {float(self.rt_mean):.6g}, std {float(self.rt_std):.6g}); refusing to "
+                f"re-establish it from (mean {rt_mean!r}, std {rt_std!r}). RT/CCS scale is one "
+                "global affine fixed at cold start — per-dataset RT variation belongs to the "
+                "ChromRunbook. Pass force=True only if you intend to discard the existing "
+                "calibration of an already-trained head."
+            )
         for name, value in (
             ("rt_mean", rt_mean), ("rt_std", rt_std),
             ("ccs_mean", ccs_mean), ("ccs_std", ccs_std),
@@ -230,6 +255,8 @@ class StudentModel(nn.Module):
                 raise ValueError(f"set_norm: {name} must be finite, got {value!r}")
             buf = getattr(self, name)
             buf.fill_(max(value, 1e-6) if name.endswith("_std") else value)
+        if rt_mean is not None or rt_std is not None:
+            self.norm_established.fill_(True)
 
     def standardize_rt(self, rt: torch.Tensor) -> torch.Tensor:
         """Native-unit RT -> the head's standardized space (the target for training)."""

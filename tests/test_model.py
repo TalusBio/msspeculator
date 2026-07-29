@@ -98,7 +98,8 @@ def test_set_norm_leaves_unspecified_stats_untouched():
     model = build_student("tiny")
     model.set_norm(50.0, 10.0, 400.0, 25.0)
 
-    model.set_norm(rt_mean=43.0, rt_std=30.0)  # what the real regime now does
+    # force=True only waives the set-once guard on RT; it must not drag CCS along.
+    model.set_norm(rt_mean=43.0, rt_std=30.0, force=True)
 
     assert float(model.rt_mean) == 43.0 and float(model.rt_std) == 30.0
     assert float(model.ccs_mean) == 400.0, "CCS calibration was clobbered"
@@ -119,3 +120,52 @@ def test_set_norm_rejects_non_finite():
     for kwargs in ({"rt_std": _math.nan}, {"ccs_mean": _math.inf}, {"rt_mean": -_math.inf}):
         with pytest.raises(ValueError, match="must be finite"):
             model.set_norm(**kwargs)
+
+
+def test_set_norm_refuses_to_re_establish_rt():
+    """The RT affine is set once at cold start; a second attempt must raise, not overwrite.
+
+    Re-standardizing mid-curriculum recalibrates an already-trained head against a new
+    frame. Silently accepting it, or silently ignoring the call, both leave the caller
+    believing something untrue -- so it raises.
+    """
+    import pytest
+
+    model = build_student("tiny")
+    model.set_norm(50.0, 10.0, 400.0, 25.0)
+
+    with pytest.raises(ValueError, match="already established"):
+        model.set_norm(rt_mean=43.0, rt_std=30.0)
+    assert float(model.rt_mean) == 50.0, "refused call must not have partially applied"
+
+    # CCS-only updates are unaffected -- the guard is on the RT affine.
+    model.set_norm(ccs_mean=500.0, ccs_std=30.0)
+    assert float(model.ccs_mean) == 500.0
+
+    # force=True is the explicit escape hatch.
+    model.set_norm(rt_mean=43.0, rt_std=30.0, force=True)
+    assert float(model.rt_mean) == 43.0
+
+
+def test_norm_established_flag_is_not_exported():
+    """It is training bookkeeping; the Rust reader should never see it."""
+    import json
+
+    from safetensors import safe_open
+
+    from pepdistill.export import export_safetensors
+    from pepdistill.models.registry import save_checkpoint
+
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as d:
+        model = build_student("tiny")
+        model.set_norm(50.0, 10.0, 400.0, 25.0)
+        ckpt, art = Path(d) / "m.ckpt", Path(d) / "m.safetensors"
+        save_checkpoint(model, ckpt)
+        export_safetensors(ckpt, art)
+        with safe_open(str(art), framework="pt") as f:
+            assert not [k for k in f.keys() if "norm_established" in k]
+            meta = json.loads(f.metadata()["pepdistill"])
+    assert meta["norm"]["ccs_mean"] == 400.0

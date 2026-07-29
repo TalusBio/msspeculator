@@ -312,12 +312,19 @@ def fit_realspeclib(
     train = [e for e in examples if e.precursor.split != "val"]
     val = [e for e in examples if e.precursor.split == "val"]
 
-    # Normalize the RT heads on TRAIN iRT. CCS is left ALONE: PROSPECT carries no CCS, so
-    # this regime has nothing to estimate from, and writing an identity norm here would
-    # overwrite the calibration the pretrain stage learned from the teacher — leaving a
-    # trained CCS head whose predictions denormalize to raw standardized values.
-    irt_train = np.array([e.label.rt for e in train], dtype=np.float64)
-    model.set_norm(rt_mean=float(irt_train.mean()), rt_std=float(irt_train.std() or 1.0))
+    # RT/CCS scale is ONE global affine, established once at cold start and never re-set when
+    # a dataset is added — per-dataset RT variation is the ChromRunbook's job, not the norm's.
+    # So establish it here only on a cold start (real-only, no pretrain); in a pretrain->real
+    # curriculum, inherit the frame the pretrain stage set rather than recalibrating the
+    # head mid-stream.
+    #
+    # CCS is never touched here at all: PROSPECT carries no CCS, so this regime has nothing
+    # to estimate from, and writing an identity norm would overwrite the pretrain
+    # calibration, leaving a trained head whose predictions denormalize to raw standardized
+    # values.
+    if not bool(model.norm_established):
+        irt_train = np.array([e.label.rt for e in train], dtype=np.float64)
+        model.set_norm(rt_mean=float(irt_train.mean()), rt_std=float(irt_train.std() or 1.0))
 
     module = RealSpeclibModule(
         model,

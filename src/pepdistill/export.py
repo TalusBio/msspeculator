@@ -22,6 +22,10 @@ FORMAT_VERSION = 2
 # StudentModel registers these as buffers; they are 1-element scalars, hoisted into metadata
 # rather than shipped as tensors (simpler for the Rust reader).
 _NORM_KEYS = ("rt_mean", "rt_std", "ccs_mean", "ccs_std")
+# Training-side bookkeeping buffer (has the RT affine been established?). It guards against
+# re-standardizing mid-curriculum and means nothing at inference, so it is dropped rather
+# than shipped as a tensor the Rust reader would have to know to ignore.
+_TRAINING_ONLY_KEYS = ("norm_established",)
 
 
 def export_safetensors(ckpt_path: str | Path, out_path: str | Path) -> Path:
@@ -34,6 +38,8 @@ def export_safetensors(ckpt_path: str | Path, out_path: str | Path) -> Path:
     for key, val in model.state_dict().items():
         if key in _NORM_KEYS:
             norm[key] = float(val.reshape(-1)[0])
+        elif key in _TRAINING_ONLY_KEYS:
+            continue
         else:
             tensors[f"model.{key}"] = val.contiguous().cpu()
 
