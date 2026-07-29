@@ -6,7 +6,7 @@ resolver = "2"
 name = "pepdistill_rs"
 version = "0.1.0"
 edition = "2021"
-description = "Rust tokenizer/batcher for pepdistill: packs precursors into numpy arrays."
+description = "Rust chemistry + tokenizer/batcher binding over pepdistill-core, exposed to Python as pepdistill_rs."
 
 [lib]
 name = "pepdistill_rs"

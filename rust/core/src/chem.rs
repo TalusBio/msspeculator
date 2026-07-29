@@ -1,7 +1,8 @@
-//! Monoisotopic mass and m/z arithmetic — a 1:1 port of `pepdistill.chem`.
+//! Monoisotopic mass and m/z arithmetic — the single source of truth for pepdistill's
+//! chemistry constants; `pepdistill.chem` (Python) is now a thin shim over this module.
 //!
-//! v1 supports the 20 standard amino acids and no modifications. Fragment ordering matches
-//! `chem.ION_TYPES` = (b,1),(y,1),(b,2),(y,2).
+//! Supports the 20 standard amino acids plus a fixed table of named modifications
+//! (`MOD_TABLE`). Fragment ordering matches `chem.ION_TYPES` = (b,1),(y,1),(b,2),(y,2).
 
 pub const PROTON: f64 = 1.007_276_466_879;
 pub const H2O: f64 = 18.010_564_684_25;
@@ -80,15 +81,19 @@ pub fn fragment_mz_matrix(rm: &[f64]) -> Vec<Vec<f64>> {
     out
 }
 
+/// Enumerable table of (name, monoisotopic mass delta in Da) for every supported modification.
+/// Single source of truth: `mod_delta` looks up this table, and the pyo3 ext builds its
+/// `MOD_DELTA` dict by iterating it — no hand-maintained name list anywhere else.
+pub const MOD_TABLE: &[(&str, f64)] = &[
+    ("Carbamidomethyl@C", 57.021_463_723),
+    ("Oxidation@M", 15.994_914_622),
+    ("Phospho", 79.966_331_2),
+    ("TMT6plex", 229.162_932_1),
+];
+
 /// Monoisotopic mass delta (Da) for a named modification, or None if unknown.
 pub fn mod_delta(name: &str) -> Option<f64> {
-    Some(match name {
-        "Carbamidomethyl@C" => 57.021_463_723,
-        "Oxidation@M" => 15.994_914_622,
-        "Phospho" => 79.966_331_2,
-        "TMT6plex" => 229.162_932_1,
-        _ => return None,
-    })
+    MOD_TABLE.iter().find(|(n, _)| *n == name).map(|(_, d)| *d)
 }
 
 /// Per-position residue masses with modification deltas applied at their sites.
@@ -162,5 +167,21 @@ mod tests {
     #[test]
     fn target_shape() {
         assert_eq!(ms2_target_shape(7), (6, ION_TYPES.len()));
+    }
+
+    #[test]
+    fn mod_table_names_and_deltas() {
+        // Frozen contract: names + values must not drift. mod_delta must agree with MOD_TABLE.
+        let expected: &[(&str, f64)] = &[
+            ("Carbamidomethyl@C", 57.021_463_723),
+            ("Oxidation@M", 15.994_914_622),
+            ("Phospho", 79.966_331_2),
+            ("TMT6plex", 229.162_932_1),
+        ];
+        assert_eq!(MOD_TABLE, expected);
+        for &(name, delta) in expected {
+            approx(mod_delta(name).unwrap(), delta, 1e-9);
+        }
+        assert!(mod_delta("NotAMod").is_none());
     }
 }

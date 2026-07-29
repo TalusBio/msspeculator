@@ -1,5 +1,11 @@
 //! pyo3 bindings: thin shell exposing pepdistill-core to Python as `pepdistill_rs`.
 
+// The `#[pyfunction]`/`#[pymethods]` macros generate wrapper code that converts the user's
+// `PyResult<T>` into itself via `Into`; clippy flags that macro-generated no-op conversion at
+// our function signatures even though there's nothing for us to change. Silencing it here
+// (rather than per-item) keeps the real lint active for any future non-pyo3 code in this crate.
+#![allow(clippy::useless_conversion)]
+
 use ndarray::{Array1, Array2};
 use numpy::IntoPyArray;
 use pyo3::prelude::*;
@@ -15,6 +21,10 @@ use pepdistill_core::{bucket, tokenize};
 fn to_pyerr(e: anyhow::Error) -> PyErr {
     pyo3::exceptions::PyValueError::new_err(e.to_string())
 }
+
+/// `__reduce__` state: (class, (sequence, mods)) — kept as a named alias to satisfy
+/// clippy's `type_complexity` lint.
+type ReduceState = (PyObject, (String, Vec<(usize, String)>));
 
 #[pyclass(frozen, name = "Peptide")]
 pub struct Peptide {
@@ -52,7 +62,7 @@ impl Peptide {
         }
     }
     // Defensive pickle support (not required by current code paths).
-    fn __reduce__(slf: PyRef<'_, Self>, py: Python<'_>) -> PyResult<(PyObject, (String, Vec<(usize, String)>))> {
+    fn __reduce__(slf: PyRef<'_, Self>, py: Python<'_>) -> PyResult<ReduceState> {
         let cls = py.get_type_bound::<Peptide>().into_py(py);
         Ok((cls, (slf.inner.sequence.clone(), slf.inner.mods.clone())))
     }
@@ -106,12 +116,16 @@ fn bucket_arrays<'py>(
     Ok(d)
 }
 
+/// (fragment m/z tensor, precursor m/z vector) — named alias to satisfy clippy's
+/// `type_complexity` lint.
+type FragmentMzResult<'py> = (Bound<'py, numpy::PyArray3<f64>>, Bound<'py, numpy::PyArray1<f64>>);
+
 #[pyfunction]
 fn bucket_fragment_mz<'py>(
     py: Python<'py>,
     residue_mass: numpy::PyReadonlyArray2<'py, f64>,
     charge: numpy::PyReadonlyArray1<'py, i64>,
-) -> PyResult<(Bound<'py, numpy::PyArray3<f64>>, Bound<'py, numpy::PyArray1<f64>>)> {
+) -> PyResult<FragmentMzResult<'py>> {
     let rm: Array2<f64> = residue_mass.as_array().to_owned();
     let ch: Array1<i64> = charge.as_array().to_owned();
     let (mz, pmz) = bucket::bucket_fragment_mz(&rm, &ch);
@@ -145,8 +159,8 @@ fn pepdistill_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("ION_TYPES", ion)?;
 
     let mods = PyDict::new_bound(py);
-    for name in ["Carbamidomethyl@C", "Oxidation@M", "Phospho", "TMT6plex"] {
-        mods.set_item(name, chem::mod_delta(name).unwrap())?;
+    for &(name, delta) in chem::MOD_TABLE.iter() {
+        mods.set_item(name, delta)?;
     }
     m.add("MOD_DELTA", mods)?;
 
