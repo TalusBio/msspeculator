@@ -312,9 +312,12 @@ def fit_realspeclib(
     train = [e for e in examples if e.precursor.split != "val"]
     val = [e for e in examples if e.precursor.split == "val"]
 
-    # Normalize the RT heads on TRAIN iRT (CCS is unsupervised here -> identity norm).
+    # Normalize the RT heads on TRAIN iRT. CCS is left ALONE: PROSPECT carries no CCS, so
+    # this regime has nothing to estimate from, and writing an identity norm here would
+    # overwrite the calibration the pretrain stage learned from the teacher — leaving a
+    # trained CCS head whose predictions denormalize to raw standardized values.
     irt_train = np.array([e.label.rt for e in train], dtype=np.float64)
-    model.set_norm(float(irt_train.mean()), float(irt_train.std() or 1.0), 0.0, 1.0)
+    model.set_norm(rt_mean=float(irt_train.mean()), rt_std=float(irt_train.std() or 1.0))
 
     module = RealSpeclibModule(
         model,

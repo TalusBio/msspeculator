@@ -85,3 +85,37 @@ def test_denormalize_roundtrip():
     den = model.denormalize(out)
     assert torch.isclose(den["rt"], torch.tensor([60.0]))
     assert torch.isclose(den["ccs"], torch.tensor([375.0]))
+
+
+def test_set_norm_leaves_unspecified_stats_untouched():
+    """A regime with no data for a property must be able to skip it.
+
+    Regression: the real-speclib regime passed (0.0, 1.0) for CCS because PROSPECT has no
+    CCS column. That did not disable the CCS head — it overwrote the calibration pretrain
+    had learned, so a trained head denormalized to raw standardized values and emitted
+    negative CCS that looked like plausible small numbers.
+    """
+    model = build_student("tiny")
+    model.set_norm(50.0, 10.0, 400.0, 25.0)
+
+    model.set_norm(rt_mean=43.0, rt_std=30.0)  # what the real regime now does
+
+    assert float(model.rt_mean) == 43.0 and float(model.rt_std) == 30.0
+    assert float(model.ccs_mean) == 400.0, "CCS calibration was clobbered"
+    assert float(model.ccs_std) == 25.0, "CCS calibration was clobbered"
+    # And the round trip still lands in native units.
+    assert abs(float(model.denormalize(
+        {"ms2": torch.zeros(1, 1, 1), "rt": torch.tensor([0.0]), "ccs": torch.tensor([1.0])}
+    )["ccs"]) - 425.0) < 1e-4
+
+
+def test_set_norm_rejects_non_finite():
+    """A NaN std would surface as a confident, meaningless prediction rather than a failure."""
+    import math as _math
+
+    import pytest
+
+    model = build_student("tiny")
+    for kwargs in ({"rt_std": _math.nan}, {"ccs_mean": _math.inf}, {"rt_mean": -_math.inf}):
+        with pytest.raises(ValueError, match="must be finite"):
+            model.set_norm(**kwargs)

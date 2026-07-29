@@ -202,11 +202,34 @@ class StudentModel(nn.Module):
         self.register_buffer("ccs_mean", torch.zeros(1))
         self.register_buffer("ccs_std", torch.ones(1))
 
-    def set_norm(self, rt_mean: float, rt_std: float, ccs_mean: float, ccs_std: float) -> None:
-        self.rt_mean.fill_(rt_mean)
-        self.rt_std.fill_(max(rt_std, 1e-6))
-        self.ccs_mean.fill_(ccs_mean)
-        self.ccs_std.fill_(max(ccs_std, 1e-6))
+    def set_norm(
+        self,
+        rt_mean: float | None = None,
+        rt_std: float | None = None,
+        ccs_mean: float | None = None,
+        ccs_std: float | None = None,
+    ) -> None:
+        """Set target normalization; ``None`` leaves that statistic untouched.
+
+        A regime with no data for a property MUST pass None rather than a placeholder.
+        Writing (0.0, 1.0) over a calibration an earlier stage learned does not disable the
+        head — it leaves a trained head whose outputs denormalize to raw standardized values,
+        which look like plausible small numbers instead of native units. That is how a
+        pretrain->train pipeline silently produced negative CCS.
+
+        Non-finite values are rejected for the same reason: a NaN std would surface as a
+        confident, meaningless prediction rather than a failure.
+        """
+        for name, value in (
+            ("rt_mean", rt_mean), ("rt_std", rt_std),
+            ("ccs_mean", ccs_mean), ("ccs_std", ccs_std),
+        ):
+            if value is None:
+                continue
+            if not math.isfinite(value):
+                raise ValueError(f"set_norm: {name} must be finite, got {value!r}")
+            buf = getattr(self, name)
+            buf.fill_(max(value, 1e-6) if name.endswith("_std") else value)
 
     def standardize_rt(self, rt: torch.Tensor) -> torch.Tensor:
         """Native-unit RT -> the head's standardized space (the target for training)."""
