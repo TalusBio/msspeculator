@@ -96,16 +96,6 @@ pub fn mod_element_comp(name: &str) -> anyhow::Result<[i8; crate::composition::N
     e.comp.element_comp()
 }
 
-/// Per-position residue masses with modification deltas applied at their sites.
-pub fn residue_masses_mod(seq: &[u8], mods: &[(usize, String)]) -> anyhow::Result<Vec<f64>> {
-    let mut rm = residue_masses(seq)?;
-    for (site, name) in mods {
-        let d = mod_delta(name).ok_or_else(|| anyhow::anyhow!("unknown modification {name}"))?;
-        rm[*site] += d;
-    }
-    Ok(rm)
-}
-
 pub fn mono_mass(rm: &[f64]) -> f64 {
     rm.iter().sum::<f64>() + H2O
 }
@@ -158,9 +148,13 @@ mod tests {
 
     #[test]
     fn fixed_mod_shifts_mass() {
+        use crate::peptide::{ModSpec, Peptide, Site};
         let base = mono_mass(&residue_masses(b"ACDEK").unwrap());
-        let mods = vec![(1usize, "Carbamidomethyl@C".to_string())];
-        let modded = mono_mass(&residue_masses_mod(b"ACDEK", &mods).unwrap());
+        let p = Peptide::new(
+            "ACDEK".into(),
+            vec![(Site::Residue(1), ModSpec::Named("Carbamidomethyl@C".into()))],
+        );
+        let modded = p.mono_mass().unwrap();
         approx(modded - base, 57.021_463_723, 1e-6);
     }
 

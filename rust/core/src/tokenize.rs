@@ -6,7 +6,7 @@
 
 use ndarray::{Array1, Array2};
 
-use crate::chem;
+use crate::peptide::{Peptide, Site};
 
 // Vocab contract — single home. The pyo3 ext re-exports these.
 pub const AA_OFFSET: i64 = 65; // ord('A')
@@ -25,20 +25,18 @@ pub struct CollateArrays {
     pub frag_mask: Array2<bool>,
 }
 
-/// Pack precursors into `Batch` arrays. `mod_sites[i]` / `mod_names[i]` are parallel
-/// per-precursor lists: residue index (0-based within the sequence) and the modification
-/// name to look up via `chem::mod_delta`.
+/// Pack precursors into `Batch` arrays. `peptides[i].mods` sites are mapped onto the token
+/// grid: `Site::Residue(j)` lands at `off + j`; terminal mods fold into the boundary residue's
+/// column (they get their own column in a later task).
 pub fn collate(
-    seqs: &[String],
+    peptides: &[Peptide],
     charges: &[i64],
-    mod_sites: &[Vec<usize>],
-    mod_names: &[Vec<String>],
     use_termini: bool,
 ) -> anyhow::Result<CollateArrays> {
-    let b = seqs.len();
+    let b = peptides.len();
     let extra = if use_termini { 2 } else { 0 };
     let off = if use_termini { 1usize } else { 0 };
-    let lengths: Vec<i64> = seqs.iter().map(|s| s.len() as i64).collect();
+    let lengths: Vec<i64> = peptides.iter().map(|p| p.sequence.len() as i64).collect();
     let max_len = lengths.iter().copied().max().unwrap_or(0) as usize;
     let tok_len = max_len + extra;
     let frag_w = tok_len.saturating_sub(1);
@@ -49,7 +47,7 @@ pub fn collate(
     let mut frag_mask = Array2::<bool>::from_elem((b, frag_w), false);
 
     for i in 0..b {
-        let s = seqs[i].as_bytes();
+        let s = peptides[i].sequence.as_bytes();
         let n = s.len();
         if use_termini {
             tokens[[i, 0]] = NTERM_IDX;
@@ -58,10 +56,20 @@ pub fn collate(
         for j in 0..n {
             tokens[[i, off + j]] = s[j] as i64 - AA_OFFSET;
         }
-        for (k, &site) in mod_sites[i].iter().enumerate() {
-            let d = chem::mod_delta(&mod_names[i][k])
-                .ok_or_else(|| anyhow::anyhow!("unknown modification {}", mod_names[i][k]))?;
-            mod_delta[[i, off + site]] += (d as f32) / MOD_SCALE;
+        let last = n.saturating_sub(1);
+        for (site, spec) in &peptides[i].mods {
+            let d = spec.delta_mass()?;
+            let idx = match site {
+                Site::NTerm => 0,
+                Site::CTerm => last,
+                Site::Residue(j) => {
+                    if *j > last {
+                        anyhow::bail!("mod site {j} out of range for length {n}");
+                    }
+                    *j
+                }
+            };
+            mod_delta[[i, off + idx]] += (d as f32) / MOD_SCALE;
         }
         for p in 0..(n + extra) {
             pad_mask[[i, p]] = false;
@@ -83,14 +91,14 @@ pub fn collate(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::chem;
+    use crate::peptide::ModSpec;
 
     #[test]
     fn collate_no_termini_shapes_and_tokens() {
         let a = collate(
-            &["PEP".into(), "AC".into()],
+            &[Peptide::new("PEP".into(), vec![]), Peptide::new("AC".into(), vec![])],
             &[2, 3],
-            &[vec![], vec![]],
-            &[vec![], vec![]],
             false,
         )
         .unwrap();
@@ -103,10 +111,11 @@ mod tests {
     #[test]
     fn collate_with_termini_and_mods() {
         let a = collate(
-            &["AC".into()],
+            &[Peptide::new(
+                "AC".into(),
+                vec![(Site::Residue(1), ModSpec::Named("Carbamidomethyl@C".to_string()))],
+            )],
             &[2],
-            &[vec![1usize]],
-            &[vec!["Carbamidomethyl@C".to_string()]],
             true,
         )
         .unwrap();
@@ -126,10 +135,11 @@ mod tests {
     #[test]
     fn collate_unknown_mod_errors() {
         let res = collate(
-            &["AC".into()],
+            &[Peptide::new(
+                "AC".into(),
+                vec![(Site::Residue(0), ModSpec::Named("NotAMod".to_string()))],
+            )],
             &[2],
-            &[vec![0usize]],
-            &[vec!["NotAMod".to_string()]],
             false,
         );
         assert!(res.is_err());

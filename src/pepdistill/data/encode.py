@@ -78,11 +78,9 @@ def collate(precursors: list[Precursor]) -> Batch:
     """
     import pepdistill_rs as _rs
 
-    seqs = [p.peptide.sequence for p in precursors]
+    peptides = [p.peptide for p in precursors]
     charges = [int(p.charge) for p in precursors]
-    mod_sites = [[int(s) for s, _ in p.peptide.mods] for p in precursors]
-    mod_names = [[n for _, n in p.peptide.mods] for p in precursors]
-    a = _rs.collate(seqs, charges, mod_sites, mod_names, use_termini())
+    a = _rs.collate(peptides, charges, use_termini())
     return Batch(
         torch.from_numpy(a["tokens"]), torch.from_numpy(a["mod_delta"]),
         torch.from_numpy(a["charge"]), torch.from_numpy(a["lengths"]),

@@ -48,15 +48,16 @@ _UNIMOD_TO_NAME: dict[int, str] = {
 }
 
 
-def parse_modseq(modseq: str) -> tuple[str, tuple[tuple[int, str], ...]]:
+def parse_modseq(modseq: str) -> tuple[str, tuple[tuple, ...]]:
     """Parse a ProForma UNIMOD string -> (stripped_sequence, mods) in OUR mod names.
 
-    ``[UNIMOD:737]ET[UNIMOD:21]TLHLVLR`` -> ("ETTLHLVLR", ((0,"TMT6plex"),(1,"Phospho"))).
-    A mod token attaches to the residue it follows; a leading token (N-term) attaches to
-    residue 0. Unknown accessions map to a "UNIMOD:N" sentinel (not in chem.MOD_DELTA).
+    ``[UNIMOD:737]ET[UNIMOD:21]TLHLVLR`` -> ("ETTLHLVLR", (("n","TMT6plex"),(1,"Phospho"))).
+    A mod token attaches to the residue it follows; a leading token (before any residue) is
+    routed to the N-terminal site. Unknown accessions map to a "UNIMOD:N" sentinel (not in
+    chem.MOD_DELTA).
     """
     residues: list[str] = []
-    mods: list[tuple[int, str]] = []
+    mods: list[tuple] = []
     pos = -1
     for m in _UNIMOD_TOKEN.finditer(modseq):
         aa = m.group(1)
@@ -65,7 +66,8 @@ def parse_modseq(modseq: str) -> tuple[str, tuple[tuple[int, str], ...]]:
             pos += 1
         else:
             n = int(m.group(2))
-            mods.append((pos if pos >= 0 else 0, _UNIMOD_TO_NAME.get(n, f"UNIMOD:{n}")))
+            site = "n" if pos < 0 else pos
+            mods.append((site, _UNIMOD_TO_NAME.get(n, f"UNIMOD:{n}")))
     return "".join(residues), tuple(mods)
 
 

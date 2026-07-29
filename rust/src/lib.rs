@@ -15,16 +15,63 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
 use pepdistill_core::chem;
-use pepdistill_core::peptide::Peptide as CorePeptide;
+use pepdistill_core::peptide::{ModSpec, Peptide as CorePeptide, Site};
 use pepdistill_core::{bucket, tokenize, unimod};
 
 fn to_pyerr(e: anyhow::Error) -> PyErr {
     pyo3::exceptions::PyValueError::new_err(e.to_string())
 }
 
+/// Python-side `site` is `int | "n" | "c"`.
+fn parse_site(obj: &Bound<'_, PyAny>) -> PyResult<Site> {
+    if let Ok(s) = obj.extract::<&str>() {
+        return match s {
+            "n" => Ok(Site::NTerm),
+            "c" => Ok(Site::CTerm),
+            _ => Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "site must be an int, 'n', or 'c'; got {s:?}"
+            ))),
+        };
+    }
+    Ok(Site::Residue(obj.extract::<usize>()?))
+}
+
+/// Python-side `spec` is `str | float`.
+fn parse_spec(obj: &Bound<'_, PyAny>) -> PyResult<ModSpec> {
+    if let Ok(name) = obj.extract::<String>() {
+        return Ok(ModSpec::Named(name));
+    }
+    Ok(ModSpec::MassOnly(obj.extract::<f64>()?))
+}
+
+fn parse_mods(mods: &[(Bound<'_, PyAny>, Bound<'_, PyAny>)]) -> PyResult<Vec<(Site, ModSpec)>> {
+    mods.iter().map(|(s, m)| Ok((parse_site(s)?, parse_spec(m)?))).collect()
+}
+
+/// Inverse of `parse_site`: `Site::NTerm -> "n"`, `CTerm -> "c"`, `Residue(i) -> i`.
+fn site_to_py(site: &Site, py: Python<'_>) -> PyObject {
+    match site {
+        Site::NTerm => "n".into_py(py),
+        Site::CTerm => "c".into_py(py),
+        Site::Residue(i) => i.into_py(py),
+    }
+}
+
+/// Inverse of `parse_spec`: `Named(n) -> n`, `MassOnly(m) -> m`.
+fn spec_to_py(spec: &ModSpec, py: Python<'_>) -> PyObject {
+    match spec {
+        ModSpec::Named(n) => n.clone().into_py(py),
+        ModSpec::MassOnly(m) => m.into_py(py),
+    }
+}
+
+fn mods_to_py(mods: &[(Site, ModSpec)], py: Python<'_>) -> Vec<(PyObject, PyObject)> {
+    mods.iter().map(|(s, m)| (site_to_py(s, py), spec_to_py(m, py))).collect()
+}
+
 /// `__reduce__` state: (class, (sequence, mods)) — kept as a named alias to satisfy
 /// clippy's `type_complexity` lint.
-type ReduceState = (PyObject, (String, Vec<(usize, String)>));
+type ReduceState = (PyObject, (String, Vec<(PyObject, PyObject)>));
 
 #[pyclass(frozen, name = "Peptide")]
 pub struct Peptide {
@@ -35,13 +82,13 @@ pub struct Peptide {
 impl Peptide {
     #[new]
     #[pyo3(signature = (sequence, mods=Vec::new()))]
-    fn new(sequence: String, mods: Vec<(usize, String)>) -> Self {
-        Self { inner: CorePeptide::new(sequence, mods) }
+    fn new(sequence: String, mods: Vec<(Bound<'_, PyAny>, Bound<'_, PyAny>)>) -> PyResult<Self> {
+        Ok(Self { inner: CorePeptide::new(sequence, parse_mods(&mods)?) })
     }
     #[getter]
     fn sequence(&self) -> &str { &self.inner.sequence }
     #[getter]
-    fn mods(&self) -> Vec<(usize, String)> { self.inner.mods.clone() }
+    fn mods(&self, py: Python<'_>) -> Vec<(PyObject, PyObject)> { mods_to_py(&self.inner.mods, py) }
     #[getter]
     fn length(&self) -> usize { self.inner.length() }
     fn residue_masses(&self) -> PyResult<Vec<f64>> { self.inner.residue_masses().map_err(to_pyerr) }
@@ -64,7 +111,8 @@ impl Peptide {
     // Defensive pickle support (not required by current code paths).
     fn __reduce__(slf: PyRef<'_, Self>, py: Python<'_>) -> PyResult<ReduceState> {
         let cls = py.get_type_bound::<Peptide>().into_py(py);
-        Ok((cls, (slf.inner.sequence.clone(), slf.inner.mods.clone())))
+        let mods = mods_to_py(&slf.inner.mods, py);
+        Ok((cls, (slf.inner.sequence.clone(), mods)))
     }
 }
 
@@ -74,8 +122,12 @@ fn fragment_mz(rm: Vec<f64>, ion: &str, ordinal: usize, charge: i64) -> PyResult
 }
 
 #[pyfunction]
-fn fragment_mz_matrix(sequence: &str, mods: Vec<(usize, String)>) -> PyResult<Vec<Vec<f64>>> {
-    let rm = chem::residue_masses_mod(sequence.as_bytes(), &mods).map_err(to_pyerr)?;
+fn fragment_mz_matrix(
+    sequence: &str,
+    mods: Vec<(Bound<'_, PyAny>, Bound<'_, PyAny>)>,
+) -> PyResult<Vec<Vec<f64>>> {
+    let pep = CorePeptide::new(sequence.to_string(), parse_mods(&mods)?);
+    let rm = pep.residue_masses().map_err(to_pyerr)?;
     Ok(chem::fragment_mz_matrix(&rm))
 }
 
@@ -87,10 +139,10 @@ fn ms2_target_shape(length: usize) -> (usize, usize) {
 #[pyfunction]
 fn collate<'py>(
     py: Python<'py>,
-    seqs: Vec<String>, charges: Vec<i64>,
-    mod_sites: Vec<Vec<usize>>, mod_names: Vec<Vec<String>>, use_termini: bool,
+    peptides: Vec<PyRef<'py, Peptide>>, charges: Vec<i64>, use_termini: bool,
 ) -> PyResult<Bound<'py, PyDict>> {
-    let a = tokenize::collate(&seqs, &charges, &mod_sites, &mod_names, use_termini).map_err(to_pyerr)?;
+    let core_peptides: Vec<CorePeptide> = peptides.iter().map(|p| p.inner.clone()).collect();
+    let a = tokenize::collate(&core_peptides, &charges, use_termini).map_err(to_pyerr)?;
     let d = PyDict::new_bound(py);
     d.set_item("tokens", a.tokens.into_pyarray_bound(py))?;
     d.set_item("mod_delta", a.mod_delta.into_pyarray_bound(py))?;
@@ -104,10 +156,10 @@ fn collate<'py>(
 #[pyfunction]
 fn bucket_arrays<'py>(
     py: Python<'py>,
-    seqs: Vec<String>, charges: Vec<i64>,
-    mod_sites: Vec<Vec<usize>>, mod_names: Vec<Vec<String>>, length: usize, use_termini: bool,
+    peptides: Vec<PyRef<'py, Peptide>>, charges: Vec<i64>, length: usize, use_termini: bool,
 ) -> PyResult<Bound<'py, PyDict>> {
-    let a = bucket::bucket_arrays(&seqs, &charges, &mod_sites, &mod_names, length, use_termini).map_err(to_pyerr)?;
+    let core_peptides: Vec<CorePeptide> = peptides.iter().map(|p| p.inner.clone()).collect();
+    let a = bucket::bucket_arrays(&core_peptides, &charges, length, use_termini).map_err(to_pyerr)?;
     let d = PyDict::new_bound(py);
     d.set_item("tokens", a.tokens.into_pyarray_bound(py))?;
     d.set_item("mod_delta", a.mod_delta.into_pyarray_bound(py))?;

@@ -8,6 +8,7 @@
 use ndarray::{Array1, Array2, Array3};
 
 use crate::chem::{self, H2O, ION_TYPES, PROTON};
+use crate::peptide::{Peptide, Site};
 use crate::tokenize::{AA_OFFSET, CTERM_IDX, MOD_SCALE, NTERM_IDX, PAD_IDX};
 
 pub struct BucketArrays {
@@ -22,21 +23,20 @@ pub struct BucketArrays {
 /// Tokens are wrapped with N/C-term ids -> shape `(B, length+extra)`. `residue_mass` stays
 /// `(B, length)`: termini carry no mass and never enter m/z.
 pub fn bucket_arrays(
-    seqs: &[String],
+    peptides: &[Peptide],
     charges: &[i64],
-    mod_sites: &[Vec<usize>],
-    mod_names: &[Vec<String>],
     length: usize,
     use_termini: bool,
 ) -> anyhow::Result<BucketArrays> {
-    let b = seqs.len();
+    let b = peptides.len();
     let extra = if use_termini { 2 } else { 0 };
     let off = if use_termini { 1usize } else { 0 };
     let mut tokens = Array2::<i64>::from_elem((b, length + extra), PAD_IDX);
     let mut mod_delta = Array2::<f32>::zeros((b, length + extra));
     let mut residue_mass = Array2::<f64>::zeros((b, length));
+    let last = length.saturating_sub(1);
     for i in 0..b {
-        let s = seqs[i].as_bytes();
+        let s = peptides[i].sequence.as_bytes();
         if use_termini {
             tokens[[i, 0]] = NTERM_IDX;
             tokens[[i, 1 + length]] = CTERM_IDX;
@@ -46,11 +46,20 @@ pub fn bucket_arrays(
             residue_mass[[i, j]] = chem::residue_mass(s[j])
                 .ok_or_else(|| anyhow::anyhow!("unsupported residue {:?}", s[j] as char))?;
         }
-        for (k, &site) in mod_sites[i].iter().enumerate() {
-            let d = chem::mod_delta(&mod_names[i][k])
-                .ok_or_else(|| anyhow::anyhow!("unknown modification {}", mod_names[i][k]))?;
-            residue_mass[[i, site]] += d;
-            mod_delta[[i, off + site]] += (d as f32) / MOD_SCALE;
+        for (site, spec) in &peptides[i].mods {
+            let d = spec.delta_mass()?;
+            let idx = match site {
+                Site::NTerm => 0,
+                Site::CTerm => last,
+                Site::Residue(j) => {
+                    if *j > last {
+                        anyhow::bail!("mod site {j} out of range for length {length}");
+                    }
+                    *j
+                }
+            };
+            residue_mass[[i, idx]] += d;
+            mod_delta[[i, off + idx]] += (d as f32) / MOD_SCALE;
         }
     }
     Ok(BucketArrays {
@@ -95,11 +104,12 @@ pub fn bucket_fragment_mz(residue_mass: &Array2<f64>, charge: &Array1<i64>) -> (
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::peptide::ModSpec;
 
     #[test]
     fn bucket_fragment_mz_matches_scalar() {
         // one peptide "SAMPLER" (len 7), charge 2, no mods
-        let ba = bucket_arrays(&["SAMPLER".into()], &[2], &[vec![]], &[vec![]], 7, false).unwrap();
+        let ba = bucket_arrays(&[Peptide::new("SAMPLER".into(), vec![])], &[2], 7, false).unwrap();
         let (mz, pmz) = bucket_fragment_mz(&ba.residue_mass, &ba.charge);
         let rm = crate::chem::residue_masses(b"SAMPLER").unwrap();
         // column 0 is (b,1); position 0 -> b1
@@ -111,10 +121,11 @@ mod tests {
     #[test]
     fn bucket_arrays_termini_and_mods() {
         let ba = bucket_arrays(
-            &["AC".into()],
+            &[Peptide::new(
+                "AC".into(),
+                vec![(Site::Residue(1), ModSpec::Named("Carbamidomethyl@C".to_string()))],
+            )],
             &[2],
-            &[vec![1usize]],
-            &[vec!["Carbamidomethyl@C".to_string()]],
             2,
             true,
         )
@@ -132,10 +143,11 @@ mod tests {
     fn bucket_fragment_mz_batches_independently() {
         // Two same-length peptides in one batch; each row's mz should match its own scalar calc.
         let ba = bucket_arrays(
-            &["SAMPLER".into(), "GAMPLEK".into()],
+            &[
+                Peptide::new("SAMPLER".into(), vec![]),
+                Peptide::new("GAMPLEK".into(), vec![]),
+            ],
             &[2, 1],
-            &[vec![], vec![]],
-            &[vec![], vec![]],
             7,
             false,
         )

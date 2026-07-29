@@ -70,11 +70,9 @@ def _bucket_arrays(precs: list[Precursor], length: int):
     """
     import pepdistill_rs as _rs
 
-    seqs = [p.peptide.sequence for p in precs]
+    peptides = [p.peptide for p in precs]
     charges = [int(p.charge) for p in precs]
-    mod_sites = [[int(s) for s, _ in p.peptide.mods] for p in precs]
-    mod_names = [[n for _, n in p.peptide.mods] for p in precs]
-    a = _rs.bucket_arrays(seqs, charges, mod_sites, mod_names, length, use_termini())
+    a = _rs.bucket_arrays(peptides, charges, length, use_termini())
     return a["tokens"], a["mod_delta"], a["charge"], a["residue_mass"]
 
 

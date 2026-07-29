@@ -87,3 +87,29 @@ def test_digest_records_dedupes_and_sorts():
     cfg = DigestConfig(missed_cleavages=0)
     peps = digest_records(recs, cfg)
     assert peps == sorted(set(peps))
+
+
+def test_precursor_frame_roundtrips_terminal_and_mass_only_mods():
+    from pepdistill.chem import Peptide
+    from pepdistill.data.precursors import (
+        Precursor,
+        frame_to_precursors,
+        precursors_to_frame,
+    )
+
+    precs = [
+        Precursor(Peptide("ETTLHLVLR", (("n", "TMT6plex"), (1, "Phospho"))), 2, "train"),
+        Precursor(Peptide("PEPTIDE", ((2, 42.010565),)), 3, "train"),
+        Precursor(Peptide("PEK", (("c", "Phospho"),)), 2, "train"),
+    ]
+    back = frame_to_precursors(precursors_to_frame(precs))
+    assert back == precs
+
+
+def test_nterm_and_side_chain_mods_are_distinct_sites():
+    from pepdistill.chem import Peptide
+
+    p = Peptide("KPEPTIDE", (("n", "TMT6plex"), (0, "TMT6plex")))
+    assert len(p.mods) == 2
+    bare = Peptide("KPEPTIDE").mono_mass()
+    assert abs(p.mono_mass() - bare - 2 * 229.1629321) < 1e-4

@@ -80,7 +80,7 @@ def test_parse_modseq():
     assert parse_modseq("PEPTIDE") == ("PEPTIDE", ())
     assert parse_modseq("[UNIMOD:737]ET[UNIMOD:21]TLHLVLR") == (
         "ETTLHLVLR",
-        ((0, "TMT6plex"), (1, "Phospho")),
+        (("n", "TMT6plex"), (1, "Phospho")),
     )
     # unknown accession -> sentinel name (not in MOD_DELTA), so to_labels will skip it.
     assert parse_modseq("A[UNIMOD:9999]CDEK") == ("ACDEK", ((0, "UNIMOD:9999"),))
@@ -146,7 +146,8 @@ def test_to_labels_decoding(tmp_path):
     assert math.isnan(lab.ccs)  # PROSPECT has no ion mobility
 
     ps, _ = by_seq["SPEPK"]
-    assert ps.peptide.mods == [(0, "Phospho")]
+    # Leading token (before any residue) routes to the N-term site, not residue 0.
+    assert ps.peptide.mods == [("n", "Phospho")]
 
     # raw_file is the context stratification key; per-run acquisition captured.
     assert set(out.source_ids) == {"rfA", "rfB"}
