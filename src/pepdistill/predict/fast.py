@@ -17,7 +17,6 @@ import numpy as np
 import pandas as pd
 
 from ..chem import ION_TYPES
-from ..data.encode import frag_offset, use_termini
 from ..data.precursors import Precursor
 from .library import LIBRARY_COLUMNS
 
@@ -72,7 +71,7 @@ def _bucket_arrays(precs: list[Precursor], length: int):
 
     peptides = [p.peptide for p in precs]
     charges = [int(p.charge) for p in precs]
-    a = _rs.bucket_arrays(peptides, charges, length, use_termini())
+    a = _rs.bucket_arrays(peptides, charges, length)
     return a["tokens"], a["mod_delta"], a["charge"], a["residue_mass"]
 
 
@@ -112,8 +111,9 @@ def predict_library_fast(
             chunk = precs[start : start + batch_size]
             tokens, mod_delta, charge, residue_mass = _bucket_arrays(chunk, length)
             ms2, rt, ccs = runner.run(tokens, mod_delta, charge)
-            # Fragment sites are at adjacent-pool indices [off, off+frag_pos).
-            off = frag_offset()
+            # Fragment sites are at adjacent-pool indices [off, off+frag_pos). Termini are
+            # mandatory, so the mandatory N-term token occupies index 0 and off is always 1.
+            off = 1
             ms2 = ms2[:, off : off + frag_pos, :]
             mz, precursor_mz = _fragment_mz(residue_mass, charge)
 

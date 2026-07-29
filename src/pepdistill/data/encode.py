@@ -4,15 +4,14 @@ Encoding is deliberately minimal (the whole point of distillation here): per-res
 amino-acid index + a single modification-mass channel, plus a charge scalar. No LSTM
 means everything is a fixed-shape, batch-parallel tensor.
 
-Peptides are OPTIONALLY wrapped with explicit N-/C-terminal tokens (toggled by
-``set_termini``/``_USE_TERMINI``, OFF by default):
+Peptides are always wrapped with explicit N-/C-terminal tokens:
 
     [N] r1 r2 ... rL [C]
 
-When enabled, the termini give small models fixed anchors and extra context capacity. They are
-NOT residues: they carry no mass and are excluded from MS2 fragment sites. With termini on the
-layout is position 0 = N-term, 1..L = residues, L+1 = C-term, then padding; with termini off
-(the default) residues start at position 0.
+The termini give small models fixed anchors and extra context capacity, and (in a later task)
+serve as carriers for terminal modifications. They are NOT residues: they carry no mass and are
+excluded from MS2 fragment sites. Layout is position 0 = N-term, 1..L = residues, L+1 = C-term,
+then padding.
 """
 
 from __future__ import annotations
@@ -27,28 +26,6 @@ from .precursors import Precursor
 # Vocab/token layout (AA_OFFSET, PAD_IDX, NTERM_IDX, CTERM_IDX, N_TOKENS) and MOD_SCALE
 # are single-sourced in Rust (pepdistill_rs); re-exported above for existing importers
 # (student.py, fast.py).
-
-# Whether to wrap peptides with N/C-term tokens. Default off: A/B on random and real
-# (E. coli) peptides showed no accuracy benefit (pad_mask already encodes the boundary),
-# and the 2 extra tokens cost ~12% sequence length. Kept as a runtime toggle so a future
-# CLS-readout variant (read RT/CCS *from* the term tokens) can be tried. All encode/decode
-# paths read frag_offset() so fragment-site indices stay consistent either way.
-_USE_TERMINI = False
-
-
-def use_termini() -> bool:
-    return _USE_TERMINI
-
-
-def set_termini(value: bool) -> None:
-    global _USE_TERMINI
-    _USE_TERMINI = value
-
-
-def frag_offset() -> int:
-    """Adjacent-pool index of the first inter-residue fragment site (1 with termini)."""
-    return 1 if _USE_TERMINI else 0
-
 
 @dataclass(slots=True)
 class Batch:
@@ -73,14 +50,14 @@ class Batch:
 def collate(precursors: list[Precursor]) -> Batch:
     """Pad a list of precursors into a single :class:`Batch` (delegates to the ext).
 
-    With termini, layout is [N] r1..rL [C]; residues sit at positions 1..L and the first
-    fragment site is adjacent-pool index 1. Without termini, residues start at 0.
+    Layout is always [N] r1..rL [C]; residues sit at positions 1..L and the first fragment
+    site is adjacent-pool index 1.
     """
     import pepdistill_rs as _rs
 
     peptides = [p.peptide for p in precursors]
     charges = [int(p.charge) for p in precursors]
-    a = _rs.collate(peptides, charges, use_termini())
+    a = _rs.collate(peptides, charges)
     return Batch(
         torch.from_numpy(a["tokens"]), torch.from_numpy(a["mod_delta"]),
         torch.from_numpy(a["charge"]), torch.from_numpy(a["lengths"]),

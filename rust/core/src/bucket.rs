@@ -20,27 +20,25 @@ pub struct BucketArrays {
 
 /// Dense token/mod/charge/residue-mass arrays for a same-length bucket.
 ///
-/// Tokens are wrapped with N/C-term ids -> shape `(B, length+extra)`. `residue_mass` stays
+/// Tokens are wrapped with N/C-term ids -> shape `(B, length+2)`. `residue_mass` stays
 /// `(B, length)`: termini carry no mass and never enter m/z.
 pub fn bucket_arrays(
     peptides: &[Peptide],
     charges: &[i64],
     length: usize,
-    use_termini: bool,
 ) -> anyhow::Result<BucketArrays> {
     let b = peptides.len();
-    let extra = if use_termini { 2 } else { 0 };
-    let off = if use_termini { 1usize } else { 0 };
+    // N/C-term tokens are mandatory: 2 extra columns, residues start at index 1.
+    let extra = 2;
+    let off = 1usize;
     let mut tokens = Array2::<i64>::from_elem((b, length + extra), PAD_IDX);
     let mut mod_delta = Array2::<f32>::zeros((b, length + extra));
     let mut residue_mass = Array2::<f64>::zeros((b, length));
     let last = length.saturating_sub(1);
     for i in 0..b {
         let s = peptides[i].sequence.as_bytes();
-        if use_termini {
-            tokens[[i, 0]] = NTERM_IDX;
-            tokens[[i, 1 + length]] = CTERM_IDX;
-        }
+        tokens[[i, 0]] = NTERM_IDX;
+        tokens[[i, 1 + length]] = CTERM_IDX;
         for j in 0..length {
             tokens[[i, off + j]] = s[j] as i64 - AA_OFFSET;
             residue_mass[[i, j]] = chem::residue_mass(s[j])
@@ -109,7 +107,7 @@ mod tests {
     #[test]
     fn bucket_fragment_mz_matches_scalar() {
         // one peptide "SAMPLER" (len 7), charge 2, no mods
-        let ba = bucket_arrays(&[Peptide::new("SAMPLER".into(), vec![])], &[2], 7, false).unwrap();
+        let ba = bucket_arrays(&[Peptide::new("SAMPLER".into(), vec![])], &[2], 7).unwrap();
         let (mz, pmz) = bucket_fragment_mz(&ba.residue_mass, &ba.charge);
         let rm = crate::chem::residue_masses(b"SAMPLER").unwrap();
         // column 0 is (b,1); position 0 -> b1
@@ -127,7 +125,6 @@ mod tests {
             )],
             &[2],
             2,
-            true,
         )
         .unwrap();
         assert_eq!(ba.tokens.shape(), &[1, 4]);
@@ -149,7 +146,6 @@ mod tests {
             ],
             &[2, 1],
             7,
-            false,
         )
         .unwrap();
         let (mz, pmz) = bucket_fragment_mz(&ba.residue_mass, &ba.charge);

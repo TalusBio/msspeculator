@@ -28,14 +28,11 @@ pub struct CollateArrays {
 /// Pack precursors into `Batch` arrays. `peptides[i].mods` sites are mapped onto the token
 /// grid: `Site::Residue(j)` lands at `off + j`; terminal mods fold into the boundary residue's
 /// column (they get their own column in a later task).
-pub fn collate(
-    peptides: &[Peptide],
-    charges: &[i64],
-    use_termini: bool,
-) -> anyhow::Result<CollateArrays> {
+pub fn collate(peptides: &[Peptide], charges: &[i64]) -> anyhow::Result<CollateArrays> {
     let b = peptides.len();
-    let extra = if use_termini { 2 } else { 0 };
-    let off = if use_termini { 1usize } else { 0 };
+    // N/C-term tokens are mandatory: 2 extra columns, residues start at index 1.
+    let extra = 2;
+    let off = 1usize;
     let lengths: Vec<i64> = peptides.iter().map(|p| p.sequence.len() as i64).collect();
     let max_len = lengths.iter().copied().max().unwrap_or(0) as usize;
     let tok_len = max_len + extra;
@@ -49,10 +46,8 @@ pub fn collate(
     for i in 0..b {
         let s = peptides[i].sequence.as_bytes();
         let n = s.len();
-        if use_termini {
-            tokens[[i, 0]] = NTERM_IDX;
-            tokens[[i, 1 + n]] = CTERM_IDX;
-        }
+        tokens[[i, 0]] = NTERM_IDX;
+        tokens[[i, 1 + n]] = CTERM_IDX;
         for j in 0..n {
             tokens[[i, off + j]] = s[j] as i64 - AA_OFFSET;
         }
@@ -95,17 +90,17 @@ mod tests {
     use crate::peptide::ModSpec;
 
     #[test]
-    fn collate_no_termini_shapes_and_tokens() {
+    fn collate_shapes_and_tokens() {
         let a = collate(
             &[Peptide::new("PEP".into(), vec![]), Peptide::new("AC".into(), vec![])],
             &[2, 3],
-            false,
         )
         .unwrap();
-        assert_eq!(a.tokens.shape(), &[2, 3]); // max_len=3, no termini
-        assert_eq!(a.tokens[[0, 0]], (b'P' - b'A') as i64); // 15
-        assert_eq!(a.tokens[[1, 2]], PAD_IDX); // "AC" padded to len 3
-        assert!(a.pad_mask[[1, 2]]);
+        assert_eq!(a.tokens.shape(), &[2, 5]); // max_len=3 + mandatory termini
+        assert_eq!(a.tokens[[0, 1]], (b'P' - b'A') as i64); // 15, offset by NTERM
+        assert_eq!(a.tokens[[1, 3]], CTERM_IDX); // "AC" (n=2): CTERM lands at 1+n=3
+        assert_eq!(a.tokens[[1, 4]], PAD_IDX); // trailing pad column (max_len=3 > n=2)
+        assert!(a.pad_mask[[1, 4]]);
     }
 
     #[test]
@@ -116,7 +111,6 @@ mod tests {
                 vec![(Site::Residue(1), ModSpec::Named("Carbamidomethyl@C".to_string()))],
             )],
             &[2],
-            true,
         )
         .unwrap();
         // tok_len = 2 + 2 = 4: [NTERM, A, C, CTERM]
@@ -140,7 +134,6 @@ mod tests {
                 vec![(Site::Residue(0), ModSpec::Named("NotAMod".to_string()))],
             )],
             &[2],
-            false,
         );
         assert!(res.is_err());
     }

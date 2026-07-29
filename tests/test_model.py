@@ -14,19 +14,24 @@ def _precs():
     ]
 
 
-def test_collate_shapes_and_masks():
-    from pepdistill.data.encode import use_termini
-
+def test_collate_always_wraps_termini():
     batch = collate(_precs())
-    b = 2
-    extra = 2 if use_termini() else 0
-    tok_len = 13 + extra  # longest peptide (13) + optional N/C-term tokens
-    assert batch.tokens.shape == (b, tok_len)
-    assert batch.pad_mask.shape == (b, tok_len)
-    assert batch.frag_mask.shape == (b, tok_len - 1)
-    # First peptide has length 7 -> 6 inter-residue fragment sites.
+    tok_len = 13 + 2  # longest peptide + mandatory N/C-term tokens
+    assert batch.tokens.shape == (2, tok_len)
+    assert batch.pad_mask.shape == (2, tok_len)
+    assert batch.frag_mask.shape == (2, tok_len - 1)
+    # First peptide has length 7 -> 6 inter-residue fragment sites, starting at index 1.
     assert batch.frag_mask[0].sum().item() == 6
-    assert batch.pad_mask[0].sum().item() == tok_len - (7 + extra)
+    assert batch.frag_mask[0, 0].item() is False or not bool(batch.frag_mask[0, 0])
+    assert bool(batch.frag_mask[0, 1])
+    assert batch.pad_mask[0].sum().item() == tok_len - (7 + 2)
+
+
+def test_termini_toggle_is_gone():
+    import pepdistill.data.encode as enc
+
+    for name in ("use_termini", "set_termini", "frag_offset", "_USE_TERMINI"):
+        assert not hasattr(enc, name), f"{name} should have been deleted"
 
 
 def test_student_forward_shapes_and_bounds():
@@ -34,9 +39,8 @@ def test_student_forward_shapes_and_bounds():
         model = build_student(preset).eval()
         batch = collate(_precs())
         out = model(batch)
-        from pepdistill.data.encode import use_termini
 
-        extra = 2 if use_termini() else 0
+        extra = 2  # mandatory N/C-term tokens
         assert out["ms2"].shape == (2, 13 + extra - 1, len(ION_TYPES))
         assert out["rt"].shape == (2,)
         assert out["ccs"].shape == (2,)
@@ -46,11 +50,9 @@ def test_student_forward_shapes_and_bounds():
 
 def test_padding_invariance_all_backbones():
     """A peptide's prediction must not depend on batch padding (all backbones)."""
-    from pepdistill.data.encode import frag_offset
-
     p20 = Precursor(Peptide("ACDEFGHIKLMNPQRSTVWY"), 2, "t")  # len 20
     p30 = Precursor(Peptide("ACDEFGHIKLMNPQRSTVWYACDEFGHIKL"), 2, "t")  # len 30 -> pads p20
-    off = frag_offset()
+    off = 1  # mandatory N-term token occupies index 0
     for preset in PRESETS:
         m = build_student(preset).eval()
         with torch.no_grad():

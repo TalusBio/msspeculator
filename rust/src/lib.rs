@@ -139,10 +139,10 @@ fn ms2_target_shape(length: usize) -> (usize, usize) {
 #[pyfunction]
 fn collate<'py>(
     py: Python<'py>,
-    peptides: Vec<PyRef<'py, Peptide>>, charges: Vec<i64>, use_termini: bool,
+    peptides: Vec<PyRef<'py, Peptide>>, charges: Vec<i64>,
 ) -> PyResult<Bound<'py, PyDict>> {
     let core_peptides: Vec<CorePeptide> = peptides.iter().map(|p| p.inner.clone()).collect();
-    let a = tokenize::collate(&core_peptides, &charges, use_termini).map_err(to_pyerr)?;
+    let a = tokenize::collate(&core_peptides, &charges).map_err(to_pyerr)?;
     let d = PyDict::new_bound(py);
     d.set_item("tokens", a.tokens.into_pyarray_bound(py))?;
     d.set_item("mod_delta", a.mod_delta.into_pyarray_bound(py))?;
@@ -156,10 +156,10 @@ fn collate<'py>(
 #[pyfunction]
 fn bucket_arrays<'py>(
     py: Python<'py>,
-    peptides: Vec<PyRef<'py, Peptide>>, charges: Vec<i64>, length: usize, use_termini: bool,
+    peptides: Vec<PyRef<'py, Peptide>>, charges: Vec<i64>, length: usize,
 ) -> PyResult<Bound<'py, PyDict>> {
     let core_peptides: Vec<CorePeptide> = peptides.iter().map(|p| p.inner.clone()).collect();
-    let a = bucket::bucket_arrays(&core_peptides, &charges, length, use_termini).map_err(to_pyerr)?;
+    let a = bucket::bucket_arrays(&core_peptides, &charges, length).map_err(to_pyerr)?;
     let d = PyDict::new_bound(py);
     d.set_item("tokens", a.tokens.into_pyarray_bound(py))?;
     d.set_item("mod_delta", a.mod_delta.into_pyarray_bound(py))?;
