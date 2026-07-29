@@ -101,9 +101,24 @@ def enumerate_unspecific_stream(
 
 
 def precursors_from_sequences(
-    sequences: list[str], cfg: DigestConfig, rng: np.random.Generator
+    sequences: list[str],
+    cfg: DigestConfig,
+    rng: np.random.Generator,
+    all_charge_states: bool = False,
 ) -> list[Precursor]:
-    """One precursor per sequence: fixed mods always, one sampled variable-mod form + charge."""
+    """Precursors for each sequence: fixed mods always, one sampled variable-mod form.
+
+    ``all_charge_states=False`` samples a single charge per sequence — cheap, but a peptide is
+    then only ever seen at one charge per pass, and charge is factored out of the trunk so the
+    MS2 and CCS heads learn it from the contrast between charges of the SAME peptide. That
+    contrast never appears.
+
+    ``all_charge_states=True`` emits every charge in ``cfg.charges`` **consecutively**, so a
+    peptide's charge states stay adjacent and land in one mini-batch. The sampled variable-mod
+    form is held constant across them, making charge the only varying factor — otherwise the
+    contrast is confounded by a different mod-form. Costs ``len(cfg.charges)``x the precursors,
+    hence that much teacher time, in exchange for exhaustive and deterministic charge coverage.
+    """
     charges = list(cfg.charges)
     out: list[Precursor] = []
     for seq in sequences:
@@ -118,6 +133,9 @@ def precursors_from_sequences(
             if k:
                 idx = rng.choice(len(var_sites), size=k, replace=False)
                 chosen = [var_sites[i] for i in idx]
-        charge = int(charges[rng.integers(0, len(charges))])
-        out.append(Precursor(Peptide(seq, tuple(fixed + chosen)), charge, "train"))
+        pep = Peptide(seq, tuple(fixed + chosen))
+        if all_charge_states:
+            out.extend(Precursor(pep, int(z), "train") for z in charges)
+        else:
+            out.append(Precursor(pep, int(charges[rng.integers(0, len(charges))]), "train"))
     return out

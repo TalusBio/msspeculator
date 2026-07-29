@@ -131,3 +131,45 @@ def test_label_chunk_sets_ms_factors_with_swept_energy(tmp_path):
     # The energy sweep isn't constant across peptides — a genuine per-peptide NCE draw.
     assert len(set(seen_energy)) > 1
     assert all(cfg.nce_range[0] <= e <= cfg.nce_range[1] for e in seen_energy)
+
+
+def test_all_charge_states_keeps_a_peptide_together_at_every_charge():
+    """The point of all_charge_states: same peptide, every charge, adjacent so they co-batch.
+
+    Charge is factored out of the trunk and re-enters only at the MS2/CCS heads, so those heads
+    learn it from the contrast between charges of one peptide. Sampling one charge per peptide
+    never presents that contrast.
+    """
+    import numpy as np
+
+    from pepdistill.data.config import DigestConfig
+    from pepdistill.data.sources import precursors_from_sequences
+
+    cfg = DigestConfig(min_charge=2, max_charge=4, max_variable_mods=1)
+    seqs = ["SAMPLER", "PEPTIDEMK", "ACDEFGHIK"]
+    out = precursors_from_sequences(
+        seqs, cfg, np.random.default_rng(0), all_charge_states=True
+    )
+
+    assert len(out) == len(seqs) * 3, "expected every charge per sequence"
+    for i, seq in enumerate(seqs):
+        block = out[i * 3 : (i + 1) * 3]
+        assert [p.charge for p in block] == [2, 3, 4]
+        assert {p.peptide.sequence for p in block} == {seq}, "charges must stay adjacent"
+        # The mod-form must be IDENTICAL across the block, or charge is not the only varying
+        # factor and the contrast the heads are meant to learn from is confounded.
+        mods = [tuple(p.peptide.mods) for p in block]
+        assert len(set(mods)) == 1, f"mod-form varied across charges: {mods}"
+
+
+def test_sampling_mode_still_yields_one_precursor_per_sequence():
+    import numpy as np
+
+    from pepdistill.data.config import DigestConfig
+    from pepdistill.data.sources import precursors_from_sequences
+
+    cfg = DigestConfig(min_charge=2, max_charge=4)
+    seqs = ["SAMPLER", "PEPTIDEK"]
+    out = precursors_from_sequences(seqs, cfg, np.random.default_rng(0))
+    assert len(out) == len(seqs)
+    assert all(2 <= p.charge <= 4 for p in out)

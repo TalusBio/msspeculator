@@ -71,6 +71,11 @@ class PretrainCfg:
     nce_max: float = 40.0
     passes: int = 1
     chunk_size: int = 10000
+    # Emit every charge per peptide (consecutively, so they share a mini-batch) instead of
+    # sampling one. Charge only reaches the MS2/CCS heads, which learn it from the contrast
+    # between charges of the same peptide — sampling never shows them that. Costs
+    # len(charges)x teacher time.
+    all_charge_states: bool = True
     # Early stop the stream when MS2 loss plateaus (student saturated the teacher). 0 = off.
     patience: int = 0
     min_delta: float = 1e-3
@@ -200,6 +205,7 @@ def _run_pretrain(cfg: RunConfig, model, encoder, acc, log):
         chunk_size=p.chunk_size,
         batch_size=p.batch_size,
         passes=p.passes,
+        all_charge_states=p.all_charge_states,
         lr=p.lr,
         seed=cfg.seed,
         patience=p.patience,

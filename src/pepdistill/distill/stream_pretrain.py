@@ -23,6 +23,7 @@ import torch
 from torch.utils.data import DataLoader, IterableDataset
 
 from ..data.config import DigestConfig
+from ..data.precursors import Precursor
 from ..data.sources import (
     enumerate_tryptic_stream,
     enumerate_unspecific_stream,
@@ -53,6 +54,12 @@ class StreamPretrainCfg:
     chunk_size: int = 10000  # peptides per teacher call (throughput knob)
     batch_size: int = 256  # student mini-batch
     passes: int = 1  # full enumerations of the digests
+    # Emit EVERY charge in each mix's range per peptide, consecutively, rather than sampling
+    # one. Charge is factored out of the trunk and re-enters only at the MS2/CCS heads, so those
+    # heads learn it from the contrast between charges of the SAME peptide — a contrast sampling
+    # never produces, since each peptide appears at one charge per pass. Costs len(charges)x the
+    # precursors, and therefore that much teacher time, per peptide.
+    all_charge_states: bool = True
     lr: float = 1e-3
     seed: int = 0
     # The teacher's fixed acquisition (peptdeep Orbitrap Lumos, FTMS detector, HCD) -> ms_context
@@ -107,17 +114,26 @@ class _StreamingDataset(IterableDataset):
                     done[mi] = True
 
     def _build_precs(self, items, rng):
-        """items: [(mix_idx, seq)] -> precursor list aligned to items (per-mix charge/mods)."""
-        precs = [None] * len(items)
-        by_mix: dict[int, list[int]] = {}
-        for idx, (mi, _seq) in enumerate(items):
-            by_mix.setdefault(mi, []).append(idx)
-        for mi, idxs in by_mix.items():
-            built = precursors_from_sequences(
-                [items[i][1] for i in idxs], self.cfg.mixes[mi].cfg, rng
+        """``items: [(mix_idx, seq)]`` -> flat precursor list, grouped by mix.
+
+        Not aligned 1:1 to ``items``: with ``all_charge_states`` a sequence expands to one
+        precursor per charge. Nothing downstream needs the item correspondence — the teacher
+        takes a flat list and labels are zipped back positionally — and keeping a peptide's
+        charge states consecutive is what puts them in the same mini-batch.
+        """
+        by_mix: dict[int, list[str]] = {}
+        for mi, seq in items:
+            by_mix.setdefault(mi, []).append(seq)
+        precs: list[Precursor] = []
+        for mi, seqs in by_mix.items():
+            precs.extend(
+                precursors_from_sequences(
+                    seqs,
+                    self.cfg.mixes[mi].cfg,
+                    rng,
+                    all_charge_states=self.cfg.all_charge_states,
+                )
             )
-            for i, p in zip(idxs, built):
-                precs[i] = p
         return precs
 
     def _label_chunk(self, items, rng):

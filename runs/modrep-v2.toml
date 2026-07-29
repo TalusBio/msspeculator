@@ -22,6 +22,7 @@ chunk_size = 10000
 [[pretrain.sources]]
 # E. coli K-12 reference proteome (UP000000625), 4403 proteins -- the corpus prior runs used,
 # kept the same so MS2 spectral angle stays comparable to the pre-v2 baselines.
+# 211,347 unique tryptic peptides at these settings.
 fasta = "/Users/sebastianpaez/Downloads/ecoli_UP000000625.fasta"
 enzyme = "trypsin"
 missed = 2
@@ -30,6 +31,14 @@ max_len = 30
 min_charge = 2
 max_charge = 4
 max_var_mods = 1
+
+# NOT enabled here, deliberately. Adding a second source with `enzyme = "unspecific"` is what
+# selects the immunopeptidome-like sliding-window digest -- and on this proteome that is
+# 5,268,074 windows, 25x the tryptic peptide count and ~2.7h of teacher time. Worse for a
+# tryptic evaluation: _round_robin interleaves 50/50 only until tryptic exhausts at ~211k, so
+# the last ~5.06M items are unspecific-only and pretrain would end on that tail while we score
+# on third pool, which is tryptic. Enable it when targeting non-tryptic data, ideally with the
+# window stream capped so the mix stays balanced.
 
 [train]
 enabled = true
