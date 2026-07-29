@@ -9,11 +9,14 @@ use ndarray::{Array1, Array2, Array3};
 
 use crate::chem::{self, H2O, ION_TYPES, PROTON};
 use crate::peptide::{Peptide, Site};
-use crate::tokenize::{AA_OFFSET, CTERM_IDX, MOD_SCALE, NTERM_IDX, PAD_IDX};
+use crate::tokenize::{self, AA_OFFSET, CTERM_IDX, NTERM_IDX, PAD_IDX};
 
 pub struct BucketArrays {
     pub tokens: Array2<i64>,
-    pub mod_delta: Array2<f32>,
+    pub mod_comp: Array3<f32>,
+    pub mod_mass: Array2<f32>,
+    pub mod_present: Array2<bool>,
+    pub mod_named: Array2<bool>,
     pub charge: Array1<i64>,
     pub residue_mass: Array2<f64>,
 }
@@ -21,7 +24,9 @@ pub struct BucketArrays {
 /// Dense token/mod/charge/residue-mass arrays for a same-length bucket.
 ///
 /// Tokens are wrapped with N/C-term ids -> shape `(B, length+2)`. `residue_mass` stays
-/// `(B, length)`: termini carry no mass and never enter m/z.
+/// `(B, length)`: termini carry no mass and never enter m/z. The four mod channels come from
+/// `tokenize::mod_arrays`; `residue_mass` folds terminal mods into the boundary residue
+/// separately (N-term -> residue 0, C-term -> last), matching `Peptide::residue_masses`.
 pub fn bucket_arrays(
     peptides: &[Peptide],
     charges: &[i64],
@@ -31,8 +36,8 @@ pub fn bucket_arrays(
     // N/C-term tokens are mandatory: 2 extra columns, residues start at index 1.
     let extra = 2;
     let off = 1usize;
-    let mut tokens = Array2::<i64>::from_elem((b, length + extra), PAD_IDX);
-    let mut mod_delta = Array2::<f32>::zeros((b, length + extra));
+    let tok_len = length + extra;
+    let mut tokens = Array2::<i64>::from_elem((b, tok_len), PAD_IDX);
     let mut residue_mass = Array2::<f64>::zeros((b, length));
     let last = length.saturating_sub(1);
     for i in 0..b {
@@ -57,12 +62,15 @@ pub fn bucket_arrays(
                 }
             };
             residue_mass[[i, idx]] += d;
-            mod_delta[[i, off + idx]] += (d as f32) / MOD_SCALE;
         }
     }
+    let ma = tokenize::mod_arrays(peptides, tok_len)?;
     Ok(BucketArrays {
         tokens,
-        mod_delta,
+        mod_comp: ma.mod_comp,
+        mod_mass: ma.mod_mass,
+        mod_present: ma.mod_present,
+        mod_named: ma.mod_named,
         charge: Array1::from(charges.to_vec()),
         residue_mass,
     })

@@ -173,12 +173,19 @@ class StudentModel(nn.Module):
             "ccs": out["ccs"] * self.ccs_std + self.ccs_mean,
         }
 
-    def _embed_tensors(self, tokens: torch.Tensor, mod_delta: torch.Tensor) -> torch.Tensor:
+    def _embed_tensors(
+        self,
+        tokens: torch.Tensor,
+        mod_comp: torch.Tensor,
+        mod_mass: torch.Tensor,
+        mod_present: torch.Tensor,
+        mod_named: torch.Tensor,
+    ) -> torch.Tensor:
         length = tokens.shape[1]
         pos = torch.arange(length, device=tokens.device).unsqueeze(0)
         x = self.token_emb(tokens) + self.pos_emb(pos)
-        x = x + self.mod_proj(mod_delta.unsqueeze(-1))
-        return x
+        mod_vec = self.mod_proj(mod_mass.unsqueeze(-1))
+        return x + mod_vec * mod_present.unsqueeze(-1).to(x.dtype)
 
     def _apply_heads(
         self,
@@ -207,12 +214,17 @@ class StudentModel(nn.Module):
         return ms2, rt, ccs
 
     def _embed(self, batch: Batch) -> torch.Tensor:
-        return self._embed_tensors(batch.tokens, batch.mod_delta)
+        return self._embed_tensors(
+            batch.tokens, batch.mod_comp, batch.mod_mass, batch.mod_present, batch.mod_named,
+        )
 
     def forward_dense(
         self,
         tokens: torch.Tensor,
-        mod_delta: torch.Tensor,
+        mod_comp: torch.Tensor,
+        mod_mass: torch.Tensor,
+        mod_present: torch.Tensor,
+        mod_named: torch.Tensor,
         charge: torch.Tensor,
         ms_context: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -223,7 +235,7 @@ class StudentModel(nn.Module):
         MS context only (RT/CCS need no acquisition context here); bake it as a constant for
         a fixed-instrument export.
         """
-        x = self._embed_tensors(tokens, mod_delta)
+        x = self._embed_tensors(tokens, mod_comp, mod_mass, mod_present, mod_named)
         # Dense/bucketed inputs have no padding, so no mask. Passing None (vs an all-False
         # mask) also avoids TransformerEncoder's eval fast-path NestedTensor packing, whose
         # aten::_nested_tensor_from_mask_left_aligned op is unimplemented on MPS.

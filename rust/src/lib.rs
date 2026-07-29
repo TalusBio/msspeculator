@@ -145,7 +145,10 @@ fn collate<'py>(
     let a = tokenize::collate(&core_peptides, &charges).map_err(to_pyerr)?;
     let d = PyDict::new_bound(py);
     d.set_item("tokens", a.tokens.into_pyarray_bound(py))?;
-    d.set_item("mod_delta", a.mod_delta.into_pyarray_bound(py))?;
+    d.set_item("mod_comp", a.mod_comp.into_pyarray_bound(py))?;
+    d.set_item("mod_mass", a.mod_mass.into_pyarray_bound(py))?;
+    d.set_item("mod_present", a.mod_present.into_pyarray_bound(py))?;
+    d.set_item("mod_named", a.mod_named.into_pyarray_bound(py))?;
     d.set_item("charge", a.charge.into_pyarray_bound(py))?;
     d.set_item("lengths", a.lengths.into_pyarray_bound(py))?;
     d.set_item("pad_mask", a.pad_mask.into_pyarray_bound(py))?;
@@ -162,7 +165,10 @@ fn bucket_arrays<'py>(
     let a = bucket::bucket_arrays(&core_peptides, &charges, length).map_err(to_pyerr)?;
     let d = PyDict::new_bound(py);
     d.set_item("tokens", a.tokens.into_pyarray_bound(py))?;
-    d.set_item("mod_delta", a.mod_delta.into_pyarray_bound(py))?;
+    d.set_item("mod_comp", a.mod_comp.into_pyarray_bound(py))?;
+    d.set_item("mod_mass", a.mod_mass.into_pyarray_bound(py))?;
+    d.set_item("mod_present", a.mod_present.into_pyarray_bound(py))?;
+    d.set_item("mod_named", a.mod_named.into_pyarray_bound(py))?;
     d.set_item("charge", a.charge.into_pyarray_bound(py))?;
     d.set_item("residue_mass", a.residue_mass.into_pyarray_bound(py))?;
     Ok(d)
@@ -201,7 +207,6 @@ fn pepdistill_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("NTERM_IDX", tokenize::NTERM_IDX)?;
     m.add("CTERM_IDX", tokenize::CTERM_IDX)?;
     m.add("N_TOKENS", tokenize::N_TOKENS)?;
-    m.add("MOD_SCALE", tokenize::MOD_SCALE as f64)?;
 
     let py = m.py();
     let ion = PyList::empty_bound(py);

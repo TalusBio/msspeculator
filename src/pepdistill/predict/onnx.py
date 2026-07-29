@@ -16,7 +16,7 @@ from .fast import ModelRunner
 
 _IMPORT_HINT = "ONNX support needs the extra:\n    uv pip install 'pepdistill[onnx]'"
 
-INPUT_NAMES = ["tokens", "mod_delta", "charge"]
+INPUT_NAMES = ["tokens", "mod_comp", "mod_mass", "mod_present", "mod_named", "charge"]
 OUTPUT_NAMES = ["ms2", "rt", "ccs"]
 
 
@@ -26,10 +26,14 @@ def export_onnx(model: StudentModel, path: str | Path, opset: int = 17) -> Path:
     model = model.eval()
     dummy_len = 12
     tokens = torch.randint(1, 20, (2, dummy_len), dtype=torch.long)
-    mod_delta = torch.zeros(2, dummy_len, dtype=torch.float32)
+    mod_comp = torch.zeros(2, dummy_len, 6, dtype=torch.float32)
+    mod_mass = torch.zeros(2, dummy_len, dtype=torch.float32)
+    mod_present = torch.zeros(2, dummy_len, dtype=torch.bool)
+    mod_named = torch.zeros(2, dummy_len, dtype=torch.bool)
     charge = torch.tensor([2, 3], dtype=torch.long)
 
-    dynamic = {n: {0: "batch", 1: "length"} for n in ("tokens", "mod_delta")}
+    _len_inputs = ("tokens", "mod_comp", "mod_mass", "mod_present", "mod_named")
+    dynamic = {n: {0: "batch", 1: "length"} for n in _len_inputs}
     dynamic["charge"] = {0: "batch"}
     dynamic["ms2"] = {0: "batch", 1: "frag"}
     dynamic["rt"] = {0: "batch"}
@@ -40,13 +44,13 @@ def export_onnx(model: StudentModel, path: str | Path, opset: int = 17) -> Path:
             super().__init__()
             self.m = m
 
-        def forward(self, tokens, mod_delta, charge):
-            return self.m.forward_dense(tokens, mod_delta, charge)
+        def forward(self, tokens, mod_comp, mod_mass, mod_present, mod_named, charge):
+            return self.m.forward_dense(tokens, mod_comp, mod_mass, mod_present, mod_named, charge)
 
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     torch.onnx.export(
         _Wrap(model),
-        (tokens, mod_delta, charge),
+        (tokens, mod_comp, mod_mass, mod_present, mod_named, charge),
         str(path),
         input_names=INPUT_NAMES,
         output_names=OUTPUT_NAMES,
@@ -70,9 +74,24 @@ class OnnxRunner(ModelRunner):
         opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
         self.sess = ort.InferenceSession(str(path), opts, providers=["CPUExecutionProvider"])
 
-    def run(self, tokens: np.ndarray, mod_delta: np.ndarray, charge: np.ndarray):
+    def run(
+        self,
+        tokens: np.ndarray,
+        mod_comp: np.ndarray,
+        mod_mass: np.ndarray,
+        mod_present: np.ndarray,
+        mod_named: np.ndarray,
+        charge: np.ndarray,
+    ):
         ms2, rt, ccs = self.sess.run(
             OUTPUT_NAMES,
-            {"tokens": tokens, "mod_delta": mod_delta.astype(np.float32), "charge": charge},
+            {
+                "tokens": tokens,
+                "mod_comp": mod_comp.astype(np.float32),
+                "mod_mass": mod_mass.astype(np.float32),
+                "mod_present": mod_present,
+                "mod_named": mod_named,
+                "charge": charge,
+            },
         )
         return ms2, rt, ccs

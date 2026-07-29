@@ -87,9 +87,9 @@ def test_context_aware_predict_changes_ms2_not_rt():
     )
 
     precs = [Precursor(Peptide("PEPTIDEK"), 2, "t"), Precursor(Peptide("ACDEFGHK"), 2, "t")]
-    tok, md, ch, _ = _bucket_arrays(precs, 8)
-    ms2_base, rt_base, ccs_base = TorchRunner(m).run(tok, md, ch)
-    ms2_ctx, rt_ctx, ccs_ctx = TorchRunner(m, ms_context=ms_vec).run(tok, md, ch)
+    tok, mc, mm, mp, mn, ch, _ = _bucket_arrays(precs, 8)
+    ms2_base, rt_base, ccs_base = TorchRunner(m).run(tok, mc, mm, mp, mn, ch)
+    ms2_ctx, rt_ctx, ccs_ctx = TorchRunner(m, ms_context=ms_vec).run(tok, mc, mm, mp, mn, ch)
 
     assert not (ms2_base == ms2_ctx).all()  # MS context moved MS2
     assert (rt_base == rt_ctx).all()  # RT is context-free (no chrom context)

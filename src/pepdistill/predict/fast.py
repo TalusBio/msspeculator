@@ -27,7 +27,15 @@ _ION_IS_B = np.array([ion == "b" for ion, _ in ION_TYPES], dtype=bool)
 class ModelRunner:
     """Adapts either a torch StudentModel or an ONNX session to one call signature."""
 
-    def run(self, tokens: np.ndarray, mod_delta: np.ndarray, charge: np.ndarray):
+    def run(
+        self,
+        tokens: np.ndarray,
+        mod_comp: np.ndarray,
+        mod_mass: np.ndarray,
+        mod_present: np.ndarray,
+        mod_named: np.ndarray,
+        charge: np.ndarray,
+    ):
         """Return (ms2 (B,L-1,n_ion) in [0,1], rt (B,) native, ccs (B,) native)."""
         raise NotImplementedError
 
@@ -45,7 +53,7 @@ class TorchRunner(ModelRunner):
         # plain ndarray the caller passed in; converted to a tensor per-bucket in run().
         self.ms_context = ms_context
 
-    def run(self, tokens, mod_delta, charge):
+    def run(self, tokens, mod_comp, mod_mass, mod_present, mod_named, charge):
         torch = self._torch
         ctx = None
         if self.ms_context is not None:
@@ -54,7 +62,10 @@ class TorchRunner(ModelRunner):
         with torch.no_grad():
             ms2, rt, ccs = self.model.forward_dense(
                 torch.from_numpy(tokens).to(self.device),
-                torch.from_numpy(mod_delta).to(self.device),
+                torch.from_numpy(mod_comp).to(self.device),
+                torch.from_numpy(mod_mass).to(self.device),
+                torch.from_numpy(mod_present).to(self.device),
+                torch.from_numpy(mod_named).to(self.device),
                 torch.from_numpy(charge).to(self.device),
                 ms_context=ctx,
             )
@@ -72,7 +83,10 @@ def _bucket_arrays(precs: list[Precursor], length: int):
     peptides = [p.peptide for p in precs]
     charges = [int(p.charge) for p in precs]
     a = _rs.bucket_arrays(peptides, charges, length)
-    return a["tokens"], a["mod_delta"], a["charge"], a["residue_mass"]
+    return (
+        a["tokens"], a["mod_comp"], a["mod_mass"], a["mod_present"], a["mod_named"],
+        a["charge"], a["residue_mass"],
+    )
 
 
 def _fragment_mz(residue_mass: np.ndarray, charge: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -109,8 +123,10 @@ def predict_library_fast(
         frag_pos = length - 1
         for start in range(0, len(precs), batch_size):
             chunk = precs[start : start + batch_size]
-            tokens, mod_delta, charge, residue_mass = _bucket_arrays(chunk, length)
-            ms2, rt, ccs = runner.run(tokens, mod_delta, charge)
+            tokens, mod_comp, mod_mass, mod_present, mod_named, charge, residue_mass = (
+                _bucket_arrays(chunk, length)
+            )
+            ms2, rt, ccs = runner.run(tokens, mod_comp, mod_mass, mod_present, mod_named, charge)
             # Fragment sites are at adjacent-pool indices [off, off+frag_pos). Termini are
             # mandatory, so the mandatory N-term token occupies index 0 and off is always 1.
             off = 1
