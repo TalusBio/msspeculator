@@ -61,9 +61,18 @@ pub fn mod_arrays(peptides: &[Peptide], tok_len: usize) -> anyhow::Result<ModArr
     for (i, pep) in peptides.iter().enumerate() {
         let n = pep.sequence.len();
         for (site, spec) in &pep.mods {
+            // Validate against this peptide's own length first. `tok_len` is the batch's
+            // padded width (driven by the longest peptide), so a short peptide's out-of-range
+            // residue index can still land inside the padded grid — checking only `col >=
+            // tok_len` would silently write the mod into a padding column instead of erroring.
+            if let Site::Residue(j) = site {
+                if *j >= n {
+                    anyhow::bail!("mod site {j} out of range for length {n}");
+                }
+            }
             let col = site_column(site, n);
             if col >= tok_len {
-                anyhow::bail!("mod site {site:?} exceeds token width {tok_len}");
+                anyhow::bail!("column {col} for mod site {site:?} exceeds token width {tok_len}");
             }
             mod_mass[[i, col]] += spec.delta_mass()? as f32;
             mod_present[[i, col]] = true;
@@ -184,6 +193,22 @@ mod tests {
         for k in 0..N_ELEMENTS {
             assert_eq!(a.mod_comp[[0, col, k]], 0.0);
         }
+    }
+
+    #[test]
+    fn mod_site_out_of_range_for_its_own_peptide_errors_even_within_padded_width() {
+        // "AC" (n=2) has a Residue(3) mod: out of range for itself (3 >= 2), but its column
+        // (1+3=4) still fits inside the batch's padded tok_len (7+2=9, from "PEPTIDE"). Without
+        // per-peptide validation this silently writes the mod into "AC"'s padding column instead
+        // of erroring.
+        let res = collate(
+            &[
+                Peptide::new("AC".into(), vec![(Site::Residue(3), ModSpec::MassOnly(1.0))]),
+                Peptide::new("PEPTIDE".into(), vec![]),
+            ],
+            &[2, 2],
+        );
+        assert!(res.is_err(), "mod site out of range for its own peptide must error");
     }
 
     #[test]
