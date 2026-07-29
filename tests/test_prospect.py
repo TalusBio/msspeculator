@@ -82,8 +82,34 @@ def test_parse_modseq():
         "ETTLHLVLR",
         (("n", "TMT6plex"), (1, "Phospho")),
     )
-    # unknown accession -> sentinel name (not in MOD_DELTA), so to_labels will skip it.
-    assert parse_modseq("A[UNIMOD:9999]CDEK") == ("ACDEK", ((0, "UNIMOD:9999"),))
+
+
+def test_parse_modseq_resolves_accessions_without_a_hand_map():
+    from pepdistill.data.prospect import parse_modseq
+
+    seq, mods = parse_modseq("[UNIMOD:737]ET[UNIMOD:21]TLHLVLR")
+    assert seq == "ETTLHLVLR"
+    assert mods == (("n", "TMT6plex"), (1, "Phospho"))
+
+
+def test_parse_modseq_resolves_a_mod_we_never_hand_mapped():
+    """Acetyl (UNIMOD:1) was never in the old _UNIMOD_TO_NAME table."""
+    from pepdistill.data.prospect import parse_modseq
+
+    seq, mods = parse_modseq("[UNIMOD:1]PEPTIDE")
+    assert seq == "PEPTIDE"
+    assert mods == (("n", "Acetyl"),)
+
+
+def test_parse_modseq_raises_on_unresolvable_accession():
+    with pytest.raises(ValueError, match="99999999"):
+        parse_modseq("PEP[UNIMOD:99999999]TIDE")
+
+
+def test_unimod_sentinel_map_is_gone():
+    import pepdistill.data.prospect as p
+
+    assert not hasattr(p, "_UNIMOD_TO_NAME")
 
 
 def _meta_ann():
@@ -91,7 +117,7 @@ def _meta_ann():
         {
             "raw_file": ["rfA", "rfB", "rfC"],
             "scan_number": [1, 2, 3],
-            "modified_sequence": ["PEPTIDEK", "[UNIMOD:21]SPEPK", "A[UNIMOD:9999]CDEK"],
+            "modified_sequence": ["PEPTIDEK", "[UNIMOD:21]SPEPK", "A[UNIMOD:1]CDEK"],
             "precursor_charge": [2, 2, 3],
             "indexed_retention_time": [50.0, 30.0, 40.0],
             "aligned_collision_energy": [0.30, 0.28, 0.31],
@@ -110,8 +136,9 @@ def _meta_ann():
         ("rfA", 1, "y", 2, 1, 0.7, "H2O"),
         # rfB / SPEPK (n=5), phospho on S: one fragment so it's non-empty
         ("rfB", 2, "b", 2, 1, 0.4, ""),  # site 1, col 0
-        # rfC unknown mod -> whole spectrum skipped even though it has fragments
-        ("rfC", 3, "b", 1, 1, 0.6, ""),
+        # rfC / ACDEK (n=5), Acetyl on residue 0: never in the old hand-map, but resolves
+        # via the vendored table now -> kept, not dropped.
+        ("rfC", 3, "b", 1, 1, 0.6, ""),  # site 0, col 0
     ]
     ann = pd.DataFrame(
         rows,
@@ -134,7 +161,9 @@ def test_to_labels_decoding(tmp_path):
     out = src.to_labels(meta, ann)
 
     by_seq = {p.peptide.sequence: (p, lab) for p, lab in zip(out.precursors, out.labels)}
-    assert set(by_seq) == {"PEPTIDEK", "SPEPK"}  # rfC unknown-mod dropped
+    # rfC's Acetyl (UNIMOD:1) was never in the old hand-map but resolves via the vendored
+    # table now, so it's kept rather than silently dropped.
+    assert set(by_seq) == {"PEPTIDEK", "SPEPK", "ACDEK"}
 
     _p, lab = by_seq["PEPTIDEK"]
     assert lab.ms2.shape == (7, 4)
@@ -149,8 +178,13 @@ def test_to_labels_decoding(tmp_path):
     # Leading token (before any residue) routes to the N-term site, not residue 0.
     assert ps.peptide.mods == [("n", "Phospho")]
 
+    pc, labc = by_seq["ACDEK"]
+    assert pc.peptide.mods == [(0, "Acetyl")]
+    assert labc.ms2.shape == (4, 4)
+    assert labc.ms2[0, 0] == pytest.approx(0.6)  # b1 z1
+
     # raw_file is the context stratification key; per-run acquisition captured.
-    assert set(out.source_ids) == {"rfA", "rfB"}
+    assert set(out.source_ids) == {"rfA", "rfB", "rfC"}
     assert out.acquisition["rfA"]["mass_analyzer"] == "FTMS"
     assert out.acquisition["rfA"]["collision_energy"] == pytest.approx(0.30)
 

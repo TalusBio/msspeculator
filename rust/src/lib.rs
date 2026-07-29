@@ -136,6 +136,18 @@ fn ms2_target_shape(length: usize) -> (usize, usize) {
     chem::ms2_target_shape(length)
 }
 
+/// Canonical name for a UNIMOD accession: our alias if one exists, else the UNIMOD title.
+/// `None` if the accession is not in the vendored table.
+#[pyfunction]
+fn unimod_name(accession: u32) -> Option<String> {
+    let e = unimod::by_accession(accession)?;
+    let alias = unimod::ALIASES
+        .iter()
+        .find(|(_, a)| *a == accession)
+        .map(|(n, _)| n.to_string());
+    Some(alias.unwrap_or_else(|| e.title.clone()))
+}
+
 #[pyfunction]
 fn collate<'py>(
     py: Python<'py>,
@@ -196,6 +208,7 @@ fn pepdistill_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(fragment_mz, m)?)?;
     m.add_function(wrap_pyfunction!(fragment_mz_matrix, m)?)?;
     m.add_function(wrap_pyfunction!(ms2_target_shape, m)?)?;
+    m.add_function(wrap_pyfunction!(unimod_name, m)?)?;
     m.add_function(wrap_pyfunction!(collate, m)?)?;
     m.add_function(wrap_pyfunction!(bucket_arrays, m)?)?;
     m.add_function(wrap_pyfunction!(bucket_fragment_mz, m)?)?;

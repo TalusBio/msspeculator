@@ -24,8 +24,9 @@ from dataclasses import dataclass
 import fsspec
 import numpy as np
 import pandas as pd
+import pepdistill_rs as _rs
 
-from ..chem import ION_TYPES, MOD_DELTA, Peptide
+from ..chem import ION_TYPES, Peptide
 from ..teacher.base import PrecursorLabels
 from .cache import FileCache, default_cache_dir, http_origin
 from .config import SplitConfig
@@ -36,25 +37,16 @@ from .zenodo import ZenodoRecord
 
 _UNIMOD_TOKEN = re.compile(r"([A-Z])|\[UNIMOD:(\d+)\]")
 
-# Ingest-side translation: external UNIMOD accession -> OUR mod name (chem.MOD_DELTA). This
-# is the only place PROSPECT's identifier scheme is known; our chemistry stays decoupled.
-# Accessions absent here parse to a "UNIMOD:N" sentinel (not in MOD_DELTA) so to_labels skips
-# those peptides rather than silently mis-massing them.
-_UNIMOD_TO_NAME: dict[int, str] = {
-    4: "Carbamidomethyl@C",
-    21: "Phospho",
-    35: "Oxidation@M",
-    737: "TMT6plex",
-}
-
 
 def parse_modseq(modseq: str) -> tuple[str, tuple[tuple, ...]]:
     """Parse a ProForma UNIMOD string -> (stripped_sequence, mods) in OUR mod names.
 
     ``[UNIMOD:737]ET[UNIMOD:21]TLHLVLR`` -> ("ETTLHLVLR", (("n","TMT6plex"),(1,"Phospho"))).
     A mod token attaches to the residue it follows; a leading token (before any residue) is
-    routed to the N-terminal site. Unknown accessions map to a "UNIMOD:N" sentinel (not in
-    chem.MOD_DELTA).
+    routed to the N-terminal site. Every accession resolves against the vendored UNIMOD table
+    (``pepdistill_rs.unimod_name``: our alias if one exists, else the UNIMOD title) — an
+    accession absent from that table raises ``ValueError`` rather than silently dropping the
+    peptide later.
     """
     residues: list[str] = []
     mods: list[tuple] = []
@@ -66,8 +58,14 @@ def parse_modseq(modseq: str) -> tuple[str, tuple[tuple, ...]]:
             pos += 1
         else:
             n = int(m.group(2))
+            name = _rs.unimod_name(n)
+            if name is None:
+                raise ValueError(
+                    f"unknown UNIMOD accession {n} in {modseq!r}: not in the vendored "
+                    "unimod table (regenerate with tools/gen_unimod.py)"
+                )
             site = "n" if pos < 0 else pos
-            mods.append((site, _UNIMOD_TO_NAME.get(n, f"UNIMOD:{n}")))
+            mods.append((site, name))
     return "".join(residues), tuple(mods)
 
 
@@ -282,13 +280,12 @@ class ProspectSource:
 
         # De-dup meta on the join key (first wins), parse each unique mod-string ONCE
         # (parse_modseq is the only per-peptide Python cost; rows reuse the cached result).
+        # parse_modseq itself raises on an unresolvable accession, so every surviving parse
+        # is usable chemistry; the only remaining filter is a minimum length.
         meta_u = meta_df.drop_duplicates([s.raw_file, s.scan_number], keep="first")
         parsed = {ms: parse_modseq(str(ms)) for ms in meta_u[s.modified_sequence].unique()}
         n_of = {ms: len(v[0]) for ms, v in parsed.items()}
-        ok_mod = {  # peptide is usable: >=2 residues and every mod maps to our chemistry
-            ms: (len(v[0]) >= 2 and all(nm in MOD_DELTA for _, nm in v[1]))
-            for ms, v in parsed.items()
-        }
+        ok_len = {ms: len(v[0]) >= 2 for ms, v in parsed.items()}
 
         acq_cols = [
             f for f in ("mass_analyzer", "fragmentation") if getattr(s, f) in meta_df.columns
@@ -324,10 +321,10 @@ class ProspectSource:
         z = frag[s.ann_frag_charge].to_numpy().astype(np.int64)
         ordinal = frag[s.ann_ordinal].to_numpy().astype(np.int64)
         n_arr = frag[s.modified_sequence].map(n_of).to_numpy(dtype=np.int64)
-        modok = frag[s.modified_sequence].map(ok_mod).to_numpy(dtype=bool)
+        oklen = frag[s.modified_sequence].map(ok_len).to_numpy(dtype=bool)
         site = np.where(is_b, ordinal - 1, n_arr - 1 - ordinal)
         col = np.where(is_b, 0, 1) + 2 * (z - 1)
-        mask = modok & (site >= 0) & (site < n_arr - 1)
+        mask = oklen & (site >= 0) & (site < n_arr - 1)
         frag = frag.assign(
             _site=site, _col=col, _inten=frag[s.ann_intensity].to_numpy(dtype=np.float32)
         )[mask]
