@@ -189,6 +189,40 @@ def test_to_labels_decoding(tmp_path):
     assert out.acquisition["rfA"]["collision_energy"] == pytest.approx(0.30)
 
 
+def test_to_labels_raises_on_unresolvable_accession(tmp_path):
+    """The raise must propagate all the way out of to_labels, not just out of parse_modseq in
+    isolation - there is no silent-drop-on-unknown-mod fallback left anywhere in ingest.
+    9999 is confirmed absent from the vendored table (max real accession is in the low
+    thousands)."""
+    meta = pd.DataFrame(
+        {
+            "raw_file": ["rfZ"],
+            "scan_number": [1],
+            "modified_sequence": ["PEP[UNIMOD:9999]TIDEK"],
+            "precursor_charge": [2],
+            "indexed_retention_time": [40.0],
+            "aligned_collision_energy": [0.30],
+            "mass_analyzer": ["FTMS"],
+            "fragmentation": ["HCD"],
+        }
+    )
+    ann = pd.DataFrame(
+        [("rfZ", 1, "b", 1, 1, 0.5, "")],
+        columns=[
+            "raw_file",
+            "scan_number",
+            "ion_type",
+            "no",
+            "charge",
+            "intensity",
+            "neutral_loss",
+        ],
+    )
+    src = ProspectSource("prospect", cache=FileCache([str(tmp_path)]))
+    with pytest.raises(ValueError, match="9999"):
+        src.to_labels(meta, ann)
+
+
 def test_read_annotation_from_zip(tmp_path):
     # Seed a synthetic annotation zip at the real catalog key for a test_ptm zip.
     rid = RECORDS["test_ptm"]
