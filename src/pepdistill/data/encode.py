@@ -4,13 +4,15 @@ Encoding is deliberately minimal (the whole point of distillation here): per-res
 amino-acid index + a single modification-mass channel, plus a charge scalar. No LSTM
 means everything is a fixed-shape, batch-parallel tensor.
 
-Each peptide is wrapped with explicit N-terminal and C-terminal tokens:
+Peptides are OPTIONALLY wrapped with explicit N-/C-terminal tokens (toggled by
+``set_termini``/``_USE_TERMINI``, OFF by default):
 
     [N] r1 r2 ... rL [C]
 
-The termini give small models fixed anchors and extra context capacity. They are NOT
-residues: they carry no mass and are excluded from MS2 fragment sites. Token layout per
-sample is position 0 = N-term, 1..L = residues, L+1 = C-term, then padding.
+When enabled, the termini give small models fixed anchors and extra context capacity. They are
+NOT residues: they carry no mass and are excluded from MS2 fragment sites. With termini on the
+layout is position 0 = N-term, 1..L = residues, L+1 = C-term, then padding; with termini off
+(the default) residues start at position 0.
 """
 
 from __future__ import annotations

@@ -109,6 +109,24 @@ pepdistill predict --model work/model.ckpt --fasta proteome.fasta -o library.par
 RT and CCS are always predicted context-free (RT through the runbook's neutral/iRT row); only
 MS2 fragment intensities move with `--ms-context`/`--nce`.
 
+### Predict one peptide in Rust (experimental)
+
+A pure-Rust inference path mirrors the torch `predict` for a single peptide. Export the trained
+checkpoint to a self-contained `.safetensors` artifact (weights + config/vocab/norm in the
+metadata), then run the standalone binary:
+
+```bash
+pepdistill export-rust --model work/model.ckpt -o work/model.safetensors
+cargo run -q --release -p pepdistill-cli -- \
+  --model work/model.safetensors --peptide PEPTIDER --charge 2 \
+  --ms-context "Lumos::FTMS::HCD::30"      # or --nce 30, or omit for base MS2
+```
+
+It prints one JSON object — precursor m/z, RT, CCS, and the fragment table (struct-of-arrays) —
+to stdout. Transformer presets only; RT is the context-free iRT base unless `--chrom-context
+NAME` selects a saved dataset. Parity with the torch path is measured by
+`tests/test_rust_parity.py`.
+
 ## Output
 
 `library.parquet` is a tidy long-format spectral library — one row per retained
@@ -137,7 +155,13 @@ pepdistill/
   predict/     library.py (reference) + fast.py (vectorized) + onnx.py (export/runtime)
   eval.py      val reduction (best example per library entry)
   util.py      device resolution (auto -> mps/cpu)
-  cli.py       typer CLI (run + predict)
+  cli.py       typer CLI (run + predict + export-rust)
+
+rust/
+  core/        chemistry + Peptide + tokenizer + student forward — the single source of truth,
+               used by both the Python ext and the CLI
+  cli/         pepdistill-cli: single-peptide predict binary (.safetensors -> JSON on stdout)
+  src/lib.rs   pepdistill_rs: pyo3 extension exposing core to Python (a hard dependency)
 ```
 
 ## Student presets & speed
