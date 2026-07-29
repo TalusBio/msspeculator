@@ -91,6 +91,24 @@ RECORDS: dict[str, str] = {
 
 
 @dataclass(frozen=True, slots=True)
+class ShardInfo:
+    """One parquet shard inside an annotation zip, as read from the central directory.
+
+    ``raw_bytes`` is what decoding has to hold; ``packed_bytes`` is only what crosses the wire.
+    For these pools the two are often equal — parquet is already compressed, so the zip adds
+    little — which means download size is a fair proxy for memory pressure here.
+    """
+
+    name: str
+    packed_bytes: int
+    raw_bytes: int
+
+    @property
+    def short_name(self) -> str:
+        return self.name.split("/")[-1]
+
+
+@dataclass(frozen=True, slots=True)
 class ProspectSchema:
     """Column-name mapping. Defaults follow the documented PROSPECT columns; override per
     file if a variant differs (validated at read time)."""
@@ -212,14 +230,32 @@ class ProspectSource:
             raise ValueError(f"no parquet members in {zip_filename}")
         return pd.concat(frames, ignore_index=True)
 
-    def annotation_shards(self, zip_filename: str) -> list[str]:
-        """List parquet shard names inside an annotation zip WITHOUT downloading it.
+    def annotation_shard_info(self, zip_filename: str) -> list[ShardInfo]:
+        """Name and size of every parquet shard in an annotation zip, WITHOUT downloading it.
 
-        Reads only the zip central directory via HTTP range requests (a few KB), so a
-        multi-GB pool can be inspected — and a subset chosen — before pulling any spectra.
+        A zip's central directory sits at the end of the file, so a couple of range requests
+        list the whole archive — names, packed and unpacked sizes — for a few KB regardless of
+        the zip's size. Verified against a 6.7 GB pool: 662 shards enumerated with no download.
+
+        The sizes are the point. Shard count alone does not tell you what a run will cost, and
+        `_load_real` holds every decoded shard in memory (plus a second copy during the merge),
+        so RAM, not download time, is what bounds how many shards a run can take. Check here
+        before committing to a pool.
         """
         with self._open_remote_zip(zip_filename) as z:
-            return [n for n in z.namelist() if n.endswith(".parquet")]
+            return [
+                ShardInfo(i.filename, i.compress_size, i.file_size)
+                for i in z.infolist()
+                if i.filename.endswith(".parquet")
+            ]
+
+    def annotation_shards(self, zip_filename: str) -> list[str]:
+        """Parquet shard names inside an annotation zip, without downloading it.
+
+        See :meth:`annotation_shard_info` for the sizes, which is usually what you want when
+        deciding how many shards to take.
+        """
+        return [s.name for s in self.annotation_shard_info(zip_filename)]
 
     def read_annotation_streaming(
         self, zip_filename: str, members: list[str] | None = None, max_members: int | None = None

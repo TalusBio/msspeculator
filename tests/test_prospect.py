@@ -328,3 +328,33 @@ def test_every_prospect_accession_is_encodable():
         name = _rs.unimod_name(acc)
         assert name is not None, f"accession {acc} no longer resolves"
         _rs.mod_element_comp(name)  # raises if outside the 6-element basis
+
+
+def test_annotation_shard_info_reports_names_and_sizes(tmp_path, monkeypatch):
+    """Shard sizes come from the zip central directory, so a pool can be budgeted first.
+
+    Shard count alone is misleading: third pool's six shards run 90 MB to 388 MB, so picking
+    "all of them" is a 16x jump over the smallest, not 6x. _load_real holds every decoded shard
+    in memory plus a merge copy, so this is the number that bounds a run.
+    """
+    import zipfile
+
+    from pepdistill.data.prospect import ProspectSource
+
+    zpath = tmp_path / "pool.zip"
+    payload_a, payload_b = b"a" * 5000, b"b" * 900
+    with zipfile.ZipFile(zpath, "w", zipfile.ZIP_STORED) as z:
+        z.writestr("pool/one_annotation.parquet", payload_a)
+        z.writestr("pool/two_annotation.parquet", payload_b)
+        z.writestr("pool/readme.txt", b"not a shard")
+
+    src = ProspectSource("prospect")
+    monkeypatch.setattr(src, "_open_remote_zip", lambda _name: zipfile.ZipFile(zpath))
+
+    infos = src.annotation_shard_info("pool.zip")
+    assert [i.short_name for i in infos] == ["one_annotation.parquet", "two_annotation.parquet"]
+    assert [i.raw_bytes for i in infos] == [len(payload_a), len(payload_b)]
+    assert all(i.packed_bytes > 0 for i in infos)
+
+    # The name-only view must stay consistent with it.
+    assert src.annotation_shards("pool.zip") == [i.name for i in infos]
