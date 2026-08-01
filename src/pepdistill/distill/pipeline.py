@@ -86,21 +86,106 @@ class PretrainCfg:
 
 
 @dataclass
+class TrainSource:
+    """One PROSPECT pool contributing to the real-data stage.
+
+    ``instrument`` is per-source, not pool-level: two pools can differ, and acquisition
+    factors are never fabricated. ``val_only`` keeps only the examples whose sequence already
+    hashes to val and vacuums the rest — leak-free, because ``assign_split`` hashes the
+    stripped sequence globally, so a val-hashed sequence is val in every source. This filters
+    TO the existing split; it never overrides it.
+    """
+
+    record: str
+    meta: str
+    zip: str
+    shards: list[int]
+    dataset: str | None = None  # ChromRunbook row key; required once there is >1 source
+    instrument: str = "Lumos"
+    val_only: bool = False
+
+
+@dataclass
 class TrainCfg:
     enabled: bool = True
-    record: str = "prospect"
-    meta: str = "TUM_third_pool_meta_data.parquet"
-    zip: str = "TUM_third_pool.zip"
-    shards: list[int] = field(default_factory=lambda: [0])
+    sources: list[TrainSource] = field(default_factory=list)
     epochs: int = 60
     batch_size: int = 256
     lr: float = 1e-3
     loss_weights: tuple[float, float, float] = (1.0, 1.0, 1.0)  # ms2, irt, raw_rt
-    dataset: str | None = None  # label for the val best-per-entry reduction
-    instrument: str = (
-        "Lumos"  # pool-level MS instrument (PROSPECT ~ Lumos); set per-source as more are added
-    )
     mod_align_weight: float = 1.0
+    # Examples held for cross-shard shuffling. Shards are also visited in a per-epoch shuffled
+    # order, so this only has to break up within-shard correlation. 0 disables shuffling
+    # entirely (sequential shard order) for debugging a data problem.
+    shuffle_buffer: int = 50_000
+
+
+# Pool identity used to live directly under [train]; it is per-source now.
+_FLAT_POOL_KEYS = ("record", "meta", "zip", "shards", "dataset", "instrument")
+
+
+def _train_cfg(raw: dict) -> TrainCfg:
+    d = dict(raw)
+    stale = [k for k in _FLAT_POOL_KEYS if k in d]
+    if stale:
+        raise ValueError(
+            f"[train] no longer takes pool keys {stale}; declare each pool as a "
+            "[[train.sources]] entry with record/meta/zip/shards (+ dataset, instrument, "
+            "val_only)"
+        )
+    sources = [TrainSource(**s) for s in d.pop("sources", [])]
+    if len(sources) > 1:
+        unnamed = [s.zip for s in sources if not s.dataset]
+        if unnamed:
+            raise ValueError(
+                f"every [[train.sources]] needs an explicit dataset name once there is more "
+                f"than one source; missing for {unnamed}. The name fixes the ChromRunbook row, "
+                "and deriving it from the zip name would let rows drift between runs."
+            )
+    if "loss_weights" in d:
+        d["loss_weights"] = tuple(d["loss_weights"])
+    return TrainCfg(sources=sources, **d)
+
+
+def resolve_dataset_index(
+    sources: list[TrainSource], existing: dict[str, int] | None = None
+) -> dict[str, int]:
+    """Map dataset name -> ChromRunbook row, in config declaration order, from row 1.
+
+    Row 0 is the neutral/iRT row and is never assigned. Sources sharing a name share a row.
+    An ``existing`` index (continuing a curriculum) keeps every row it already has — by
+    construction, not by check — and new names append after the highest. The index is baked
+    into the exported artifact, so a shifted row would make an old artifact address the wrong
+    dataset.
+
+    ``existing`` is validated rather than trusted: a row 0 entry would collide with the
+    neutral row, and duplicate rows would make two datasets share one ChromRunbook entry.
+    Both are silent corruptions of an artifact, so both raise.
+    """
+    index = dict(existing or {})
+    if 0 in index.values():
+        bad = sorted(n for n, r in index.items() if r == 0)
+        raise ValueError(
+            f"existing dataset_index assigns row 0 to {bad}; row 0 is reserved for the "
+            "neutral/iRT row and must not name a dataset"
+        )
+    if len(set(index.values())) != len(index):
+        seen: dict[int, list[str]] = {}
+        for n, r in sorted(index.items()):
+            seen.setdefault(r, []).append(n)
+        clashes = {r: ns for r, ns in seen.items() if len(ns) > 1}
+        raise ValueError(
+            f"existing dataset_index has duplicate rows {clashes}; each dataset needs its "
+            "own ChromRunbook row"
+        )
+    next_row = max(index.values(), default=0) + 1
+    for s in sources:
+        name = s.dataset or "default"
+        if name in index:
+            continue
+        index[name] = next_row
+        next_row += 1
+    return index
 
 
 @dataclass
@@ -137,18 +222,10 @@ class RunConfig:
         return cls(
             **{k: raw[k] for k in ("out", "preset", "device", "seed", "model_in") if k in raw},
             pretrain=PretrainCfg(sources=sources, **pre),
-            train=TrainCfg(**_tuple_lw(raw.get("train", {}))),
+            train=_train_cfg(raw.get("train", {})),
             export=ExportCfg(**raw.get("export", {})),
             bench=BenchCfg(**raw.get("bench", {})),
         )
-
-
-def _tuple_lw(d: dict) -> dict:
-    """TOML arrays are lists; loss_weights must be a 3-tuple."""
-    d = dict(d)
-    if "loss_weights" in d:
-        d["loss_weights"] = tuple(d["loss_weights"])
-    return d
 
 
 def _accelerator(device: str) -> str:
@@ -357,7 +434,9 @@ __all__ = [
     "DigestSource",
     "PretrainCfg",
     "TrainCfg",
+    "TrainSource",
     "ExportCfg",
     "BenchCfg",
     "run_pipeline",
+    "resolve_dataset_index",
 ]
