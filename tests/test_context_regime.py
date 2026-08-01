@@ -160,3 +160,32 @@ def test_mixed_energy_batch_no_longer_raises():
     batch = next(iter(ds.batches(4, False, gen)))
     assert batch.ms_factors.energy is not None
     assert int(torch.isnan(batch.ms_factors.energy).sum()) == 1
+
+
+def test_epoch_energy_counters_track_masking_and_reset():
+    """train_energy_masked/train_energy_present are the only visible signal that missing
+    energy is masked rather than silently dropped. Call the hooks directly (no Trainer
+    needed) so a regression to "counters never increment" is caught without a full fit."""
+    model = build_student("tiny")
+    cdim = model.cfg.context_dim
+    module = RealSpeclibModule(model, ChromRunbook(1, cdim), MSContextEncoder(context_dim=cdim))
+
+    examples = _make_examples(4)
+    examples[1].energy = float("nan")
+    examples[3].energy = float("nan")  # 2 present, 2 masked
+    ds = RealSpeclibDataset(examples)
+    gen = torch.Generator().manual_seed(0)
+    batch = next(iter(ds.batches(4, False, gen)))
+
+    module.on_train_epoch_start()
+    assert module._energy_masked == 0
+    assert module._energy_present == 0
+
+    module.training_step(batch, 0)
+    module.training_step(batch, 1)  # a second step in the same epoch: counts accumulate
+    assert module._energy_present == 4  # 2 present rows x 2 steps
+    assert module._energy_masked == 4  # 2 masked rows x 2 steps
+
+    module.on_train_epoch_start()  # next epoch must reset, not keep accumulating
+    assert module._energy_masked == 0
+    assert module._energy_present == 0

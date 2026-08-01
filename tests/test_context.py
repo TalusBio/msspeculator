@@ -238,8 +238,22 @@ def test_affine_never_touches_rt_base():
     assert not torch.equal(plain["rt"], conditioned["rt"]), "affine did not affect rt"
 
 
+def _perturbed_encoder(context_dim: int = 8) -> MSContextEncoder:
+    """A fresh encoder has energy_mlp's LAST Linear zero-init (weight AND bias), so
+    energy_mlp(anything) == 0 regardless of input -- every "does energy do X" test built
+    on a bare MSContextEncoder is vacuous, because masked-vs-unmasked collapse to the
+    same (zero) output no matter which side of a masking bug you're looking at. Perturb
+    every energy_mlp parameter so mlp(0) is genuinely nonzero, the way it would be after
+    real training, so these tests can actually tell implementations apart."""
+    torch.manual_seed(0)
+    enc = MSContextEncoder(context_dim=context_dim)
+    for p in enc.energy_mlp.parameters():
+        torch.nn.init.normal_(p, std=0.1)
+    return enc
+
+
 def test_nan_energy_contributes_exactly_zero():
-    enc = MSContextEncoder(context_dim=8)
+    enc = _perturbed_encoder()
     ids = torch.zeros(3, dtype=torch.long)
     none_out = enc(ids, ids, ids, energy=None)
     nan_out = enc(ids, ids, ids, energy=torch.full((3,), float("nan")))
@@ -247,7 +261,7 @@ def test_nan_energy_contributes_exactly_zero():
 
 
 def test_mixed_energy_masks_per_example_not_per_batch():
-    enc = MSContextEncoder(context_dim=8)
+    enc = _perturbed_encoder()
     ids = torch.zeros(2, dtype=torch.long)
     mixed = enc(ids, ids, ids, energy=torch.tensor([28.0, float("nan")]))
     present = enc(ids, ids, ids, energy=torch.tensor([28.0, 28.0]))
@@ -258,18 +272,14 @@ def test_mixed_energy_masks_per_example_not_per_batch():
 
 
 def test_masking_happens_after_the_mlp_not_by_filling_zero():
-    """energy_mlp has a bias, so mlp(0) != 0; filling would inject a learned constant.
-
-    At zero-init energy_mlp's LAST Linear is zeroed, so mlp(anything) == 0 regardless of
-    input and this test can't tell the two implementations apart. Perturb every energy_mlp
-    parameter (as the pre-existing test_ms_context_energy_is_wired_after_training_step does)
-    so mlp(0) is genuinely nonzero, the way it would be after real training.
-    """
-    torch.manual_seed(0)
-    enc = MSContextEncoder(context_dim=8)
-    for p in enc.energy_mlp.parameters():
-        torch.nn.init.normal_(p, std=0.1)
+    """energy_mlp has a bias, so mlp(0) != 0; filling would inject a learned constant."""
+    enc = _perturbed_encoder()
     ids = torch.zeros(1, dtype=torch.long)
     filled = enc(ids, ids, ids, energy=torch.zeros(1))
     masked = enc(ids, ids, ids, energy=torch.full((1,), float("nan")))
     assert not torch.allclose(filled, masked)
+    # Directional: pin down WHICH side carries the nonzero term. "not allclose" alone is
+    # symmetric and also passes if the present/absent mask were reversed -- a masked
+    # example must equal the no-energy path exactly, not merely differ from the filled one.
+    absent = enc(ids, ids, ids, energy=None)
+    assert torch.allclose(masked, absent)
