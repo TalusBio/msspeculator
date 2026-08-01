@@ -10,8 +10,9 @@ Stages:
   enzyme -> immunopeptidome windows, else tryptic) with the teacher labeling over an NCE sweep,
   so collision energy comes from the data (never fabricated) and the encoder learns a real CE
   axis. (A fixed-energy corpus would just be a dataset that carries its own CE — no special mode.)
-- **train** — real-speclib sink on a PROSPECT pool (streamed shard-by-shard), per-run
-  ``chrom_context`` and factor-driven ``ms_context``.
+- **train** — real-speclib sink over one or more PROSPECT pools (each ``[[train.sources]]``
+  entry is one pool with its own ChromRunbook row; shards are extracted once and then streamed
+  per epoch, never materialised), per-run ``chrom_context`` and factor-driven ``ms_context``.
 - **export** — ONNX. **bench** — library-generation throughput on a FASTA digest.
 
 Inference (predict a library from a finished model) is deliberately NOT here — it is the
@@ -27,15 +28,20 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import lightning as L
+
 from ..data.config import DigestConfig, SplitConfig
 from ..data.digest import digest_fasta
+from ..data.meta_index import MetaIndex, build_meta_index
 from ..data.precursors import enumerate_precursors
-from ..data.prospect import ProspectSource, merge_real_labels
-from ..models.context import MSContextEncoder
+from ..data.prospect import ProspectSource
+from ..data.shard_store import extract_shard, select_members, shard_raw_files
+from ..models.context import ChromRunbook, MSContextEncoder
 from ..models.registry import build_student, load_checkpoint, save_checkpoint
 from ..predict.fast import TorchRunner, predict_library_fast
 from ..teacher import get_teacher
-from .context_regime import fit_realspeclib
+from .context_regime import RealSpeclibDataset, establish_rt_norm, fit_realspeclib_datasets
+from .real_stream import ShardSpec, StreamingRealDataset, collect_val_examples
 from .stream_pretrain import StreamMix, StreamPretrainCfg, fit_stream_pretrain
 
 
@@ -274,25 +280,55 @@ def _release_accelerator_cache(acc: str) -> None:
         torch.cuda.empty_cache()
 
 
-def _load_real(cfg: TrainCfg, log):
-    """Decode the chosen shards of a PROSPECT pool into one RealLabels, held in memory.
+def _build_train_stage(cfg: RunConfig, log):
+    """Extract every source's shards, build its meta index, and assemble what the real-data
+    stage needs: the train and val shard lists, one merged meta index, the dataset index (plus
+    its inverse), and the iRT sufficient statistics the RT affine is established from.
 
-    Only the shard *read* streams. Decoding accumulates: every shard's labels are materialized
-    in ``parts`` and ``merge_real_labels`` then builds a second full copy, so peak use is about
-    twice the final size, and the result (a list of per-example objects each carrying its own
-    MS2 array) stays resident for training. Shard count is therefore bounded by RAM, not by
-    download time — budget accordingly before adding shards.
+    Nothing here decodes a fragment. Shards are extracted to local parquet and read per epoch
+    by :class:`~pepdistill.distill.real_stream.StreamingRealDataset`, so the resident cost is
+    the meta index, not the spectra.
     """
-    src = ProspectSource(cfg.record)
-    meta = src.read(cfg.meta)
-    parts = []
-    for name, ann in src.iter_annotation_shards(cfg.zip, cfg.shards):
-        parts.append(src.to_labels(meta, ann))
-        log(f"  decoded {name.split('/')[-1]}: {len(parts[-1].precursors)} examples")
-        del ann
-    del meta  # not needed past decoding; keeps it out of the merge's peak
-    gc.collect()
-    return merge_real_labels(parts)
+    dataset_index = resolve_dataset_index(cfg.train.sources)
+    names_by_row = {row: name for name, row in dataset_index.items()}
+    train_shards: list[ShardSpec] = []
+    val_shards: list[ShardSpec] = []
+    indices: list[MetaIndex] = []
+    stats: list[tuple[int, float, float]] = []
+    for s in cfg.train.sources:
+        src = ProspectSource(s.record)
+        members = select_members(src, s.zip, s.shards)
+        # Extract first: raw_files come from each shard's own column, never from its filename
+        # (a third-pool shard holds three, none matching the member stem).
+        paths = [extract_shard(src, s.zip, m) for m in members]
+        per_shard = [tuple(shard_raw_files(p)) for p in paths]
+        index = build_meta_index(src, s.meta, sorted({r for rs in per_shard for r in rs}))
+        indices.append(index)
+        row = dataset_index[s.dataset or "default"]
+        specs = [
+            ShardSpec(path=p, raw_files=rs, dataset_id=row, instrument=s.instrument)
+            for p, rs in zip(paths, per_shard)
+        ]
+        val_shards.extend(specs)
+        if s.val_only:
+            log(f"[train] {s.zip}: val_only, {len(specs)} shard(s) held out")
+        else:
+            train_shards.extend(specs)
+            # val_only sources contribute nothing to the RT affine: it is established from the
+            # population training actually sees.
+            stats.append(index.irt_stats(frozenset({"train"})))
+        log(f"[train] {s.zip}: {len(specs)} shard(s), dataset row {row}")
+
+    if not train_shards:
+        raise ValueError("every [[train.sources]] is val_only; there is nothing to train on")
+
+    # One index across sources: keys are (raw_file, scan_number), which is globally unique,
+    # so the union cannot collide.
+    merged = MetaIndex()
+    for ix in indices:
+        merged.by_key.update(ix.by_key)
+    log(f"[train] meta index: {len(merged.by_key):,} spectra resident")
+    return train_shards, val_shards, merged, dataset_index, names_by_row, stats
 
 
 def _run_pretrain(cfg: RunConfig, model, encoder, acc, log):
@@ -356,25 +392,43 @@ def run_pipeline(cfg: RunConfig, log=print) -> dict:
     runbook = None
     dataset_index = None
     if cfg.train.enabled:
-        log(f"[train] streaming shards {cfg.train.shards} of {cfg.train.zip}")
-        real = _load_real(cfg.train, log)
-        module = fit_realspeclib(
+        # Seed before the runbook is built: fit_realspeclib_datasets deliberately does NOT seed
+        # globally, so a second call there would reset the stream after the context modules had
+        # already drawn from it.
+        L.seed_everything(cfg.seed, verbose=False)
+        train_shards, val_shards, index, dataset_index, names_by_row, stats = _build_train_stage(
+            cfg, log
+        )
+        establish_rt_norm(model, stats)
+        runbook = ChromRunbook(n_datasets=len(dataset_index), context_dim=model.cfg.context_dim)
+        train_ds = StreamingRealDataset(
+            train_shards,
+            index,
+            encoder,
+            # train AND test: matches what the real-data stage has always trained on.
+            frozenset({"train", "test"}),
+            seed=cfg.seed,
+            shuffle_buffer=cfg.train.shuffle_buffer,
+        )
+        val_examples = collect_val_examples(val_shards, index, encoder, names_by_row)
+        val_ds = RealSpeclibDataset(val_examples) if val_examples else None
+        log(f"[train] streaming {len(train_shards)} shard(s); val {len(val_examples)} examples")
+        module = fit_realspeclib_datasets(
             model,
-            real,
-            dataset_name=cfg.train.dataset,
-            instrument=cfg.train.instrument,
+            train_ds,
+            val_ds,
+            runbook=runbook,
+            dataset_index=dataset_index,
+            encoder=encoder,
             epochs=cfg.train.epochs,
             batch_size=cfg.train.batch_size,
             lr=cfg.train.lr,
             loss_weights=cfg.train.loss_weights,
             seed=cfg.seed,
             accelerator=acc,
-            encoder=encoder,
             mod_align_weight=cfg.train.mod_align_weight,
             enable_progress_bar=False,
         )
-        runbook = module.runbook
-        dataset_index = module.dataset_index
         summary["train"] = {k: float(v) for k, v in module.trainer.callback_metrics.items()}
         summary["dataset_index"] = dataset_index
         log(f"[train] {summary['train']}")

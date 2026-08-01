@@ -368,10 +368,10 @@ class ProspectSource:
         list the whole archive — names, packed and unpacked sizes — for a few KB regardless of
         the zip's size. Verified against a 6.7 GB pool: 662 shards enumerated with no download.
 
-        The sizes are the point. Shard count alone does not tell you what a run will cost, and
-        `_load_real` holds every decoded shard in memory (plus a second copy during the merge),
-        so RAM, not download time, is what bounds how many shards a run can take. Check here
-        before committing to a pool.
+        The sizes are the point. Shard count alone does not tell you what a run will cost:
+        every selected shard is extracted to local parquet and re-read each epoch, so disk and
+        per-epoch read time, not download time, are what bound how many shards a run can take.
+        Check here before committing to a pool.
         """
         with self._open_remote_zip(zip_filename) as z:
             return [

@@ -350,8 +350,8 @@ def test_annotation_shard_info_reports_names_and_sizes(tmp_path, monkeypatch):
     """Shard sizes come from the zip central directory, so a pool can be budgeted first.
 
     Shard count alone is misleading: third pool's six shards run 90 MB to 388 MB, so picking
-    "all of them" is a 16x jump over the smallest, not 6x. _load_real holds every decoded shard
-    in memory plus a merge copy, so this is the number that bounds a run.
+    "all of them" is a 16x jump over the smallest, not 6x. Every selected shard is extracted to
+    local parquet and re-read each epoch, so this is the number that bounds a run.
     """
     import zipfile
 
