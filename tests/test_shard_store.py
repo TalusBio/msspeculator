@@ -5,11 +5,17 @@ import os
 import zipfile
 
 import pandas as pd
+import pyarrow as pa
 import pytest
 
 from pepdistill.data.cache import FileCache
 from pepdistill.data.prospect import RECORDS, ProspectSource
-from pepdistill.data.shard_store import extract_shard, select_members, shard_raw_files
+from pepdistill.data.shard_store import (
+    _read_raw_file_column,
+    extract_shard,
+    select_members,
+    shard_raw_files,
+)
 
 ZIP_NAME = "TUM_third_pool.zip"  # exists in the 'prospect' catalog
 
@@ -65,6 +71,20 @@ def test_shard_raw_files_reads_them_from_the_column_not_the_name(tmp_path):
         "01812a_GA3-pool_1_01_01-3xHCD-1h-R1",
         "01812a_GA3-pool_1_01_01-DDA-1h-R1",
     ]
+
+
+def test_shard_raw_files_reads_the_column_dictionary_encoded(tmp_path):
+    """Pins the ENCODING, not just the returned value.
+
+    A future edit that drops ``read_dictionary=["raw_file"]`` would still pass the
+    correctness test above (same unique values), but would reintroduce the ~1.1 GB peak-RSS
+    regression on real shards by materializing one string per row instead of reading the
+    on-disk dictionary. This asserts the column stays a pyarrow dictionary type.
+    """
+    src = ProspectSource("prospect", cache=_seed_zip(tmp_path))
+    path = extract_shard(src, ZIP_NAME, select_members(src, ZIP_NAME, [0])[0])
+    table = _read_raw_file_column(path)
+    assert pa.types.is_dictionary(table.schema.field("raw_file").type)
 
 
 def test_select_members_by_index(tmp_path):

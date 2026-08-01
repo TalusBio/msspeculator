@@ -13,9 +13,24 @@ from __future__ import annotations
 
 import shutil
 
+import pyarrow as pa
 import pyarrow.parquet as pq
 
 from .prospect import ProspectSource
+
+
+def _read_raw_file_column(path: str) -> pa.Table:
+    """Single-column table for ``raw_file``, kept dictionary-encoded.
+
+    WARNING: ``read_dictionary=["raw_file"]`` is not an optimization to drop casually. The
+    column is dictionary/RLE-encoded on disk — 226 bytes compressed, 191 bytes uncompressed
+    for a whole row group — but plain ``pq.read_table`` expands it into one Python string per
+    row on the way out. On a real third-pool shard (8,725,131 rows) that expansion alone costs
+    ~1.1 GB of peak RSS, in a pipeline whose entire purpose is bounding peak memory. Reading
+    with ``read_dictionary`` keeps the column as indices + a small dictionary, so `.unique()`
+    reads the dictionary instead of materializing a string per row.
+    """
+    return pq.read_table(path, columns=["raw_file"], read_dictionary=["raw_file"])
 
 
 def shard_raw_files(path: str) -> list[str]:
@@ -24,10 +39,9 @@ def shard_raw_files(path: str) -> list[str]:
     Read from the column, never inferred from the filename. A third-pool shard named
     ``TUM_third_pool_1_01_01_annotation.parquet`` actually holds three raw files
     (``01812a_GA3-…-DDA-1h-R1``, ``…-2xIT_2xHCD-1h-R1``, ``…-3xHCD-1h-R1``), none of them
-    equal to the stem; TMT pools use the opposite convention. The column costs 226 bytes
-    compressed in a 90.7 MB shard, so there is nothing to save by guessing.
+    equal to the stem; TMT pools use the opposite convention.
     """
-    table = pq.read_table(path, columns=["raw_file"])
+    table = _read_raw_file_column(path)
     return table.column("raw_file").unique().to_pylist()
 
 
