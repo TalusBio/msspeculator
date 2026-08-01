@@ -11,7 +11,7 @@
 #   2. Real data + capacity, the recorded "real-data + longer" lever: preset small -> base
 #      (132K -> 899K params, d_model 64->128, 2->4 layers; width first per the arch sweep) and
 #      1 -> 6 third-pool shards. Shards are non-uniform in BOTH bytes (90.7-387.6 MB raw) AND
-#      example density (87-670 examples/MB, from per-shard row counts in the cached
+#      example density (86-670 examples/MB, from per-shard row counts in the cached
 #      TUM_third_pool_meta_data.parquet, grouped by the `third_pool_{i}_01_01` raw_file
 #      substring) -- so neither shard count nor total bytes predicts the example count; only
 #      the per-shard row counts do. Ground truth: 60,754 / 71,036 / 55,413 / 22,943 / 77,096 /
@@ -22,7 +22,7 @@
 #      to ~1.0M; the earlier naive-uniform 6x guess of ~364,000 undershoots. Neither substitutes
 #      for the per-shard counts.)
 #
-# epochs 60 -> 80 rather than 200: with 6x the data per epoch, 80 epochs is already ~8x the
+# epochs 60 -> 80 rather than 200: with 5.6x the data per epoch, 80 epochs is already ~7.5x the
 # example-views of the 0.626 run. 200 would be ~20x and mostly wall-clock.
 #
 # Caveats that bound what this can show:
