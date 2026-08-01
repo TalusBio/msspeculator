@@ -35,7 +35,7 @@ from ..data.digest import digest_fasta
 from ..data.meta_index import MetaIndex, build_meta_index
 from ..data.precursors import enumerate_precursors
 from ..data.prospect import ProspectSource
-from ..data.shard_store import extract_shard, select_members, shard_raw_files
+from ..data.shard_store import extract_shards, select_members, shard_raw_files
 from ..models.context import ChromRunbook, MSContextEncoder
 from ..models.registry import build_student, load_checkpoint, save_checkpoint
 from ..predict.fast import TorchRunner, predict_library_fast
@@ -333,8 +333,11 @@ def _build_train_stage(cfg: RunConfig, log):
         src = ProspectSource(s.record)
         members = select_members(src, s.zip, s.shards)
         # Extract first: raw_files come from each shard's own column, never from its filename
-        # (a third-pool shard holds three, none matching the member stem).
-        paths = [extract_shard(src, s.zip, m) for m in members]
+        # (a third-pool shard holds three, none matching the member stem). One extract_shards
+        # call per source, not one extract_shard call per member: each remote-zip open re-reads
+        # the central directory and, cold, re-opens the whole HTTP stream, and a source can
+        # have ~10 shards — enough opens in a row to trip Zenodo's rate limiter on its own.
+        paths = extract_shards(src, s.zip, members)
         per_shard = [tuple(shard_raw_files(p)) for p in paths]
         raw_files = sorted({r for rs in per_shard for r in rs})
         index = build_meta_index(src, s.meta, raw_files)

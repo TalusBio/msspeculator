@@ -58,19 +58,48 @@ def select_members(src: ProspectSource, zip_filename: str, indices: list[int]) -
     return out
 
 
+def _shard_key(src: ProspectSource, zip_filename: str, member: str) -> str:
+    return f"shards/{src.record}/{zip_filename.removesuffix('.zip')}/{member.split('/')[-1]}"
+
+
+def extract_shards(src: ProspectSource, zip_filename: str, members: list[str]) -> list[str]:
+    """Local parquet paths for ``members``, in the same order, opening the remote zip AT MOST
+    ONCE for the whole batch.
+
+    Opening a remote zip re-reads its central directory and, on a cold cache, re-opens the
+    whole remote HTTP stream — several range requests each. Paying that once per shard instead
+    of once per batch is exactly what tripped Zenodo's rate limiter on a real 19-shard run
+    (``ClientResponseError: 429`` out of ``_open_remote_zip``). So: resolve every member's
+    cache path FIRST, via :meth:`FileCache.probe`, which never touches the zip — and only open
+    it if something actually needs it. A fully-cached batch therefore costs zero network
+    requests, which is what makes retrying a run that died mid-way cheap instead of repeating
+    the whole cost that killed it.
+    """
+    cache = src.cache
+    keys = [_shard_key(src, zip_filename, m) for m in members]
+    paths: list[str | None] = [cache.probe(k) for k in keys]
+    missing = [i for i, p in enumerate(paths) if p is None]
+
+    if missing:
+        with src._open_remote_zip(zip_filename) as z:
+            for i in missing:
+                member = members[i]
+
+                # copyfileobj, not out.write(z.read(member)): the members are 90.7-387.6 MB,
+                # and z.read() inflates the whole thing into RAM before a byte is written. The
+                # point of extracting is to bound peak RSS, so the extract must be streaming.
+                def write(dest: str, member: str = member) -> None:
+                    with z.open(member) as member_f, open(dest, "wb") as out:
+                        shutil.copyfileobj(member_f, out)
+
+                paths[i] = cache.store(keys[i], write)
+
+    return paths  # type: ignore[return-value]  # every entry was filled above
+
+
 def extract_shard(src: ProspectSource, zip_filename: str, member: str) -> str:
     """Local parquet path for one zip member, extracting it on first use."""
-    key = f"shards/{src.record}/{zip_filename.removesuffix('.zip')}/{member.split('/')[-1]}"
-
-    def origin(dest: str) -> None:
-        # copyfileobj, not out.write(z.read(member)): the members are 90.7-387.6 MB, and
-        # z.read() inflates the whole thing into RAM before a byte is written. The point of
-        # extracting is to bound peak RSS, so the extract must be streaming too.
-        with src._open_remote_zip(zip_filename) as z:
-            with z.open(member) as member_f, open(dest, "wb") as out:
-                shutil.copyfileobj(member_f, out)
-
-    return src.cache.resolve(key, origin)
+    return extract_shards(src, zip_filename, [member])[0]
 
 
-__all__ = ["shard_raw_files", "select_members", "extract_shard"]
+__all__ = ["shard_raw_files", "select_members", "extract_shard", "extract_shards"]

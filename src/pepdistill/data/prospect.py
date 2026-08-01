@@ -18,6 +18,7 @@ from __future__ import annotations
 import io
 import os
 import re
+import time
 import zipfile
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -92,6 +93,34 @@ RECORDS: dict[str, str] = {
     "tmt_ptm": "11474099",
     "test_ptm": "11477731",
 }
+
+# 2s spacing measured (see prospect_catalog.build_shard_index / commit 867d2fb) to avoid
+# Zenodo's rate limiter entirely on a full-collection indexing pass. Exponential backoff from
+# here, capped at a few attempts: enough to ride out a burst, not enough to hang forever.
+_RATE_LIMIT_DELAY_S = 2.0
+_RATE_LIMIT_MAX_ATTEMPTS = 5
+
+
+def _rate_limit_verdict(exc: Exception) -> bool | None:
+    """Whether ``exc`` looks like Zenodo throttling: ``True``/``False`` if we can tell, else
+    ``None`` for genuinely ambiguous.
+
+    ``aiohttp.ClientResponseError`` with ``status == 429`` is unambiguous. fsspec's HTTP
+    backend, though, has been observed turning a throttled response into a bare
+    ``FileNotFoundError`` (see ``prospect_catalog.build_shard_index``'s docstring) —
+    indistinguishable, from this call site alone, from the file genuinely being gone from
+    Zenodo. ``None`` means exactly that: the caller must not assert either possibility as fact.
+    """
+    try:
+        from aiohttp import ClientResponseError
+    except ImportError:  # aiohttp is only pulled in via fsspec's http/s3 extras
+        ClientResponseError = None  # type: ignore[assignment]
+
+    if ClientResponseError is not None and isinstance(exc, ClientResponseError):
+        return exc.status == 429
+    if isinstance(exc, FileNotFoundError):
+        return None
+    return False
 
 
 @dataclass(frozen=True, slots=True)
@@ -431,13 +460,54 @@ class ProspectSource:
         return pd.concat(frames, ignore_index=True)
 
     def _open_remote_zip(self, zip_filename: str) -> zipfile.ZipFile:
-        """Open the record's zip as a seekable remote file (range requests), or local if cached."""
+        """Open the record's zip as a seekable remote file (range requests), or local if cached.
+
+        Constructing ``zipfile.ZipFile`` over the remote stream reads the central directory,
+        itself a burst of range requests, and a run that opens many zips back to back can trip
+        Zenodo's rate limiter well before any single zip finishes reading — a real 19-shard,
+        5-pool run died here with an explicit ``429 TOO MANY REQUESTS``. So this retries with
+        exponential backoff (see ``_RATE_LIMIT_DELAY_S`` / ``_RATE_LIMIT_MAX_ATTEMPTS``) on
+        both shapes Zenodo throttling is known to take — an explicit 429 and the
+        ``FileNotFoundError`` fsspec sometimes substitutes for it — capped at a few attempts.
+        It never retries an unrelated failure (a genuine 404, a bad zip, ...) and never retries
+        forever: once attempts are exhausted it raises a named error stating plainly that this
+        may be Zenodo throttling and that the local cache tier is likely already partially
+        populated, so re-running the same job resumes rather than repeats the cost that failed.
+        """
         local = self.cache._local_path(f"zenodo/{self.record_id}/{zip_filename}")
         if os.path.exists(local):
             return zipfile.ZipFile(local)
         entry = self._catalog.get(zip_filename)
         url = entry["url"] if entry else self.zenodo.file_url(zip_filename)
-        return zipfile.ZipFile(fsspec.open(url, "rb").open())
+
+        last_exc: Exception | None = None
+        ambiguous = False
+        for attempt in range(1, _RATE_LIMIT_MAX_ATTEMPTS + 1):
+            try:
+                return zipfile.ZipFile(fsspec.open(url, "rb").open())
+            except Exception as exc:  # noqa: BLE001 - narrowed by _rate_limit_verdict below
+                verdict = _rate_limit_verdict(exc)
+                if verdict is False:
+                    raise  # not a rate-limit shape at all: don't mask a different failure
+                last_exc, ambiguous = exc, verdict is None
+                if attempt == _RATE_LIMIT_MAX_ATTEMPTS:
+                    break
+                time.sleep(_RATE_LIMIT_DELAY_S * 2**attempt)
+
+        hedge = (
+            "fsspec surfaced this as FileNotFoundError, a shape Zenodo throttling is known to "
+            "produce -- but a genuinely missing file looks identical, so this cannot be told "
+            "apart from a real 404 from here"
+            if ambiguous
+            else "Zenodo returned 429 TOO MANY REQUESTS"
+        )
+        raise RuntimeError(
+            f"could not open {zip_filename!r} (record {self.record_id}) after "
+            f"{_RATE_LIMIT_MAX_ATTEMPTS} attempts: {hedge}. The local cache tier is likely "
+            "partially populated from shards that already succeeded before this failure; "
+            "re-running this job resumes from there instead of repeating the cost that failed. "
+            f"Underlying error: {type(last_exc).__name__}: {last_exc}"
+        ) from last_exc
 
     def to_labels(
         self, meta_df: pd.DataFrame, ann_df: pd.DataFrame, split: SplitConfig | None = None

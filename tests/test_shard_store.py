@@ -13,6 +13,7 @@ from pepdistill.data.prospect import RECORDS, ProspectSource
 from pepdistill.data.shard_store import (
     _read_raw_file_column,
     extract_shard,
+    extract_shards,
     select_members,
     shard_raw_files,
 )
@@ -115,3 +116,85 @@ def test_extract_is_idempotent_and_cached(tmp_path):
     mtime = os.path.getmtime(first)
     second = extract_shard(src, ZIP_NAME, member)
     assert first == second and os.path.getmtime(second) == mtime
+
+
+def _seed_zip_n(tmp_path, n: int):
+    """Like ``_seed_zip`` but with ``n`` distinct single-raw-file members, for batch tests
+    that care about member *count* (opens-per-batch) rather than the third-pool multi-raw-file
+    shape ``_seed_zip`` pins."""
+    root = tmp_path / "local" / "zenodo" / RECORDS["prospect"]
+    os.makedirs(root, exist_ok=True)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for i in range(n):
+            b = io.BytesIO()
+            _frag_frame([(f"raw_{i}", i)]).to_parquet(b)
+            z.writestr(f"TUM_third_pool/shard_{i}_annotation.parquet", b.getvalue())
+    (root / ZIP_NAME).write_bytes(buf.getvalue())
+    return FileCache([str(tmp_path / "local")], write_through=False)
+
+
+def _count_zip_opens(monkeypatch):
+    """Monkeypatch ``ProspectSource._open_remote_zip`` to count calls, real behavior kept."""
+    calls = {"n": 0}
+    orig = ProspectSource._open_remote_zip
+
+    def counting(self, zip_filename):
+        calls["n"] += 1
+        return orig(self, zip_filename)
+
+    monkeypatch.setattr(ProspectSource, "_open_remote_zip", counting)
+    return calls
+
+
+def test_extract_shards_returns_paths_in_order_and_readable(tmp_path):
+    src = ProspectSource("prospect", cache=_seed_zip_n(tmp_path, 3))
+    members = select_members(src, ZIP_NAME, [0, 1, 2])
+    paths = extract_shards(src, ZIP_NAME, members)
+    assert len(paths) == 3
+    for i, p in enumerate(paths):
+        assert os.path.exists(p)
+        assert list(pd.read_parquet(p).scan_number) == [i]
+
+
+def test_extract_shards_opens_zip_at_most_once_for_a_cold_batch(tmp_path, monkeypatch):
+    """The point of extract_shards: N shards must not cost N zip opens.
+
+    A cold 3-member batch used to open the remote zip 4 times through extract_shard (one
+    central-directory read via select_members plus one full re-open per shard) -- enough opens
+    in a row, at ~10 shards per real source, to trip Zenodo's rate limiter on its own.
+    """
+    src = ProspectSource("prospect", cache=_seed_zip_n(tmp_path, 3))
+    members = select_members(src, ZIP_NAME, [0, 1, 2])
+
+    calls = _count_zip_opens(monkeypatch)
+    paths = extract_shards(src, ZIP_NAME, members)
+
+    assert calls["n"] == 1
+    assert len(paths) == 3
+
+
+def test_extract_shards_zero_opens_when_everything_cached(tmp_path, monkeypatch):
+    """A fully-warm batch must make ZERO network requests -- what makes a retry cheap."""
+    src = ProspectSource("prospect", cache=_seed_zip_n(tmp_path, 3))
+    members = select_members(src, ZIP_NAME, [0, 1, 2])
+    extract_shards(src, ZIP_NAME, members)  # warm every member
+
+    calls = _count_zip_opens(monkeypatch)
+    paths = extract_shards(src, ZIP_NAME, members)
+
+    assert calls["n"] == 0
+    assert len(paths) == 3
+
+
+def test_extract_shards_partial_cache_extracts_only_missing(tmp_path, monkeypatch):
+    src = ProspectSource("prospect", cache=_seed_zip_n(tmp_path, 3))
+    members = select_members(src, ZIP_NAME, [0, 1, 2])
+    extract_shard(src, ZIP_NAME, members[1])  # pre-warm only the middle member
+
+    calls = _count_zip_opens(monkeypatch)
+    paths = extract_shards(src, ZIP_NAME, members)
+
+    assert calls["n"] == 1  # one open covers both still-missing members
+    for i, p in enumerate(paths):
+        assert list(pd.read_parquet(p).scan_number) == [i]

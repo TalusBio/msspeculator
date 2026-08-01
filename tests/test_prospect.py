@@ -377,6 +377,136 @@ def test_annotation_shard_info_reports_names_and_sizes(tmp_path, monkeypatch):
     assert src.annotation_shards("pool.zip") == [i.name for i in infos]
 
 
+# ZIP_NAME below must be a real "prospect"-record catalog entry so _open_remote_zip resolves a
+# URL from the checked-in catalog and never calls the live ZenodoRecord fallback (network).
+_RATE_LIMIT_ZIP = "TUM_third_pool.zip"
+
+
+class _FakeRequestInfo:
+    """Just enough of aiohttp's RequestInfo for ClientResponseError.__str__ to not blow up."""
+
+    real_url = "https://zenodo.org/api/records/6602020/files/TUM_third_pool.zip/content"
+
+
+def _make_429():
+    from aiohttp import ClientResponseError
+
+    return ClientResponseError(
+        request_info=_FakeRequestInfo(), history=(), status=429, message="TOO MANY REQUESTS"
+    )
+
+
+def _zip_bytes():
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("a.parquet", b"x")
+    return buf.getvalue()
+
+
+class _FakeOpenFile:
+    def __init__(self, ok: bool, exc: Exception | None):
+        self._ok, self._exc = ok, exc
+
+    def open(self):
+        if not self._ok:
+            raise self._exc
+        return io.BytesIO(_zip_bytes())
+
+
+def _rate_limit_src(tmp_path):
+    cache = FileCache([str(tmp_path / "local")], write_through=False)
+    return ProspectSource("prospect", cache=cache)
+
+
+def test_open_remote_zip_retries_429_then_succeeds(tmp_path, monkeypatch):
+    """A live run died here with an explicit 429; retrying with backoff must ride it out."""
+    src = _rate_limit_src(tmp_path)
+    calls = {"n": 0}
+
+    def fake_open(url, mode):
+        calls["n"] += 1
+        return _FakeOpenFile(ok=calls["n"] >= 3, exc=_make_429())
+
+    monkeypatch.setattr("pepdistill.data.prospect.fsspec.open", fake_open)
+    monkeypatch.setattr("pepdistill.data.prospect.time.sleep", lambda s: None)
+
+    z = src._open_remote_zip(_RATE_LIMIT_ZIP)
+    assert z.namelist() == ["a.parquet"]
+    assert calls["n"] == 3
+
+
+def test_open_remote_zip_retries_filenotfounderror_then_succeeds(tmp_path, monkeypatch):
+    """fsspec sometimes disguises the same Zenodo throttling as FileNotFoundError."""
+    src = _rate_limit_src(tmp_path)
+    calls = {"n": 0}
+
+    def fake_open(url, mode):
+        calls["n"] += 1
+        return _FakeOpenFile(ok=calls["n"] >= 2, exc=FileNotFoundError(url))
+
+    monkeypatch.setattr("pepdistill.data.prospect.fsspec.open", fake_open)
+    monkeypatch.setattr("pepdistill.data.prospect.time.sleep", lambda s: None)
+
+    z = src._open_remote_zip(_RATE_LIMIT_ZIP)
+    assert z.namelist() == ["a.parquet"]
+    assert calls["n"] == 2
+
+
+def test_open_remote_zip_names_rate_limiting_after_exhausting_429_retries(tmp_path, monkeypatch):
+    src = _rate_limit_src(tmp_path)
+
+    def fake_open(url, mode):
+        return _FakeOpenFile(ok=False, exc=_make_429())
+
+    monkeypatch.setattr("pepdistill.data.prospect.fsspec.open", fake_open)
+    sleeps = []
+    monkeypatch.setattr("pepdistill.data.prospect.time.sleep", lambda s: sleeps.append(s))
+
+    with pytest.raises(RuntimeError, match="429") as exc_info:
+        src._open_remote_zip(_RATE_LIMIT_ZIP)
+    msg = str(exc_info.value)
+    assert "partially populated" in msg
+    assert "resumes" in msg
+    assert len(sleeps) == 4  # 5 attempts, backoff between each but not after the last
+
+
+def test_open_remote_zip_hedges_when_filenotfounderror_is_ambiguous(tmp_path, monkeypatch):
+    """Cannot tell a real 404 from disguised throttling -- the error must say so, not guess."""
+    src = _rate_limit_src(tmp_path)
+
+    def fake_open(url, mode):
+        return _FakeOpenFile(ok=False, exc=FileNotFoundError(url))
+
+    monkeypatch.setattr("pepdistill.data.prospect.fsspec.open", fake_open)
+    monkeypatch.setattr("pepdistill.data.prospect.time.sleep", lambda s: None)
+
+    with pytest.raises(RuntimeError, match="cannot be told apart") as exc_info:
+        src._open_remote_zip(_RATE_LIMIT_ZIP)
+    msg = str(exc_info.value)
+    assert "partially populated" in msg
+    assert "429" not in msg  # must not claim certainty it doesn't have
+
+
+def test_open_remote_zip_does_not_retry_unrelated_errors(tmp_path, monkeypatch):
+    """A genuinely different failure (bad zip, etc.) must surface immediately, not be masked
+    by six rounds of rate-limit backoff."""
+    src = _rate_limit_src(tmp_path)
+    calls = {"n": 0}
+
+    def fake_open(url, mode):
+        calls["n"] += 1
+        return _FakeOpenFile(ok=False, exc=ValueError("not a rate-limit shape"))
+
+    monkeypatch.setattr("pepdistill.data.prospect.fsspec.open", fake_open)
+    monkeypatch.setattr(
+        "pepdistill.data.prospect.time.sleep", lambda s: (_ for _ in ()).throw(AssertionError)
+    )
+
+    with pytest.raises(ValueError, match="not a rate-limit shape"):
+        src._open_remote_zip(_RATE_LIMIT_ZIP)
+    assert calls["n"] == 1
+
+
 def _index_for(peptide, charge=2, irt=50.0, raw_rt=5.0, split="train"):
     idx = MetaIndex()
     idx.by_key[("RUN_A", 7)] = SpectrumMeta(

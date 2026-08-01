@@ -40,8 +40,15 @@ class FileCache:
     def _local_path(self, key: str) -> str:
         return f"{self._local_root}/{key}"
 
-    def resolve(self, key: str, origin: Callable[[str], None]) -> str:
-        """Return a local path for ``key``, fetching/promoting through the tiers as needed."""
+    def probe(self, key: str) -> str | None:
+        """Local path for ``key`` if resolvable WITHOUT an origin call, else ``None``.
+
+        Checks local first, then promotes from the first remote tier that has it — the same
+        two steps ``resolve`` takes before it would fall back to origin. Split out so a caller
+        that is about to make an expensive origin call spanning several keys at once (e.g.
+        opening one remote zip to extract several members) can first find out, for free, which
+        keys need that call at all and which are already served.
+        """
         local = self._local_path(key)
         if self._local_fs.exists(local):
             return local
@@ -56,12 +63,22 @@ class FileCache:
                     return local
             except Exception:  # unreachable/unauthorized tier — skip, try the next
                 continue
+        return None
 
-        # Full miss: origin writes straight to a temp file, then atomically moves into local.
+    def store(self, key: str, write: Callable[[str], None]) -> str:
+        """Atomically materialize ``key`` locally via ``write``, then promote to remote tiers.
+
+        ``write`` gets a temp path to write to; on success it is moved into place with
+        ``os.replace`` (atomic on the same filesystem), so a crash or exception mid-write
+        cannot leave a truncated file at ``key``'s local path for a later reader to trust. On
+        failure the temp file is removed and the exception propagates — no partial file, no
+        swallowed error.
+        """
+        local = self._local_path(key)
         fd, tmp = tempfile.mkstemp(dir=self._local_root)
         os.close(fd)
         try:
-            origin(tmp)
+            write(tmp)
             os.replace(tmp, local)
         except BaseException:
             if os.path.exists(tmp):
@@ -71,6 +88,14 @@ class FileCache:
         if self.write_through:
             self._populate_remote(key, local)
         return local
+
+    def resolve(self, key: str, origin: Callable[[str], None]) -> str:
+        """Return a local path for ``key``, fetching/promoting through the tiers as needed."""
+        cached = self.probe(key)
+        if cached is not None:
+            return cached
+        # Full miss: origin writes straight to a temp file, then atomically moves into local.
+        return self.store(key, origin)
 
     def _populate_remote(self, key: str, local: str) -> None:
         """Best-effort upload of a freshly-fetched file to the writable remote tiers."""
