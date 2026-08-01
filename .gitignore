@@ -21,3 +21,6 @@ rust/target/
 docs/
 runs/*
 !runs/*.toml
+
+# subagent-driven-development scratch (ledger, briefs, review packages)
+.superpowers/
