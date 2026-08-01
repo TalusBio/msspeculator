@@ -425,11 +425,12 @@ def test_decode_fragments_max_collapses_duplicate_cells():
     frag = pd.DataFrame(
         {
             "raw_file": ["RUN_A"] * 3, "scan_number": [7, 7, 7], "ion_type": ["b", "b", "b"],
-            "no": [1, 1, 1], "charge": [1, 1, 1], "intensity": [0.9, 0.2, 0.4],
+            "no": [1, 1, 1], "charge": [1, 1, 1], "intensity": [0.4, 0.9, 0.2],
         }
     )
     real, _ = decode_fragments(idx, frag, ProspectSchema())
-    # max, not first-wins and not last-wins: 0.9 is neither the first nor the last row.
+    # Winner (0.9) is interior and differs from first (0.4), last (0.2) and sum (1.5), so
+    # max is the only aggregation that passes.
     assert real.labels[0].ms2[0, 0] == pytest.approx(0.9)
 
 
