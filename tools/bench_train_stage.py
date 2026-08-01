@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import resource
+import sys
 import time
 
 from pepdistill.distill.pipeline import RunConfig, _build_train_stage, _TRAIN_SPLITS
@@ -22,11 +23,16 @@ from pepdistill.distill.real_stream import StreamingRealDataset
 from pepdistill.models.context import MSContextEncoder
 from pepdistill.models.registry import build_student
 
+# ru_maxrss units are a platform fact, not a function of the value: always bytes on macOS,
+# always KiB on Linux. Dispatching on the magnitude of `raw` instead (e.g. `raw > 1 << 30`) is
+# wrong on macOS for any process under ~1 GB, and reports ~1000x too high. Do not "simplify"
+# this back into a magnitude check.
+_RSS_DIV = 1e6 if sys.platform == "darwin" else 1e3
+
 
 def peak_rss_mb() -> float:
-    """Peak RSS. Linux reports KiB, macOS bytes."""
-    raw = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-    return raw / 1e6 if raw > 1 << 30 else raw / 1e3
+    """Peak RSS in MB. macOS reports ru_maxrss in bytes, Linux in KiB."""
+    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / _RSS_DIV
 
 
 def main() -> None:
