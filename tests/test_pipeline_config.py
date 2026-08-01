@@ -109,3 +109,25 @@ def test_existing_index_claiming_the_neutral_row_raises():
 def test_existing_index_with_duplicate_rows_raises():
     with pytest.raises(ValueError, match="duplicate"):
         resolve_dataset_index([_src("gamma")], existing={"alpha": 1, "beta": 1})
+
+
+def test_enabled_train_with_no_sources_raises_at_parse_time(tmp_path):
+    """Names the actual cause. This used to reach _build_train_stage and be reported as
+    'every [[train.sources]] is val_only', which is a different (and wrong) diagnosis."""
+    with pytest.raises(ValueError, match="declares no"):
+        RunConfig.from_toml(_write(tmp_path, BASE))
+
+
+def test_all_sources_val_only_raises_at_parse_time(tmp_path):
+    """Decidable from the config alone, so it must not wait until every shard has been
+    downloaded and extracted — on a real pool that is multiple GB spent on a config error."""
+    text = TWO_SOURCES.replace('dataset = "third_pool"', 'dataset = "third_pool"\nval_only = true')
+    with pytest.raises(ValueError, match="every \\[\\[train.sources\\]\\] is val_only"):
+        RunConfig.from_toml(_write(tmp_path, text))
+
+
+def test_disabled_train_may_declare_no_sources(tmp_path):
+    """The checks are about a stage that will actually run; [train] enabled = false is the
+    ordinary pretrain-only config and must stay parseable."""
+    cfg = RunConfig.from_toml(_write(tmp_path, BASE.replace("enabled = true", "enabled = false")))
+    assert cfg.train.sources == []

@@ -177,6 +177,11 @@ _POOL_B = [
 _IRT = {"train": 10.0, "test": 500.0, "val": 200.0}
 _POOL_B_IRT_BASE = 900.0
 
+# The splits the real-data stage trains on (val is the only holdout), mirroring
+# pipeline._TRAIN_SPLITS. Spelled out here rather than imported so the test states the
+# contract independently instead of agreeing with the implementation by construction.
+_TRAINED = ("train", "test")
+
 
 def _pool_frames(raw_file, entries, first_scan, irt_of):
     """(meta rows, fragment rows) for one raw file."""
@@ -208,18 +213,18 @@ def _pool_frames(raw_file, entries, first_scan, irt_of):
     return meta, frags
 
 
-def _seed_two_synthetic_pools(tmp_path, monkeypatch):
+def _seed_two_synthetic_pools(tmp_path, monkeypatch, pool_b=_POOL_B):
     """Seed the cache with one meta parquet and a two-shard annotation zip.
 
-    Returns what the run must produce from it: the iRT mean of the RT affine (poolA's train
-    rows and nothing else) and the number of examples the train stream must yield (poolA's
-    train AND test rows; poolB is val_only)."""
+    Returns what the run must produce from it: the iRT mean the RT affine must take, how many
+    examples the train stream must yield, and the ChromRunbook row each val example must
+    carry. ``pool_b`` overrides the val_only pool's contents."""
     monkeypatch.setenv("PEPDISTILL_CACHE", str(tmp_path))
     root = tmp_path / "zenodo" / RECORDS["prospect"]
     os.makedirs(root, exist_ok=True)
 
     meta_a, frags_a = _pool_frames(_RUN_A, _POOL_A, 1, lambda i, s: _IRT[s] + i)
-    meta_b, frags_b = _pool_frames(_RUN_B, _POOL_B, 100, lambda i, s: _POOL_B_IRT_BASE + i)
+    meta_b, frags_b = _pool_frames(_RUN_B, pool_b, 100, lambda i, s: _POOL_B_IRT_BASE + i)
     pd.DataFrame(meta_a + meta_b).to_parquet(root / _POOL_META)
 
     cols = ["raw_file", "scan_number", "ion_type", "no", "charge", "intensity", "neutral_loss"]
@@ -234,25 +239,60 @@ def _seed_two_synthetic_pools(tmp_path, monkeypatch):
             z.writestr(member, b.getvalue())
     (root / _POOL_ZIP).write_bytes(buf.getvalue())
 
-    train_irt = [m["indexed_retention_time"] for m, (_, s) in zip(meta_a, _POOL_A) if s == "train"]
-    assert train_irt, "fixture must leave poolA some train rows"
-    assert any(s == "val" for _, s in _POOL_B), "the val_only pool must own some val rows"
+    # The RT affine's population is what training sees: poolA's train AND test rows.
+    seen = [m["indexed_retention_time"] for m, (_, s) in zip(meta_a, _POOL_A) if s in _TRAINED]
+    assert any(s == "train" for _, s in _POOL_A), "fixture must leave poolA some train rows"
+    assert any(s == "test" for _, s in _POOL_A), "fixture must exercise the test split too"
     return {
-        "rt_mean": sum(train_irt) / len(train_irt),
-        "n_train": sum(1 for _, s in _POOL_A if s in ("train", "test")),
-        "n_val": sum(1 for _, s in _POOL_A + _POOL_B if s == "val"),
+        "rt_mean": sum(seen) / len(seen),
+        "n_train": len(seen),
+        # Which ChromRunbook row each val example must carry — row 1 is poolA, row 2 is poolB.
+        "val_dataset_id": (
+            {seq: 1 for seq, s in _POOL_A if s == "val"}
+            | {seq: 2 for seq, s in pool_b if s == "val"}
+        ),
     }
 
 
-def test_two_source_streaming_train_stage_runs_end_to_end(tmp_path, monkeypatch):
-    """Two synthetic pools, one of them val_only, through the real train stage."""
-    expected = _seed_two_synthetic_pools(tmp_path, monkeypatch)
-    out = tmp_path / "out"
+def _spy_on_train_stage(monkeypatch):
+    """Record the val examples the stage built and the order of the two ordering-sensitive
+    calls (global seeding, then ChromRunbook construction). Returns (val_examples, events);
+    both are filled in by the time run_pipeline returns."""
+    from pepdistill.distill import pipeline
+
+    val_examples: list = []
+    events: list[tuple[str, object]] = []
+
+    real_collect = pipeline.collect_val_examples
+    real_runbook = pipeline.ChromRunbook
+    real_seed = pipeline.L.seed_everything
+
+    def collect(*a, **kw):
+        val_examples.extend(real_collect(*a, **kw))
+        return val_examples
+
+    def runbook(**kw):
+        events.append(("runbook", None))
+        return real_runbook(**kw)
+
+    def seed(value, **kw):
+        events.append(("seed", value))
+        return real_seed(value, **kw)
+
+    monkeypatch.setattr(pipeline, "collect_val_examples", collect)
+    monkeypatch.setattr(pipeline, "ChromRunbook", runbook)
+    monkeypatch.setattr(pipeline.L, "seed_everything", seed)
+    return val_examples, events
+
+
+def _two_pool_toml(tmp_path):
+    """poolA trains, poolB is val_only; one shard each out of the same synthetic zip."""
     toml = tmp_path / "run.toml"
     toml.write_text(f"""
-out = "{out}"
+out = "{tmp_path / 'out'}"
 preset = "small"
 device = "cpu"
+seed = 7
 
 [pretrain]
 enabled = false
@@ -278,8 +318,17 @@ shards = [1]
 dataset = "poolB"
 val_only = true
 """)
+    return toml
+
+
+def test_two_source_streaming_train_stage_runs_end_to_end(tmp_path, monkeypatch):
+    """Two synthetic pools, one of them val_only, through the real train stage."""
+    expected = _seed_two_synthetic_pools(tmp_path, monkeypatch)
+    val_examples, events = _spy_on_train_stage(monkeypatch)
+    out = tmp_path / "out"
+
     logs: list[str] = []
-    summary = run_pipeline(RunConfig.from_toml(toml), log=logs.append)
+    summary = run_pipeline(RunConfig.from_toml(_two_pool_toml(tmp_path)), log=logs.append)
 
     assert summary["dataset_index"] == {"poolA": 1, "poolB": 2}
     assert "train" in summary
@@ -290,11 +339,37 @@ val_only = true
     # example the epoch actually saw (every fixture row carries a collision energy).
     assert summary["train"]["train_energy_present"] == expected["n_train"]
     assert summary["train"]["train_energy_masked"] == 0
-    # Val winners come from BOTH pools, one per (dataset, modified_sequence, charge).
-    assert f"val {expected['n_val']} examples" in "\n".join(logs)
 
-    # The RT affine is established from the non-val_only pool's TRAIN rows only: poolB is
-    # val_only (iRT ~900) and poolA's test row sits at 500, so either leaking in would move
-    # the mean far outside this tolerance.
+    # Every val example carries ITS OWN source's ChromRunbook row. summary["dataset_index"]
+    # above only proves the config-derived name -> row map; this proves the shards were
+    # actually stamped with it. Collapsing both pools onto one row would leave the artifact
+    # advertising row 2 as poolB while poolB was evaluated on poolA's chromatography.
+    assert 2 in expected["val_dataset_id"].values(), "the val_only pool must own some val rows"
+    assert {
+        e.precursor.peptide.sequence: e.dataset_id for e in val_examples
+    } == expected["val_dataset_id"]
+    assert f"val {len(expected['val_dataset_id'])} examples" in "\n".join(logs)
+
+    # Global seeding is the caller's job since fit_realspeclib_datasets stopped doing it, and
+    # it has to happen before the context modules draw from the RNG.
+    assert events == [("seed", 7), ("runbook", None)]
+
+    # The RT affine is estimated over what training sees — poolA's train AND test rows —
+    # and nothing else. poolB is val_only at iRT ~900, so leaking it in moves the mean far
+    # outside this tolerance, as does dropping the test row at 508.
     model = load_checkpoint(out / "model.ckpt")
     assert float(model.rt_mean) == pytest.approx(expected["rt_mean"])
+
+
+def test_val_only_source_with_no_val_rows_raises(tmp_path, monkeypatch):
+    """A val_only pool that owns nothing in val is a no-op that does not look like one.
+
+    It is still downloaded, extracted and indexed, and it still consumes a ChromRunbook row
+    that gets baked into the exported artifact — while feeding neither train nor val. The
+    check is meta-only, so it fires before a single fragment is read.
+    """
+    all_train = [(seq, s) for seq, s in _POOL_B if s == "train"]
+    assert all_train, "fixture needs poolB entries that hash to train"
+    _seed_two_synthetic_pools(tmp_path, monkeypatch, pool_b=all_train)
+    with pytest.raises(ValueError, match="no val-hashed sequences"):
+        run_pipeline(RunConfig.from_toml(_two_pool_toml(tmp_path)), log=lambda *_: None)

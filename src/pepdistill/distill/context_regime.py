@@ -282,11 +282,13 @@ def establish_rt_norm(model: StudentModel, stats: list[tuple[int, float, float]]
     """Set the global RT affine from combined ``(n, sum, sumsq)`` iRT statistics.
 
     Sufficient statistics rather than an array, so several sources combine by addition and
-    nothing has to be held. The population is the meta index's train rows — pre-decode, so it
-    includes spectra that later drop out for having no surviving b/y fragments or fewer than
-    two residues. Near-exact rather than exact, and deliberately preferred over the
-    alternatives (Welford over the stream, or estimating from the first shard), both of which
-    would be strictly worse for a value the set-once rule makes permanent for the run.
+    nothing has to be held. The population must be exactly what training sees — for this
+    pipeline the train AND test splits, since val is the only holdout — and it is counted
+    pre-decode, so it includes spectra that later drop out for having no surviving b/y
+    fragments or fewer than two residues. Near-exact rather than exact, and deliberately
+    preferred over the alternatives (Welford over the stream, or estimating from the first
+    shard), both of which would be strictly worse for a value the set-once rule makes
+    permanent for the run.
 
     Returns whether it set anything: a pretrain->train curriculum inherits the frame the
     pretrain stage established and must not recalibrate a trained head mid-stream.
@@ -296,8 +298,8 @@ def establish_rt_norm(model: StudentModel, stats: list[tuple[int, float, float]]
     n = sum(c for c, _, _ in stats)
     if n == 0:
         raise ValueError(
-            "no train examples to establish the RT affine from; every source is val_only or "
-            "every sequence hashed to val/test"
+            "no examples to establish the RT affine from; every source is val_only or every "
+            "one of their sequences hashed to val"
         )
     total = sum(t for _, t, _ in stats)
     sumsq = sum(q for _, _, q in stats)

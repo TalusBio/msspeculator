@@ -213,9 +213,9 @@ def test_does_not_re_establish_an_existing_affine():
     assert float(model.rt_mean) == pytest.approx(1.0)
 
 
-def test_zero_train_rows_raises():
+def test_zero_rows_raises():
     model = build_student("small")
-    with pytest.raises(ValueError, match="no train examples"):
+    with pytest.raises(ValueError, match="no examples to establish the RT affine"):
         establish_rt_norm(model, [(0, 0.0, 0.0)])
 
 

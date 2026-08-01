@@ -126,8 +126,38 @@ class TrainCfg:
     shuffle_buffer: int = 50_000
 
 
+# What the real-data stage trains on — and therefore the population the RT affine is estimated
+# from. ONE constant for both, because they must not drift: the affine is set once and is
+# permanent for the run, so a narrower population is a silent, unrecoverable change of scale.
+#
+# Test is in here deliberately. The usual "normalise on train only" rule exists to keep held-out
+# data out of a preprocessing statistic, and that rationale does not apply: this pipeline
+# deliberately TRAINS ON the test split (val is the only holdout), so excluding it would not
+# avoid a leak, it would just be a smaller sample of the same population.
+_TRAIN_SPLITS = frozenset({"train", "test"})
+
 # Pool identity used to live directly under [train]; it is per-source now.
 _FLAT_POOL_KEYS = ("record", "meta", "zip", "shards", "dataset", "instrument")
+
+
+def _check_train_sources(cfg: TrainCfg) -> None:
+    """Reject an enabled train stage that cannot train, naming which of the two causes it is.
+
+    Both are decidable from the config alone, so they are checked at parse time — otherwise
+    they surface only after every shard has been downloaded and extracted, which on a real pool
+    is multiple GB spent to discover a typo. Called again from :func:`_build_train_stage`
+    because a :class:`RunConfig` assembled in Python never passes through :func:`_train_cfg`.
+    """
+    if not cfg.sources:
+        raise ValueError(
+            "[train] is enabled but declares no [[train.sources]]; add one entry per pool "
+            "with record/meta/zip/shards (+ dataset, instrument, val_only)"
+        )
+    if all(s.val_only for s in cfg.sources):
+        raise ValueError(
+            f"every [[train.sources]] is val_only ({[s.zip for s in cfg.sources]}); there is "
+            "nothing to train on"
+        )
 
 
 def _train_cfg(raw: dict) -> TrainCfg:
@@ -150,7 +180,10 @@ def _train_cfg(raw: dict) -> TrainCfg:
             )
     if "loss_weights" in d:
         d["loss_weights"] = tuple(d["loss_weights"])
-    return TrainCfg(sources=sources, **d)
+    cfg = TrainCfg(sources=sources, **d)
+    if cfg.enabled:
+        _check_train_sources(cfg)
+    return cfg
 
 
 def resolve_dataset_index(
@@ -289,6 +322,7 @@ def _build_train_stage(cfg: RunConfig, log):
     by :class:`~pepdistill.distill.real_stream.StreamingRealDataset`, so the resident cost is
     the meta index, not the spectra.
     """
+    _check_train_sources(cfg.train)
     dataset_index = resolve_dataset_index(cfg.train.sources)
     names_by_row = {row: name for name, row in dataset_index.items()}
     train_shards: list[ShardSpec] = []
@@ -302,7 +336,8 @@ def _build_train_stage(cfg: RunConfig, log):
         # (a third-pool shard holds three, none matching the member stem).
         paths = [extract_shard(src, s.zip, m) for m in members]
         per_shard = [tuple(shard_raw_files(p)) for p in paths]
-        index = build_meta_index(src, s.meta, sorted({r for rs in per_shard for r in rs}))
+        raw_files = sorted({r for rs in per_shard for r in rs})
+        index = build_meta_index(src, s.meta, raw_files)
         indices.append(index)
         row = dataset_index[s.dataset or "default"]
         specs = [
@@ -311,16 +346,30 @@ def _build_train_stage(cfg: RunConfig, log):
         ]
         val_shards.extend(specs)
         if s.val_only:
+            # A val_only source with nothing in val is a no-op that does not look like one: it
+            # is still downloaded, extracted, indexed, and still burns a ChromRunbook row that
+            # gets baked into the exported artifact — while contributing to neither train nor
+            # val. The check is meta-only, so it costs nothing.
+            if not index.allowed_keys(raw_files, frozenset({"val"})):
+                raise ValueError(
+                    f"val_only source {s.zip} shards {s.shards} has no val-hashed sequences; "
+                    "it would contribute to neither train nor val"
+                )
             log(f"[train] {s.zip}: val_only, {len(specs)} shard(s) held out")
         else:
             train_shards.extend(specs)
             # val_only sources contribute nothing to the RT affine: it is established from the
-            # population training actually sees.
-            stats.append(index.irt_stats(frozenset({"train"})))
+            # population training actually sees, which is _TRAIN_SPLITS by construction.
+            stats.append(index.irt_stats(_TRAIN_SPLITS))
         log(f"[train] {s.zip}: {len(specs)} shard(s), dataset row {row}")
 
     if not train_shards:
-        raise ValueError("every [[train.sources]] is val_only; there is nothing to train on")
+        # Both config-level causes were rejected by _check_train_sources, so what is left is a
+        # non-val_only source that selected no shards at all.
+        raise ValueError(
+            f"no train shards from {[(s.zip, s.shards) for s in cfg.train.sources]}; every "
+            "non-val_only source resolved to zero shards"
+        )
 
     # One index across sources: keys are (raw_file, scan_number), which is globally unique,
     # so the union cannot collide.
@@ -392,6 +441,7 @@ def run_pipeline(cfg: RunConfig, log=print) -> dict:
     runbook = None
     dataset_index = None
     if cfg.train.enabled:
+        assert encoder is not None, "need_encoder covers cfg.train.enabled"
         # Seed before the runbook is built: fit_realspeclib_datasets deliberately does NOT seed
         # globally, so a second call there would reset the stream after the context modules had
         # already drawn from it.
@@ -399,14 +449,19 @@ def run_pipeline(cfg: RunConfig, log=print) -> dict:
         train_shards, val_shards, index, dataset_index, names_by_row, stats = _build_train_stage(
             cfg, log
         )
-        establish_rt_norm(model, stats)
+        # Whether the affine was set here or inherited is the difference between a cold start
+        # and a continued curriculum, for a value that is permanent once set — so say which.
+        if establish_rt_norm(model, stats):
+            log(f"[train] RT affine set: mean {float(model.rt_mean):.4g}, "
+                f"std {float(model.rt_std):.4g}")
+        else:
+            log("[train] RT affine inherited from an earlier stage; not recalibrated")
         runbook = ChromRunbook(n_datasets=len(dataset_index), context_dim=model.cfg.context_dim)
         train_ds = StreamingRealDataset(
             train_shards,
             index,
             encoder,
-            # train AND test: matches what the real-data stage has always trained on.
-            frozenset({"train", "test"}),
+            _TRAIN_SPLITS,
             seed=cfg.seed,
             shuffle_buffer=cfg.train.shuffle_buffer,
         )
