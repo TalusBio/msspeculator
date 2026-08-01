@@ -147,3 +147,124 @@ def test_collect_val_keeps_only_the_highest_andromeda_per_key(tmp_path):
     got = collect_val_examples([shard], idx, MSContextEncoder(context_dim=8), {1: "poolA"})
     assert len(got) == 1
     assert got[0].label.ms2.max() == pytest.approx(0.5)  # scan 1, not the brightest
+
+
+def _write_one_scan_shard(path, raw_file, intensity):
+    rows = [("b", ordinal, 1, intensity, "", 0, raw_file) for ordinal in (1, 2, 3, 4)]
+    df = pd.DataFrame(
+        rows,
+        columns=["ion_type", "no", "charge", "intensity", "neutral_loss",
+                 "scan_number", "raw_file"],
+    )
+    pq.write_table(pa.Table.from_pandas(df, preserve_index=False), path)
+    return path
+
+
+def test_collect_val_dedups_across_shards_of_the_same_dataset(tmp_path):
+    """Two shards (two raw files) of ONE dataset share a val dedup key. The winner must be
+    chosen across BOTH shards, not once per shard -- else the key emits twice."""
+    p_a = _write_one_scan_shard(str(tmp_path / "a.parquet"), "RUN_A", 0.2)
+    p_b = _write_one_scan_shard(str(tmp_path / "b.parquet"), "RUN_B", 0.7)
+
+    idx = MetaIndex()
+    idx.by_key[("RUN_A", 0)] = SpectrumMeta(
+        Peptide("PEPTIDEK", ()), 2, 50.0, 5.0, "val", "FTMS", "HCD", 28.0, 10.0
+    )
+    idx.by_key[("RUN_B", 0)] = SpectrumMeta(
+        Peptide("PEPTIDEK", ()), 2, 50.0, 5.0, "val", "FTMS", "HCD", 28.0, 99.0
+    )
+    shard_a = ShardSpec(path=p_a, raw_files=("RUN_A",), dataset_id=1, instrument="Lumos")
+    shard_b = ShardSpec(path=p_b, raw_files=("RUN_B",), dataset_id=1, instrument="Lumos")
+    got = collect_val_examples([shard_a, shard_b], idx, MSContextEncoder(context_dim=8),
+                                {1: "poolA"})
+    assert len(got) == 1
+    assert got[0].label.ms2.max() == pytest.approx(0.7)  # RUN_B: the higher-andromeda scan
+
+
+def test_collect_val_raises_for_an_unmapped_dataset_id(tmp_path):
+    shard = _shard(tmp_path, n_spectra=4)
+    with pytest.raises(KeyError, match="dataset_id"):
+        collect_val_examples([shard], _index(4, split="val"), MSContextEncoder(context_dim=8), {})
+
+
+def test_shard_whose_raw_files_match_no_meta_row_raises(tmp_path):
+    """raw_files that don't correspond to anything in the index at all -- the mistake of
+    deriving raw_files from the shard filename instead of shard_raw_files(path) -- must fail
+    loudly, distinct from a shard that's merely empty for the requested split."""
+    p = str(tmp_path / "shard.parquet")
+    _write_shard(p, n_spectra=4, row_group_size=3)
+    shard = ShardSpec(path=p, raw_files=("WRONG_RUN",), dataset_id=1, instrument="Lumos")
+    ds = StreamingRealDataset([shard], _index(4), MSContextEncoder(context_dim=8),
+                              frozenset({"train"}), shuffle_buffer=0)
+    with pytest.raises(ValueError, match="match no meta rows"):
+        list(ds.iter_examples(epoch=0))
+
+
+def test_shard_where_filtered_rows_never_scatter_to_a_spectrum_raises(tmp_path):
+    """Rows survive the fragment+split filter, but the peptide is too short to have any valid
+    fragment site, so decode_fragments returns zero examples from a non-empty frame -- the
+    ``not real.precursors`` branch, distinct from the ``not kept`` branch."""
+    p = str(tmp_path / "short.parquet")
+    df = pd.DataFrame({
+        "ion_type": ["b"], "no": [1], "charge": [1], "intensity": [1.0],
+        "neutral_loss": [""], "scan_number": [0], "raw_file": ["RUN_A"],
+    })
+    pq.write_table(pa.Table.from_pandas(df, preserve_index=False), p)
+    idx = MetaIndex()
+    idx.by_key[("RUN_A", 0)] = SpectrumMeta(
+        Peptide("P", ()), 2, 50.0, 5.0, "train", "FTMS", "HCD", 28.0, 100.0
+    )
+    shard = ShardSpec(path=p, raw_files=("RUN_A",), dataset_id=1, instrument="Lumos")
+    ds = StreamingRealDataset([shard], idx, MSContextEncoder(context_dim=8),
+                              frozenset({"train"}), shuffle_buffer=0)
+    with pytest.raises(ValueError, match="zero usable examples"):
+        list(ds.iter_examples(epoch=0))
+
+
+def test_batches_shuffle_false_is_sequential_not_just_epoch_pinned(tmp_path):
+    """shuffle=False must mean sequential order, not merely a pinned epoch: with the default
+    shuffle_buffer (50_000, far bigger than 10 examples) an unshuffled pass used to still
+    shuffle shard order and the buffer."""
+    shard = _shard(tmp_path, n_spectra=10)
+    ds = StreamingRealDataset([shard], _index(10), MSContextEncoder(context_dim=8),
+                              frozenset({"train"}))  # default shuffle_buffer=50_000
+    gen = torch.Generator().manual_seed(0)
+    batches = list(ds.batches(batch_size=10, shuffle=False, generator=gen))
+    got_rt = batches[0].raw_rt.tolist()
+    assert got_rt == sorted(got_rt)  # scan order 0..9 -> raw_rt is already increasing
+
+
+def test_per_spectrum_acquisition_factors_are_not_collapsed_to_one_value(tmp_path):
+    """Two scans in ONE raw file with different analyzer/fragmentation/energy must each surface
+    their OWN factors -- the defect Task 2 exists to fix. An implementation that resolved
+    acquisition factors once per raw file (e.g. from the first spectrum) would pass every other
+    test in this file but fail this one."""
+    p = str(tmp_path / "mixed.parquet")
+    rows = []
+    for scan in (0, 1):
+        for ordinal in (1, 2, 3, 4):
+            rows.append(("b", ordinal, 1, 1.0, "", scan, "RUN_A"))
+    pq.write_table(
+        pa.Table.from_pandas(
+            pd.DataFrame(rows, columns=["ion_type", "no", "charge", "intensity",
+                                        "neutral_loss", "scan_number", "raw_file"]),
+            preserve_index=False,
+        ),
+        p,
+    )
+    idx = MetaIndex()
+    idx.by_key[("RUN_A", 0)] = SpectrumMeta(
+        Peptide("PEPTIDEK", ()), 2, 50.0, 5.0, "train", "ITMS", "CID", 30.0, 100.0
+    )
+    idx.by_key[("RUN_A", 1)] = SpectrumMeta(
+        Peptide("PEPTIDEK", ()), 2, 51.0, 6.0, "train", "FTMS", "HCD", 28.0, 100.0
+    )
+    shard = ShardSpec(path=p, raw_files=("RUN_A",), dataset_id=1, instrument="Lumos")
+    ds = StreamingRealDataset([shard], idx, MSContextEncoder(context_dim=8),
+                              frozenset({"train"}), shuffle_buffer=0)
+    examples = sorted(ds.iter_examples(epoch=0), key=lambda e: e.raw_rt)
+    assert len(examples) == 2
+    e0, e1 = examples
+    assert e0.detector_id != e1.detector_id
+    assert e0.fragmentation_id != e1.fragmentation_id
+    assert e0.energy != e1.energy

@@ -1,7 +1,7 @@
 """Per-epoch streaming reader over extracted PROSPECT annotation shards.
 
 Train examples are never materialised. Each epoch walks the shards in a seeded order, reads
-each one row-group by row-group with a six-column projection, applies the fragment filter and
+each one row-group by row-group with a seven-column projection, applies the fragment filter and
 the split filter, reassembles spectra, and feeds a shuffle buffer.
 
 Two facts shape this:
@@ -9,7 +9,10 @@ Two facts shape this:
 - A spectrum's fragments can straddle a row-group boundary, so filtered rows are accumulated
   for a whole shard before the scatter runs. That accumulation is bounded: the filter keeps
   10-35% of rows depending on pool, and the projection drops the 81% of shard bytes that
-  ``experimental_mass``/``theoretical_mass``/``fragment_score`` occupy.
+  ``experimental_mass``/``theoretical_mass``/``fragment_score`` occupy. Reading is done
+  row-group by row-group via ``ParquetFile.read_row_group`` (not ``iter_batches``, whose default
+  batch size silently coalesces many row groups into one and would defeat the bounded-memory
+  point on a real multi-hundred-MB shard).
 - ``peptide_sequence`` is excluded from the projection even though the split filter is about
   sequences: it duplicates the meta's ``modified_sequence`` and costs 27% of the projected
   read. The filter keys on ``scan_number`` (0.3% of bytes) against a set from the meta index.
@@ -37,6 +40,11 @@ STREAM_COLUMNS: tuple[str, ...] = (
     "ion_type", "no", "charge", "intensity", "neutral_loss", "scan_number", "raw_file",
 )
 
+# The only values SpectrumMeta.split ever holds (see data/split.py's assign_split). Used to ask
+# "does this shard match ANY meta row at all, in any split" -- a question distinct from "does it
+# match the requested split" -- without reaching into MetaIndex.by_key directly.
+_ALL_SPLITS: frozenset[str] = frozenset({"train", "val", "test"})
+
 
 @dataclass(frozen=True, slots=True)
 class ShardSpec:
@@ -46,6 +54,13 @@ class ShardSpec:
     raw_files: tuple[str, ...]  # plural: a third-pool shard holds several (see shard_raw_files)
     dataset_id: int  # ChromRunbook row (0 reserved for neutral/iRT)
     instrument: str
+
+
+def _raise_zero_usable(shard_path: str, splits: frozenset[str]) -> None:
+    raise ValueError(
+        f"shard {shard_path!r} decoded to zero usable examples for splits "
+        f"{sorted(splits)}; a real shard always yields some, so this is a damaged export"
+    )
 
 
 def _examples_from_shard(
@@ -66,7 +81,19 @@ def _examples_from_shard(
     fragmentation modes and NCE within itself, so that assigned a fabricated factor to about
     half the spectra of a mixed run. Categorical ids are memoised per distinct value, so this
     costs a dict lookup per example, not an embedding lookup.
+
+    Raises if ``shard.raw_files`` matches no meta row in ANY split: that means the raw_files
+    were derived wrong (e.g. from the filename instead of ``shard_raw_files``) or the tuple is
+    empty, not that the shard is legitimately empty for the requested split. A shard that
+    matches meta rows but none in ``splits`` returns ``[]`` instead -- that emptiness is real.
     """
+    if not index.allowed_keys(list(shard.raw_files), _ALL_SPLITS):
+        raise ValueError(
+            f"shard {shard.path!r} raw_files {shard.raw_files!r} match no meta rows in any "
+            "split; raw_files was likely derived from the filename instead of "
+            "shard_raw_files(path), or is empty -- this shard is misconfigured, not merely "
+            "outside the requested split"
+        )
     allowed = index.allowed_keys(list(shard.raw_files), splits)
     if only_keys is not None:
         allowed &= only_keys
@@ -74,26 +101,20 @@ def _examples_from_shard(
         return []
     pf = pq.ParquetFile(shard.path)
     kept: list[pd.DataFrame] = []
-    for batch in pf.iter_batches(columns=list(STREAM_COLUMNS)):
-        df = batch.to_pandas()
+    for i in range(pf.num_row_groups):
+        df = pf.read_row_group(i, columns=list(STREAM_COLUMNS)).to_pandas()
         mask = fragment_filter_mask(df, schema)
         if mask.any():
             sub = df.loc[mask]
-            keys = list(zip(sub[schema.raw_file], sub[schema.scan_number]))
-            sub = sub.loc[[k in allowed for k in keys]]
+            midx = pd.MultiIndex.from_arrays([sub[schema.raw_file], sub[schema.scan_number]])
+            sub = sub.loc[midx.isin(allowed)]
             if not sub.empty:
                 kept.append(sub)
     if not kept:
-        raise ValueError(
-            f"shard {shard.path!r} decoded to zero usable examples for splits "
-            f"{sorted(splits)}; a real shard always yields some, so this is a damaged export"
-        )
+        _raise_zero_usable(shard.path, splits)
     real, keys = decode_fragments(index, pd.concat(kept, ignore_index=True), schema)
     if not real.precursors:
-        raise ValueError(
-            f"shard {shard.path!r} decoded to zero usable examples for splits "
-            f"{sorted(splits)}; a real shard always yields some, so this is a damaged export"
-        )
+        _raise_zero_usable(shard.path, splits)
 
     inst_id = encoder.instrument_id(shard.instrument)
     det_ids: dict[str, int] = {}
@@ -115,6 +136,16 @@ def _examples_from_shard(
             )
         )
     return out
+
+
+def _collate(examples: list[RealExample], generator: torch.Generator) -> RealBatch:
+    """Collate one already-sized chunk into a single :class:`RealBatch`.
+
+    Builds a throwaway :class:`RealSpeclibDataset` sized so its own ``batches`` emits exactly
+    one batch, and takes it. Not free (six numpy allocations per call), but it reuses the one
+    collate implementation instead of a second copy.
+    """
+    return next(RealSpeclibDataset(examples).batches(len(examples), False, generator))
 
 
 class StreamingRealDataset:
@@ -139,21 +170,30 @@ class StreamingRealDataset:
         self.shuffle_buffer = shuffle_buffer
         self.schema = schema or ProspectSchema()
 
-    def iter_examples(self, epoch: int) -> Iterator[RealExample]:
-        rng = random.Random(self.seed + epoch)
+    def iter_examples(self, epoch: int, shuffle: bool = True) -> Iterator[RealExample]:
+        """Walk every shard once. ``shuffle=False`` is sequential — shard order untouched and
+        the shuffle buffer disabled for this pass — regardless of the configured
+        ``shuffle_buffer``, matching every other dataset in ``distill/`` where ``shuffle=False``
+        means "in order" (an eval pass through ``BatchIterable(..., shuffle=False)`` relies on
+        this)."""
+        buf_size = self.shuffle_buffer if shuffle else 0
+        # hash(), not `seed + epoch`: addition makes (seed=0, epoch=5) and (seed=5, epoch=0)
+        # collide onto the same stream. hash() of an int tuple is stable across processes (only
+        # str/bytes hashing is salted by PYTHONHASHSEED), so this stays reproducible.
+        rng = random.Random(hash((self.seed, epoch)))
         order = list(self.shards)
-        if self.shuffle_buffer:
+        if buf_size:
             rng.shuffle(order)
         buf: list[RealExample] = []
         for shard in order:
             for ex in _examples_from_shard(
                 shard, self.index, self.encoder, self.splits, self.schema
             ):
-                if not self.shuffle_buffer:
+                if not buf_size:
                     yield ex
                     continue
                 buf.append(ex)
-                if len(buf) >= self.shuffle_buffer:
+                if len(buf) >= buf_size:
                     j = rng.randrange(len(buf))
                     buf[j], buf[-1] = buf[-1], buf[j]
                     yield buf.pop()
@@ -165,20 +205,21 @@ class StreamingRealDataset:
     ) -> Iterator[RealBatch]:
         """Collate the example stream into :class:`RealBatch`. ``shuffle`` is honoured by the
         shuffle buffer and the shard order, not by a permutation — there is no index to
-        permute. ``generator`` seeds the epoch so repeated passes differ."""
-        epoch = int(torch.randint(0, 2**31 - 1, (1,), generator=generator).item())
+        permute. ``generator`` seeds the epoch so repeated passes differ; it is only drawn from
+        when ``shuffle`` is true, so an unshuffled pass never perturbs the caller's generator."""
+        epoch = (
+            int(torch.randint(0, 2**31 - 1, (1,), generator=generator).item())
+            if shuffle
+            else 0
+        )
         pending: list[RealExample] = []
-        for ex in self.iter_examples(epoch if shuffle else 0):
+        for ex in self.iter_examples(epoch, shuffle=shuffle):
             pending.append(ex)
             if len(pending) == batch_size:
-                yield RealSpeclibDataset(pending).batches(
-                    batch_size, False, generator
-                ).__next__()
+                yield _collate(pending, generator)
                 pending = []
         if pending:
-            yield RealSpeclibDataset(pending).batches(
-                len(pending), False, generator
-            ).__next__()
+            yield _collate(pending, generator)
 
 
 def collect_val_examples(
@@ -195,22 +236,45 @@ def collect_val_examples(
     allowlist exactly like the split filter, and a val_only source decodes only its winners
     rather than everything it will later discard.
 
+    Dedup is scoped PER DATASET, not per shard: a pool spans several shards (split is by
+    sequence hash, independent of shard boundaries), so one dedup key can have observations in
+    raw files that land in different shards. Shards are grouped by ``dataset_id`` first and
+    ``val_winner_keys`` is called ONCE per dataset over the union of that dataset's raw files,
+    so the argmax runs across every shard of the dataset instead of restarting per shard (which
+    would silently emit one "winner" per shard for the same key).
+
+    ``dataset_names`` must map every shard's ``dataset_id`` — a missing entry raises rather than
+    silently falling back to a ``dataset=None`` bucket, which would pool unrelated datasets'
+    dedup keys together.
+
     The result is small (1,029 keys for a shard with 8.7M fragment rows) and is kept for the
     run: it makes the val set identical across every epoch by construction, and re-decoding the
     same handful of spectra 80 times would buy nothing.
     """
     schema = schema or ProspectSchema()
-    out: list[RealExample] = []
+    by_dataset: dict[int, list[ShardSpec]] = {}
     for shard in shards:
-        winners = index.val_winner_keys(
-            list(shard.raw_files), dataset_names.get(shard.dataset_id)
-        )
+        by_dataset.setdefault(shard.dataset_id, []).append(shard)
+
+    out: list[RealExample] = []
+    for dataset_id, group in by_dataset.items():
+        if dataset_id not in dataset_names:
+            raise KeyError(
+                f"dataset_id={dataset_id!r} (shard path(s) {[s.path for s in group]!r}) has no "
+                f"entry in dataset_names (known: {sorted(dataset_names)}); every shard's "
+                "dataset_id must be named, or its val winners silently pool under one "
+                "dataset=None group with every other unmapped dataset"
+            )
+        name = dataset_names[dataset_id]
+        raw_files = [rf for shard in group for rf in shard.raw_files]
+        winners = index.val_winner_keys(raw_files, name)
         if not winners:
             continue
-        out.extend(
-            _examples_from_shard(shard, index, encoder, frozenset({"val"}), schema,
-                                 only_keys=winners)
-        )
+        for shard in group:
+            out.extend(
+                _examples_from_shard(shard, index, encoder, frozenset({"val"}), schema,
+                                     only_keys=winners)
+            )
     return out
 
 
