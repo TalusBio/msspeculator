@@ -87,7 +87,16 @@ class MSContextEncoder(nn.Module):
             + self.frag_emb(fragmentation_id)
         )
         if energy is not None:
-            out = out + self.energy_mlp(energy.unsqueeze(-1))  # first Linear = learned affine
+            # Per-example masking, not imputation. A NaN energy means the run recorded none,
+            # and it must contribute exactly zero rather than a value we invented.
+            #
+            # The mask is applied AFTER the MLP on purpose: energy_mlp's first Linear carries a
+            # bias, so mlp(0) != 0 — filling missing energy with zero beforehand would inject a
+            # learned constant, which is exactly the fabrication this avoids. nan_to_num only
+            # stops NaN propagating through the lane that is about to be zeroed.
+            present = torch.isfinite(energy)
+            term = self.energy_mlp(torch.nan_to_num(energy, nan=0.0).unsqueeze(-1))
+            out = out + present.unsqueeze(-1).to(term.dtype) * term
         return out
 
 

@@ -5,7 +5,6 @@ base RT head (context-free) should track iRT; the runbook's dataset row should a
 per-dataset offset.
 """
 
-import pytest
 import torch
 from pepdistill.distill.dataset import MSFactors
 
@@ -28,6 +27,26 @@ from pepdistill.teacher.base import PrecursorLabels
 from pepdistill.teacher.fake import FakeTeacher
 
 OFFSET = 25.0
+
+
+def _make_examples(n: int) -> list[RealExample]:
+    """N examples over one peptide/split, varying only raw_rt -- enough columns for the
+    batches()/masking tests, which don't care about realistic labels or acquisition factors."""
+    prec = Precursor(Peptide("PEPTIDEK", ()), 2, "train")
+    label = FakeTeacher().predict([prec])[0]
+    return [
+        RealExample(
+            precursor=prec,
+            label=label,
+            raw_rt=float(i),
+            instrument_id=0,
+            detector_id=0,
+            fragmentation_id=0,
+            energy=25.0,
+            dataset_id=1,
+        )
+        for i in range(n)
+    ]
 
 
 def _real():
@@ -131,24 +150,13 @@ def test_ms_factors_to_device_handles_none_energy():
     assert moved.instrument_id.shape == (2,)
 
 
-def test_batches_raises_on_partially_missing_energy():
-    """A batch mixing energy-present and energy-absent examples has no safe encoding — never
-    pass NaN into MSContextEncoder, fail loud instead."""
-    prec = Precursor(Peptide("PEPTIDEK"), 2, "t")
-    label = FakeTeacher().predict([prec])[0]
-    examples = [
-        RealExample(
-            precursor=prec,
-            label=label,
-            raw_rt=0.0,
-            instrument_id=0,
-            detector_id=0,
-            fragmentation_id=0,
-            energy=energy,
-            dataset_id=1,
-        )
-        for energy in (25.0, float("nan"))
-    ]
+def test_mixed_energy_batch_no_longer_raises():
+    """Per-spectrum energy (Task 2) makes a batch mixing present/absent energy ordinary; it must
+    be masked per example inside MSContextEncoder rather than rejected here."""
+    examples = _make_examples(4)
+    examples[1].energy = float("nan")
     ds = RealSpeclibDataset(examples)
-    with pytest.raises(ValueError, match="partially-missing"):
-        next(ds.batches(batch_size=2, shuffle=False, generator=torch.Generator()))
+    gen = torch.Generator().manual_seed(0)
+    batch = next(iter(ds.batches(4, False, gen)))
+    assert batch.ms_factors.energy is not None
+    assert int(torch.isnan(batch.ms_factors.energy).sum()) == 1

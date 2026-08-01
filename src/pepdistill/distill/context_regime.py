@@ -102,24 +102,14 @@ class RealSpeclibDataset:
                 [self.examples[i].label for i in idx],
             )
             energy_slice = self.energy[idx]
-            nan_mask = np.isnan(energy_slice)
-            # Every energy NaN -> this run carries no collision energy -> omit the term
-            # entirely (None) rather than fabricate a center value. A PARTIAL mix (some
-            # examples carry energy, some don't) within the same batch has no safe encoding —
-            # passing NaN into MSContextEncoder would silently poison the whole batch — so
-            # fail loud instead of guessing.
-            if nan_mask.any() and not nan_mask.all():
-                raise ValueError(
-                    "batch has partially-missing collision energy "
-                    f"({int(nan_mask.sum())}/{len(nan_mask)} NaN); energy must be all-present "
-                    "or all-absent within a batch"
-                )
-            energy = None if nan_mask.all() else torch.from_numpy(energy_slice)
+            # Missing energy is masked per example inside MSContextEncoder, so a batch mixing
+            # present and absent values is ordinary. Passing None when EVERY value is missing
+            # is equivalent, but passing the tensor keeps one code path.
             ms_factors = MSFactors(
                 instrument_id=torch.from_numpy(self.instrument_id[idx]),
                 detector_id=torch.from_numpy(self.detector_id[idx]),
                 fragmentation_id=torch.from_numpy(self.fragmentation_id[idx]),
-                energy=energy,
+                energy=torch.from_numpy(energy_slice),
             )
             yield RealBatch(
                 base=base,
@@ -164,6 +154,19 @@ class RealSpeclibModule(L.LightningModule):
         if freeze_backbone:  # PEFT: fit only the context modules, backbone stays fixed.
             self.model.requires_grad_(False)
 
+    def on_train_epoch_start(self) -> None:
+        self._energy_masked = 0
+        self._energy_present = 0
+
+    def on_train_epoch_end(self) -> None:
+        self.log_dict(
+            {
+                "train_energy_masked": float(self._energy_masked),
+                "train_energy_present": float(self._energy_present),
+            },
+            prog_bar=False,
+        )
+
     def transfer_batch_to_device(
         self, batch: RealBatch, device: torch.device | str, dataloader_idx: int
     ) -> RealBatch:
@@ -205,6 +208,11 @@ class RealSpeclibModule(L.LightningModule):
             align = mod_align_loss(out["mod_g"], out["mod_m"], lb.inputs.mod_named)
             log["train_mod_align"] = align.detach()
             loss = loss + self.mod_align_weight * align
+        e = rb.ms_factors.energy
+        if e is not None:
+            present = int(torch.isfinite(e).sum())
+            self._energy_present += present
+            self._energy_masked += int(e.numel()) - present
         self.log_dict(log, prog_bar=False, batch_size=rb.raw_rt.shape[0])
         return loss
 

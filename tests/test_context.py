@@ -236,3 +236,40 @@ def test_affine_never_touches_rt_base():
         )
     assert torch.equal(plain["rt_base"], conditioned["rt_base"]), "affine leaked into rt_base"
     assert not torch.equal(plain["rt"], conditioned["rt"]), "affine did not affect rt"
+
+
+def test_nan_energy_contributes_exactly_zero():
+    enc = MSContextEncoder(context_dim=8)
+    ids = torch.zeros(3, dtype=torch.long)
+    none_out = enc(ids, ids, ids, energy=None)
+    nan_out = enc(ids, ids, ids, energy=torch.full((3,), float("nan")))
+    assert torch.allclose(none_out, nan_out)
+
+
+def test_mixed_energy_masks_per_example_not_per_batch():
+    enc = MSContextEncoder(context_dim=8)
+    ids = torch.zeros(2, dtype=torch.long)
+    mixed = enc(ids, ids, ids, energy=torch.tensor([28.0, float("nan")]))
+    present = enc(ids, ids, ids, energy=torch.tensor([28.0, 28.0]))
+    absent = enc(ids, ids, ids, energy=None)
+    assert torch.allclose(mixed[0], present[0])   # row 0 keeps its energy term
+    assert torch.allclose(mixed[1], absent[1])    # row 1 has none at all
+    assert torch.isfinite(mixed).all()
+
+
+def test_masking_happens_after_the_mlp_not_by_filling_zero():
+    """energy_mlp has a bias, so mlp(0) != 0; filling would inject a learned constant.
+
+    At zero-init energy_mlp's LAST Linear is zeroed, so mlp(anything) == 0 regardless of
+    input and this test can't tell the two implementations apart. Perturb every energy_mlp
+    parameter (as the pre-existing test_ms_context_energy_is_wired_after_training_step does)
+    so mlp(0) is genuinely nonzero, the way it would be after real training.
+    """
+    torch.manual_seed(0)
+    enc = MSContextEncoder(context_dim=8)
+    for p in enc.energy_mlp.parameters():
+        torch.nn.init.normal_(p, std=0.1)
+    ids = torch.zeros(1, dtype=torch.long)
+    filled = enc(ids, ids, ids, energy=torch.zeros(1))
+    masked = enc(ids, ids, ids, energy=torch.full((1,), float("nan")))
+    assert not torch.allclose(filled, masked)
