@@ -23,6 +23,7 @@ from pepdistill.distill.context_regime import (
     _build_examples,
     establish_rt_norm,
     fit_realspeclib,
+    fit_realspeclib_datasets,
 )
 from pepdistill.data.prospect import RealLabels
 from pepdistill.models.context import ChromRunbook, MSContextEncoder
@@ -224,3 +225,25 @@ def test_degenerate_variance_falls_back_to_unit_std():
     stats = [(3, 15.0, 75.0)]
     assert establish_rt_norm(model, stats) is True
     assert float(model.rt_std) == pytest.approx(1.0)
+
+
+def test_fit_from_prebuilt_datasets_trains_and_reports_metrics(tmp_path):
+    from pepdistill.distill.context_regime import RealSpeclibDataset
+
+    model = build_student("small")
+    model.set_norm(rt_mean=0.0, rt_std=1.0)
+    cdim = model.cfg.context_dim
+    examples = _make_examples(8)  # existing helper in this test module
+    module = fit_realspeclib_datasets(
+        model,
+        RealSpeclibDataset(examples),
+        RealSpeclibDataset(examples[:2]),
+        runbook=ChromRunbook(n_datasets=1, context_dim=cdim),
+        dataset_index={"pool": 1},
+        encoder=MSContextEncoder(context_dim=cdim),
+        epochs=1,
+        batch_size=4,
+        enable_progress_bar=False,
+    )
+    assert module.dataset_index == {"pool": 1}
+    assert "val_spectral_angle" in module.trainer.callback_metrics

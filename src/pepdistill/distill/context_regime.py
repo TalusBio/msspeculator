@@ -307,6 +307,56 @@ def establish_rt_norm(model: StudentModel, stats: list[tuple[int, float, float]]
     return True
 
 
+def fit_realspeclib_datasets(
+    model: StudentModel,
+    train_ds: RealSpeclibDataset,
+    val_ds: RealSpeclibDataset | None,
+    *,
+    runbook: ChromRunbook,
+    dataset_index: dict[str, int],
+    encoder: MSContextEncoder,
+    epochs: int = 20,
+    batch_size: int = 128,
+    lr: float = 1e-3,
+    weight_decay: float = 1e-5,
+    loss_weights: tuple[float, float, float] = (1.0, 1.0, 1.0),
+    grad_clip: float = 1.0,
+    seed: int = 0,
+    accelerator: str = "auto",
+    freeze_backbone: bool = False,
+    mod_align_weight: float = 1.0,
+    **trainer_kwargs,
+) -> RealSpeclibModule:
+    """Fit on datasets the caller already built.
+
+    Split out of :func:`fit_realspeclib` so the streaming path can pass a
+    ``StreamingRealDataset`` for train and a materialised one for val. Both only have to
+    expose ``batches(batch_size, shuffle, generator)``. Normalisation is NOT touched here:
+    the caller establishes the RT affine before training (see :func:`establish_rt_norm`).
+    """
+    L.seed_everything(seed, verbose=False)
+    module = RealSpeclibModule(
+        model,
+        runbook,
+        encoder,
+        lr=lr,
+        weight_decay=weight_decay,
+        loss_weights=loss_weights,
+        dataset_index=dataset_index,
+        freeze_backbone=freeze_backbone,
+        mod_align_weight=mod_align_weight,
+    )
+
+    def loader(ds, shuffle: bool) -> DataLoader | None:
+        if ds is None:
+            return None
+        return DataLoader(BatchIterable(ds, batch_size, shuffle, seed), batch_size=None)
+
+    trainer = build_trainer(epochs, accelerator, grad_clip, **trainer_kwargs)
+    trainer.fit(module, loader(train_ds, True), loader(val_ds, False))
+    return module
+
+
 def fit_realspeclib(
     model: StudentModel,
     real: RealLabels,
@@ -372,25 +422,25 @@ def fit_realspeclib(
         irt_train = np.array([e.label.rt for e in train], dtype=np.float64)
         model.set_norm(rt_mean=float(irt_train.mean()), rt_std=float(irt_train.std() or 1.0))
 
-    module = RealSpeclibModule(
-        model,
-        runbook,
-        encoder,
-        lr=lr,
-        weight_decay=weight_decay,
-        loss_weights=loss_weights,
-        dataset_index=dataset_index,
-        freeze_backbone=freeze_backbone,
-        mod_align_weight=mod_align_weight,
-    )
     train_ds = RealSpeclibDataset(train)
     val_ds = RealSpeclibDataset(_dedupe_val(val, dataset_name)) if val else None
 
-    def loader(ds: RealSpeclibDataset | None, shuffle: bool) -> DataLoader | None:
-        if ds is None:
-            return None
-        return DataLoader(BatchIterable(ds, batch_size, shuffle, seed), batch_size=None)
-
-    trainer = build_trainer(epochs, accelerator, grad_clip, **trainer_kwargs)
-    trainer.fit(module, loader(train_ds, True), loader(val_ds, False))
-    return module
+    return fit_realspeclib_datasets(
+        model,
+        train_ds,
+        val_ds,
+        runbook=runbook,
+        dataset_index=dataset_index,
+        encoder=encoder,
+        epochs=epochs,
+        batch_size=batch_size,
+        lr=lr,
+        weight_decay=weight_decay,
+        loss_weights=loss_weights,
+        grad_clip=grad_clip,
+        seed=seed,
+        accelerator=accelerator,
+        freeze_backbone=freeze_backbone,
+        mod_align_weight=mod_align_weight,
+        **trainer_kwargs,
+    )
