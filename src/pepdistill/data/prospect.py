@@ -133,6 +133,7 @@ class ProspectSchema:
     ann_frag_charge: str = "charge"
     ann_intensity: str = "intensity"
     ann_neutral_loss: str = "neutral_loss"
+    andromeda_score: str = "andromeda_score"  # val dedup quality
 
     # Columns required to even treat a file as PROSPECT (identity + acquisition context).
     def required(self) -> list[str]:
