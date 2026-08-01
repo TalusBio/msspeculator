@@ -291,11 +291,20 @@ def decode_fragments(
 
 
 def fragment_filter_mask(ann: pd.DataFrame, schema: ProspectSchema) -> np.ndarray:
-    """b/y ions, fragment charge 1-2, no neutral loss. Measured to keep 10-35% by pool."""
+    """b/y ions, fragment charge 1-2, no neutral loss. Measured to keep 10-35% by pool.
+
+    ``neutral_loss`` may arrive as ``category`` dtype (the streaming reader reads it
+    dictionary-encoded to avoid materializing a Python string per row). ``.fillna("")`` raises
+    on a categorical whose categories do not already include ``""`` -- true of any shard whose
+    fragments all carry a neutral loss -- so the "no neutral loss" check is instead
+    ``isna() | (col == "")``, which needs no such category to exist and is equivalent to the
+    old ``fillna("") == ""`` for both ``object`` and ``category`` dtype.
+    """
+    no_loss = ann[schema.ann_neutral_loss]
     return (
         ann[schema.ann_ion_type].isin(("b", "y")).to_numpy()
         & ann[schema.ann_frag_charge].isin((1, 2)).to_numpy()
-        & (ann[schema.ann_neutral_loss].fillna("") == "").to_numpy()
+        & (no_loss.isna() | (no_loss == "")).to_numpy()
     )
 
 

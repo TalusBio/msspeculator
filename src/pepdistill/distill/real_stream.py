@@ -44,6 +44,17 @@ STREAM_COLUMNS: tuple[str, ...] = (
     "ion_type", "no", "charge", "intensity", "neutral_loss", "scan_number", "raw_file",
 )
 
+# ion_type, neutral_loss and raw_file are dictionary/RLE-encoded on disk. Plain
+# `read_row_group(...).to_pandas()` expands each into one Python string per row on the way out;
+# measured per row group (of 3) on the real 90.7 MB / 8.7M-row third-pool shard:
+#   plain          arrow 133.4 MB    pandas 352.3 MB
+#   dict-encoded   arrow  61.5 MB    pandas  49.7 MB     <- 7x smaller
+# That expansion is the dominant term in this module's peak memory (~1.9 GB of the ~2.8 GB
+# decode peak). Passing `read_dictionary=` for these three columns keeps them as indices + a
+# small dictionary, so `to_pandas()` yields `category` dtype instead of object. Same bug as
+# `shard_store.shard_raw_files` (see f08be78); do not drop this list to "simplify" the read.
+STREAM_DICT_COLUMNS: tuple[str, ...] = ("ion_type", "neutral_loss", "raw_file")
+
 # The only values SpectrumMeta.split ever holds (see data/split.py's assign_split). It answers
 # "does this shard match ANY meta row at all, in any split" -- a question distinct from "does it
 # match the requested split", and the two are decided in one pass (_allowed_keys_for_shard).
@@ -140,7 +151,7 @@ def _examples_from_shard(
         allowed = allowed & only_keys  # new set: `allowed` may be the caller's cached one
     if not allowed:
         return []
-    pf = pq.ParquetFile(shard.path)
+    pf = pq.ParquetFile(shard.path, read_dictionary=list(STREAM_DICT_COLUMNS))
     kept: list[pd.DataFrame] = []
     for i in range(pf.num_row_groups):
         df = pf.read_row_group(i, columns=list(STREAM_COLUMNS)).to_pandas()
@@ -358,4 +369,7 @@ def collect_val_examples(
     return out
 
 
-__all__ = ["ShardSpec", "StreamingRealDataset", "collect_val_examples", "STREAM_COLUMNS"]
+__all__ = [
+    "ShardSpec", "StreamingRealDataset", "collect_val_examples",
+    "STREAM_COLUMNS", "STREAM_DICT_COLUMNS",
+]

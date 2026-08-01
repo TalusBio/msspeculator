@@ -20,6 +20,7 @@ from pepdistill.data.prospect import (
     ProspectSchema,
     ProspectSource,
     decode_fragments,
+    fragment_filter_mask,
     parse_modseq,
 )
 from pepdistill.data.prospect_catalog import load_catalog
@@ -382,6 +383,44 @@ def _index_for(peptide, charge=2, irt=50.0, raw_rt=5.0, split="train"):
         peptide, charge, irt, raw_rt, split, "FTMS", "HCD", 28.0, 100.0
     )
     return idx
+
+
+def _mask_frame(neutral_loss, dtype=None):
+    n = len(neutral_loss)
+    col = pd.Series(neutral_loss, dtype=dtype) if dtype else pd.Series(neutral_loss)
+    return pd.DataFrame(
+        {
+            "ion_type": ["b"] * n,
+            "charge": [1] * n,
+            "neutral_loss": col,
+        }
+    )
+
+
+def test_fragment_filter_mask_treats_object_nan_and_empty_string_as_no_loss():
+    ann = _mask_frame([None, "", "H2O"])
+    assert list(fragment_filter_mask(ann, ProspectSchema())) == [True, True, False]
+
+
+def test_fragment_filter_mask_handles_a_category_column_with_no_empty_string_category():
+    """The streaming reader hands this ``category`` dtype (dictionary-encoded on disk). A
+    shard whose fragments ALL carry a neutral loss has no ``""`` category at all, and the old
+    ``fillna("") == ""`` raised ``TypeError`` in that case -- this pins that it no longer does,
+    and that the answer matches the object-dtype case for the same values.
+    """
+    ann = _mask_frame(
+        pd.Categorical([None, "H2O", "NH3"], categories=["H2O", "NH3"])
+    )
+    assert list(fragment_filter_mask(ann, ProspectSchema())) == [True, False, False]
+
+
+def test_fragment_filter_mask_agrees_between_object_and_category_dtype():
+    values = [None, "", "H2O", "NH3", ""]
+    obj = fragment_filter_mask(_mask_frame(values), ProspectSchema())
+    cat = fragment_filter_mask(
+        _mask_frame(pd.Categorical(values, categories=["H2O", "NH3", ""])), ProspectSchema()
+    )
+    assert list(obj) == list(cat) == [True, True, False, False, True]
 
 
 def test_decode_fragments_scatters_b_and_y_into_the_right_cells():
