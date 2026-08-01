@@ -5,6 +5,9 @@ base RT head (context-free) should track iRT; the runbook's dataset row should a
 per-dataset offset.
 """
 
+import math
+
+import pytest
 import torch
 from pepdistill.distill.dataset import MSFactors
 
@@ -18,6 +21,7 @@ from pepdistill.distill.context_regime import (
     RealSpeclibDataset,
     RealSpeclibModule,
     _build_examples,
+    establish_rt_norm,
     fit_realspeclib,
 )
 from pepdistill.data.prospect import RealLabels
@@ -189,3 +193,34 @@ def test_epoch_energy_counters_track_masking_and_reset():
     module.on_train_epoch_start()  # next epoch must reset, not keep accumulating
     assert module._energy_masked == 0
     assert module._energy_present == 0
+
+
+def test_establishes_from_combined_sufficient_statistics():
+    model = build_student("small")
+    # Two sources: values [10, 20] and [30]. mean 20, population std sqrt(200/3).
+    stats = [(2, 30.0, 10.0**2 + 20.0**2), (1, 30.0, 30.0**2)]
+    assert establish_rt_norm(model, stats) is True
+    assert float(model.rt_mean) == pytest.approx(20.0)
+    assert float(model.rt_std) == pytest.approx(math.sqrt(200.0 / 3.0))
+    assert bool(model.norm_established)
+
+
+def test_does_not_re_establish_an_existing_affine():
+    model = build_student("small")
+    model.set_norm(rt_mean=1.0, rt_std=2.0)
+    assert establish_rt_norm(model, [(2, 30.0, 500.0)]) is False
+    assert float(model.rt_mean) == pytest.approx(1.0)
+
+
+def test_zero_train_rows_raises():
+    model = build_student("small")
+    with pytest.raises(ValueError, match="no train examples"):
+        establish_rt_norm(model, [(0, 0.0, 0.0)])
+
+
+def test_degenerate_variance_falls_back_to_unit_std():
+    model = build_student("small")
+    # Three identical values -> variance 0; std must not be 0 (it divides).
+    stats = [(3, 15.0, 75.0)]
+    assert establish_rt_norm(model, stats) is True
+    assert float(model.rt_std) == pytest.approx(1.0)

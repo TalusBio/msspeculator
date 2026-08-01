@@ -22,6 +22,7 @@ new run), freeze the model and step only the encoder/runbook.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -275,6 +276,35 @@ def _dedupe_val(examples: list[RealExample], dataset_name: str | None) -> list[R
     keys = [precursor_key(e.precursor, dataset_name) for e in examples]
     quality = [ms2_intensity(e.label) for e in examples]
     return [examples[i] for i in best_per_key(quality, keys)]
+
+
+def establish_rt_norm(model: StudentModel, stats: list[tuple[int, float, float]]) -> bool:
+    """Set the global RT affine from combined ``(n, sum, sumsq)`` iRT statistics.
+
+    Sufficient statistics rather than an array, so several sources combine by addition and
+    nothing has to be held. The population is the meta index's train rows — pre-decode, so it
+    includes spectra that later drop out for having no surviving b/y fragments or fewer than
+    two residues. Near-exact rather than exact, and deliberately preferred over the
+    alternatives (Welford over the stream, or estimating from the first shard), both of which
+    would be strictly worse for a value the set-once rule makes permanent for the run.
+
+    Returns whether it set anything: a pretrain->train curriculum inherits the frame the
+    pretrain stage established and must not recalibrate a trained head mid-stream.
+    """
+    if bool(model.norm_established):
+        return False
+    n = sum(c for c, _, _ in stats)
+    if n == 0:
+        raise ValueError(
+            "no train examples to establish the RT affine from; every source is val_only or "
+            "every sequence hashed to val/test"
+        )
+    total = sum(t for _, t, _ in stats)
+    sumsq = sum(q for _, _, q in stats)
+    mean = total / n
+    var = max(sumsq / n - mean * mean, 0.0)
+    model.set_norm(rt_mean=float(mean), rt_std=float(math.sqrt(var) or 1.0))
+    return True
 
 
 def fit_realspeclib(
