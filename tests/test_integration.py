@@ -177,10 +177,11 @@ _POOL_B = [
 _IRT = {"train": 10.0, "test": 500.0, "val": 200.0}
 _POOL_B_IRT_BASE = 900.0
 
-# The splits the real-data stage trains on (val is the only holdout), mirroring
-# pipeline._TRAIN_SPLITS. Spelled out here rather than imported so the test states the
-# contract independently instead of agreeing with the implementation by construction.
-_TRAINED = ("train", "test")
+# The splits the real-data stage trains on: train alone, with val AND test genuinely held
+# out. Mirrors pipeline._TRAIN_SPLITS, but spelled out here rather than imported so the test
+# states the contract independently instead of agreeing with the implementation by
+# construction.
+_TRAINED = ("train",)
 
 
 def _pool_frames(raw_file, entries, first_scan, irt_of):
@@ -239,10 +240,11 @@ def _seed_two_synthetic_pools(tmp_path, monkeypatch, pool_b=_POOL_B):
             z.writestr(member, b.getvalue())
     (root / _POOL_ZIP).write_bytes(buf.getvalue())
 
-    # The RT affine's population is what training sees: poolA's train AND test rows.
+    # The RT affine's population is what training sees: poolA's train rows, nothing else.
     seen = [m["indexed_retention_time"] for m, (_, s) in zip(meta_a, _POOL_A) if s in _TRAINED]
     assert any(s == "train" for _, s in _POOL_A), "fixture must leave poolA some train rows"
-    assert any(s == "test" for _, s in _POOL_A), "fixture must exercise the test split too"
+    # poolA owns a test row so "test is held out" is a claim the fixture can actually falsify.
+    assert any(s == "test" for _, s in _POOL_A), "fixture must own a test row to hold out"
     return {
         "rt_mean": sum(seen) / len(seen),
         "n_train": len(seen),
@@ -334,9 +336,9 @@ def test_two_source_streaming_train_stage_runs_end_to_end(tmp_path, monkeypatch)
     assert "train" in summary
     assert "val_spectral_angle" in summary["train"]  # val ran
 
-    # Exactly poolA's train AND test rows were streamed: the val_only pool is held out of
-    # training, and the stream takes test as well as train. train_energy_present counts every
-    # example the epoch actually saw (every fixture row carries a collision energy).
+    # Exactly poolA's train rows were streamed: the val_only pool is held out of training, and
+    # so are val AND test. train_energy_present counts every example the epoch actually saw
+    # (every fixture row carries a collision energy).
     assert summary["train"]["train_energy_present"] == expected["n_train"]
     assert summary["train"]["train_energy_masked"] == 0
 
@@ -354,9 +356,9 @@ def test_two_source_streaming_train_stage_runs_end_to_end(tmp_path, monkeypatch)
     # it has to happen before the context modules draw from the RNG.
     assert events == [("seed", 7), ("runbook", None)]
 
-    # The RT affine is estimated over what training sees — poolA's train AND test rows —
-    # and nothing else. poolB is val_only at iRT ~900, so leaking it in moves the mean far
-    # outside this tolerance, as does dropping the test row at 508.
+    # The RT affine is estimated over what training sees — poolA's train rows — and nothing
+    # else. poolB is val_only at iRT ~900 and poolA's held-out test row sits at 508, so either
+    # leaking in moves the mean far outside this tolerance.
     model = load_checkpoint(out / "model.ckpt")
     assert float(model.rt_mean) == pytest.approx(expected["rt_mean"])
 

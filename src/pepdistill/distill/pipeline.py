@@ -128,13 +128,13 @@ class TrainCfg:
 
 # What the real-data stage trains on — and therefore the population the RT affine is estimated
 # from. ONE constant for both, because they must not drift: the affine is set once and is
-# permanent for the run, so a narrower population is a silent, unrecoverable change of scale.
+# permanent for the run, so a mismatched population is a silent, unrecoverable change of scale.
 #
-# Test is in here deliberately. The usual "normalise on train only" rule exists to keep held-out
-# data out of a preprocessing statistic, and that rationale does not apply: this pipeline
-# deliberately TRAINS ON the test split (val is the only holdout), so excluding it would not
-# avoid a leak, it would just be a smaller sample of the same population.
-_TRAIN_SPLITS = frozenset({"train", "test"})
+# Train only. Both other splits are genuinely held out: val is what the run is evaluated on,
+# and test is untouched by this pipeline end to end — it is not trained on and it is not
+# normalised from. This is a deliberate departure from the pre-streaming `fit_realspeclib`,
+# which trained on `split != "val"` and so consumed test as well.
+_TRAIN_SPLITS = frozenset({"train"})
 
 # Pool identity used to live directly under [train]; it is per-source now.
 _FLAT_POOL_KEYS = ("record", "meta", "zip", "shards", "dataset", "instrument")
@@ -364,11 +364,13 @@ def _build_train_stage(cfg: RunConfig, log):
         log(f"[train] {s.zip}: {len(specs)} shard(s), dataset row {row}")
 
     if not train_shards:
-        # Both config-level causes were rejected by _check_train_sources, so what is left is a
-        # non-val_only source that selected no shards at all.
+        # Unreachable by construction: _check_train_sources rejects both config-level causes
+        # (no sources, all val_only), and a non-val_only source with an empty `shards` list
+        # dies earlier still in build_meta_index ("no meta rows ... for raw_files []"). Kept
+        # as a cheap invariant so a future change that reintroduces the state is not silent.
         raise ValueError(
-            f"no train shards from {[(s.zip, s.shards) for s in cfg.train.sources]}; every "
-            "non-val_only source resolved to zero shards"
+            f"no train shards from {[(s.zip, s.shards) for s in cfg.train.sources]}, which "
+            "should be unreachable; the source validation above no longer covers some case"
         )
 
     # One index across sources: keys are (raw_file, scan_number), which is globally unique,
