@@ -11,6 +11,7 @@ once, held in RAM for the whole run. Epochs never touch the meta again.
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass, field
 
 import pyarrow.dataset as pads
@@ -133,9 +134,29 @@ def build_meta_index(
     path = src.resolve_file(meta_filename)
     dataset = pads.dataset(path)
     present = [c for c in cols if c in dataset.schema.names]
-    missing = [c for c in (s.raw_file, s.scan_number, s.modified_sequence, s.charge) if c not in present]
+    required = (s.raw_file, s.scan_number, s.modified_sequence, s.charge)
+    missing = [c for c in required if c not in present]
     if missing:
         raise ValueError(f"meta {meta_filename!r} missing required columns {missing}")
+
+    # Absent (not merely all-null) factor columns are not fatal -- acquisition_key's
+    # documented "missing categorical columns are dropped (not fatal)" contract holds here
+    # too -- but every spectrum then falls back to the unknown category below. Without this,
+    # a schema misconfiguration (wrong column name) is silently indistinguishable from a pool
+    # that genuinely carries no such metadata. One warning per absent column per call.
+    for col, label, consequence in (
+        (s.mass_analyzer, "mass_analyzer", "the unknown analyzer category"),
+        (s.fragmentation, "fragmentation", "the unknown fragmentation category"),
+        (s.collision_energy, "collision_energy", "NaN"),
+    ):
+        if col not in present:
+            warnings.warn(
+                f"meta {meta_filename!r} has no {label!r} column ({col!r}); "
+                f"every spectrum will encode {consequence} for it",
+                UserWarning,
+                stacklevel=2,
+            )
+
     table = dataset.to_table(
         columns=present, filter=pads.field(s.raw_file).isin(list(raw_files))
     )

@@ -114,3 +114,31 @@ def test_val_winner_keys_picks_the_highest_andromeda_per_key(tmp_path):
                                                      write_through=False))
     idx = build_meta_index(src, META, ["RUN_A"])
     assert idx.val_winner_keys(["RUN_A"], "poolA") == {("RUN_A", 2), ("RUN_A", 3)}
+
+
+def test_missing_factor_column_warns_and_still_loads_as_unknown(tmp_path):
+    """A meta file entirely missing `mass_analyzer` is not fatal (pools may lack it), but it
+    must not be silently indistinguishable from a schema misconfiguration: build_meta_index
+    warns, naming the absent column, and the resulting SpectrumMeta still carries the
+    documented "" unknown-category placeholder."""
+    root = tmp_path / "local" / "zenodo" / RECORDS["prospect"]
+    os.makedirs(root, exist_ok=True)
+    pd.DataFrame(
+        {
+            "raw_file": ["RUN_A"],
+            "scan_number": [1],
+            "modified_sequence": ["PEPTIDEK"],
+            "precursor_charge": [2],
+            "retention_time": [10.0],
+            "indexed_retention_time": [100.0],
+            "aligned_collision_energy": [28.0],
+            "fragmentation": ["HCD"],
+            # mass_analyzer deliberately omitted entirely.
+        }
+    ).to_parquet(root / META)
+    src = ProspectSource(
+        "prospect", cache=FileCache([str(tmp_path / "local")], write_through=False)
+    )
+    with pytest.warns(UserWarning, match="mass_analyzer"):
+        idx = build_meta_index(src, META, ["RUN_A"])
+    assert idx.by_key[("RUN_A", 1)].mass_analyzer == ""
