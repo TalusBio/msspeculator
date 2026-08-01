@@ -180,6 +180,10 @@ def decode_fragments(
 
     Spectra whose key is absent from ``index`` are skipped: the meta join is what says a
     spectrum is usable, and a fragment row without one has no peptide to attach to.
+
+    Raises ``ValueError`` if ``frag`` was not actually pre-filtered to b/y ions at fragment
+    charge 1-2, or if its ``scan_number`` column is not cleanly integral (a NaN or fractional
+    scan number would otherwise miss the index silently rather than fail loudly).
     """
     s = schema
     n_ion = len(ION_TYPES)
@@ -187,18 +191,45 @@ def decode_fragments(
     if frag.empty:
         return empty, []
 
+    ion_types = frag[s.ann_ion_type].to_numpy()
+    bad_ion = sorted(set(ion_types.tolist()) - {"b", "y"})
+    if bad_ion:
+        raise ValueError(
+            f"decode_fragments requires ion_type in {{'b', 'y'}} only; got {bad_ion}. "
+            "Pre-filter with fragment_filter_mask before calling."
+        )
+    z_raw = frag[s.ann_frag_charge].to_numpy()
+    bad_z = sorted(set(int(x) for x in z_raw) - {1, 2})
+    if bad_z:
+        raise ValueError(
+            f"decode_fragments requires fragment charge in {{1, 2}} only; got {bad_z}. "
+            "Pre-filter with fragment_filter_mask before calling."
+        )
+    z = z_raw.astype(np.int64)
+
+    scan_raw = frag[s.scan_number].to_numpy()
+    if not np.issubdtype(scan_raw.dtype, np.integer):
+        scan_f = scan_raw.astype(np.float64)
+        bad = np.isnan(scan_f) | (scan_f != np.floor(scan_f))
+        if bad.any():
+            raise ValueError(
+                f"{s.scan_number!r} must be integral scan numbers with no NaN; "
+                f"found {int(bad.sum())} bad value(s)"
+            )
+    scans = scan_raw.astype(np.int64)
     raws = frag[s.raw_file].astype(str).to_numpy()
-    scans = frag[s.scan_number].to_numpy().astype(np.int64)
-    keys = list(zip(raws, scans.tolist()))
-    lengths = np.array(
-        [
-            len(index.by_key[k].peptide.sequence) if k in index.by_key else 0
-            for k in keys
-        ],
+
+    # Per-spectrum (not per-row) index lookup: a filtered real shard is 1-3M fragment rows over
+    # far fewer distinct spectra, so factorizing first turns this into one dict lookup per
+    # spectrum instead of one per row.
+    codes, uniq = pd.factorize(pd.MultiIndex.from_arrays([raws, scans]))
+    uniq_len = np.array(
+        [len(index.by_key[k].peptide.sequence) if k in index.by_key else 0 for k in uniq],
         dtype=np.int64,
     )
-    is_b = frag[s.ann_ion_type].to_numpy() == "b"
-    z = frag[s.ann_frag_charge].to_numpy().astype(np.int64)
+    lengths = uniq_len[codes]
+
+    is_b = ion_types == "b"
     ordinal = frag[s.ann_ordinal].to_numpy().astype(np.int64)
     # ION_TYPES order is b1,y1,b2,y2 -> col = (b?0:1) + 2*(z-1); b site = ord-1, y site = n-1-ord.
     site = np.where(is_b, ordinal - 1, lengths - 1 - ordinal)
@@ -433,6 +464,7 @@ class ProspectSource:
                 parsed[modseq] = parse_modseq(modseq)
             stripped, mods = parsed[modseq]
             rf = str(getattr(row, s.raw_file))
+            andromeda_v = getattr(row, s.andromeda_score, None)
             index.by_key[(rf, int(getattr(row, s.scan_number)))] = SpectrumMeta(
                 peptide=Peptide(stripped, mods),
                 charge=int(getattr(row, s.charge)),
@@ -442,7 +474,7 @@ class ProspectSource:
                 mass_analyzer=str(getattr(row, s.mass_analyzer, "")),
                 fragmentation=str(getattr(row, s.fragmentation, "")),
                 energy=float(getattr(row, s.collision_energy, float("nan"))),
-                andromeda=float(getattr(row, s.andromeda_score, float("nan"))),
+                andromeda=float(andromeda_v) if andromeda_v is not None else float("nan"),
             )
 
         kept = ann_df.loc[fragment_filter_mask(ann_df, s)]

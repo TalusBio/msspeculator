@@ -206,6 +206,19 @@ def test_to_labels_decoding(tmp_path):
     assert out.acquisition["rfA"]["collision_energy"] == pytest.approx(0.30)
 
 
+def test_to_labels_tolerates_a_present_but_null_andromeda_score(tmp_path):
+    """A None in an object-dtype andromeda_score column must fall back to NaN, not crash.
+
+    build_meta_index already guards this (`is not None`); to_labels must match it. The column
+    being wholly ABSENT was already handled by getattr's default -- this covers PRESENT-but-null,
+    which float(getattr(...)) alone does not."""
+    src = ProspectSource("prospect", cache=FileCache([str(tmp_path)]))
+    meta, ann = _meta_ann()
+    meta["andromeda_score"] = pd.Series([None, 50.0, 60.0], dtype=object)
+    out = src.to_labels(meta, ann)
+    assert set(p.peptide.sequence for p in out.precursors) == {"PEPTIDEK", "SPEPK", "ACDEK"}
+
+
 def test_to_labels_raises_on_unresolvable_accession(tmp_path):
     """The raise must propagate all the way out of to_labels, not just out of parse_modseq in
     isolation - there is no silent-drop-on-unknown-mod fallback left anywhere in ingest.
@@ -411,11 +424,12 @@ def test_decode_fragments_max_collapses_duplicate_cells():
     idx = _index_for(Peptide("PEPK", ()))
     frag = pd.DataFrame(
         {
-            "raw_file": ["RUN_A"] * 2, "scan_number": [7, 7], "ion_type": ["b", "b"],
-            "no": [1, 1], "charge": [1, 1], "intensity": [0.2, 0.9],
+            "raw_file": ["RUN_A"] * 3, "scan_number": [7, 7, 7], "ion_type": ["b", "b", "b"],
+            "no": [1, 1, 1], "charge": [1, 1, 1], "intensity": [0.9, 0.2, 0.4],
         }
     )
     real, _ = decode_fragments(idx, frag, ProspectSchema())
+    # max, not first-wins and not last-wins: 0.9 is neither the first nor the last row.
     assert real.labels[0].ms2[0, 0] == pytest.approx(0.9)
 
 
@@ -428,3 +442,85 @@ def test_decode_fragments_ignores_scans_absent_from_the_index():
         }
     )
     assert decode_fragments(idx, frag, ProspectSchema())[0].precursors == []
+
+
+def test_decode_fragments_rejects_a_non_by_ion_type():
+    idx = _index_for(Peptide("PEPK", ()))
+    frag = pd.DataFrame(
+        {
+            "raw_file": ["RUN_A"], "scan_number": [7], "ion_type": ["a"],
+            "no": [1], "charge": [1], "intensity": [1.0],
+        }
+    )
+    with pytest.raises(ValueError, match="ion_type"):
+        decode_fragments(idx, frag, ProspectSchema())
+
+
+def test_decode_fragments_rejects_an_out_of_range_fragment_charge():
+    idx = _index_for(Peptide("PEPK", ()))
+    frag = pd.DataFrame(
+        {
+            "raw_file": ["RUN_A"], "scan_number": [7], "ion_type": ["b"],
+            "no": [1], "charge": [3], "intensity": [1.0],
+        }
+    )
+    with pytest.raises(ValueError, match="charge"):
+        decode_fragments(idx, frag, ProspectSchema())
+
+
+def test_decode_fragments_rejects_a_non_integral_scan_number():
+    idx = _index_for(Peptide("PEPK", ()))
+    frag = pd.DataFrame(
+        {
+            "raw_file": ["RUN_A"], "scan_number": [7.5], "ion_type": ["b"],
+            "no": [1], "charge": [1], "intensity": [1.0],
+        }
+    )
+    with pytest.raises(ValueError, match="scan_number"):
+        decode_fragments(idx, frag, ProspectSchema())
+
+
+def test_decode_fragments_rejects_a_nan_scan_number():
+    idx = _index_for(Peptide("PEPK", ()))
+    frag = pd.DataFrame(
+        {
+            "raw_file": ["RUN_A"], "scan_number": [float("nan")], "ion_type": ["b"],
+            "no": [1], "charge": [1], "intensity": [1.0],
+        }
+    )
+    with pytest.raises(ValueError, match="scan_number"):
+        decode_fragments(idx, frag, ProspectSchema())
+
+
+def test_decode_fragments_out_keys_track_emission_order_across_raw_files():
+    """Two raw files x two scans, discovered interleaved (not sorted, not reversed) -- the
+    order a naive reimplementation (sorted by key, or built from index.by_key) would get wrong.
+    Downstream code zips out_keys against precursors/labels/raw_rt to attach that spectrum's
+    own acquisition factors, so a mis-order there would silently mis-assign metadata."""
+    idx = MetaIndex()
+    idx.by_key[("RUN_A", 7)] = SpectrumMeta(
+        Peptide("PEPK", ()), 2, 50.0, 5.0, "train", "FTMS", "HCD", 28.0, 100.0
+    )
+    idx.by_key[("RUN_A", 9)] = SpectrumMeta(
+        Peptide("PEPK", ()), 2, 55.0, 5.5, "train", "FTMS", "HCD", 28.0, 100.0
+    )
+    idx.by_key[("RUN_B", 3)] = SpectrumMeta(
+        Peptide("PEPK", ()), 2, 60.0, 6.0, "train", "FTMS", "HCD", 28.0, 100.0
+    )
+    idx.by_key[("RUN_B", 11)] = SpectrumMeta(
+        Peptide("PEPK", ()), 2, 65.0, 6.5, "train", "FTMS", "HCD", 28.0, 100.0
+    )
+    # Discovery order: RUN_B/3, RUN_A/7, RUN_B/11, RUN_A/9 -- neither sorted nor reversed.
+    frag = pd.DataFrame(
+        {
+            "raw_file": ["RUN_B", "RUN_A", "RUN_B", "RUN_A"],
+            "scan_number": [3, 7, 11, 9],
+            "ion_type": ["b", "b", "b", "b"],
+            "no": [1, 1, 1, 1],
+            "charge": [1, 1, 1, 1],
+            "intensity": [0.5, 0.6, 0.7, 0.8],
+        }
+    )
+    real, out_keys = decode_fragments(idx, frag, ProspectSchema())
+    assert out_keys == [("RUN_B", 3), ("RUN_A", 7), ("RUN_B", 11), ("RUN_A", 9)]
+    assert [k[0] for k in out_keys] == real.source_ids
