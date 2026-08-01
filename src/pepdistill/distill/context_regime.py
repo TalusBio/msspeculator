@@ -333,8 +333,14 @@ def fit_realspeclib_datasets(
     ``StreamingRealDataset`` for train and a materialised one for val. Both only have to
     expose ``batches(batch_size, shuffle, generator)``. Normalisation is NOT touched here:
     the caller establishes the RT affine before training (see :func:`establish_rt_norm`).
+
+    Global RNG seeding is the CALLER's responsibility (e.g. via ``L.seed_everything``) — this
+    function does not call it. ``seed`` here only threads into ``BatchIterable`` to fix the
+    per-epoch batch shuffle; it does not touch model/encoder/runbook init or dropout. Seeding
+    globally here too would reset the RNG stream a second time after the caller already built
+    encoder/runbook (which consume RNG draws), silently changing training's dropout stream
+    out from under a caller who assumed one seed call meant one deterministic run.
     """
-    L.seed_everything(seed, verbose=False)
     module = RealSpeclibModule(
         model,
         runbook,
