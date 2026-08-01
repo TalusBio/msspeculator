@@ -191,16 +191,20 @@ def decode_fragments(
     if frag.empty:
         return empty, []
 
+    # Both preconditions are checked with numpy, not a Python pass over the rows: this runs on
+    # ~0.7-1M filtered rows per shard per epoch, and `int(x)` per row also turned a NaN charge
+    # into a bare "cannot convert float NaN to integer" instead of the named error below.
     ion_types = frag[s.ann_ion_type].to_numpy()
-    bad_ion = sorted(set(ion_types.tolist()) - {"b", "y"})
+    bad_ion = sorted(set(np.unique(ion_types).tolist()) - {"b", "y"})
     if bad_ion:
         raise ValueError(
             f"decode_fragments requires ion_type in {{'b', 'y'}} only; got {bad_ion}. "
             "Pre-filter with fragment_filter_mask before calling."
         )
     z_raw = frag[s.ann_frag_charge].to_numpy()
-    bad_z = sorted(set(int(x) for x in z_raw) - {1, 2})
-    if bad_z:
+    bad_z_mask = ~np.isin(z_raw, (1, 2))  # NaN is never in (1, 2), so it reports here
+    if bad_z_mask.any():
+        bad_z = np.unique(z_raw[bad_z_mask]).tolist()  # np.unique is already sorted + distinct
         raise ValueError(
             f"decode_fragments requires fragment charge in {{1, 2}} only; got {bad_z}. "
             "Pre-filter with fragment_filter_mask before calling."
@@ -410,19 +414,6 @@ class ProspectSource:
             raise ValueError(f"no parquet members read from {zip_filename}")
         return pd.concat(frames, ignore_index=True)
 
-    def iter_annotation_shards(self, zip_filename: str, indices):
-        """Yield ``(name, DataFrame)`` for each shard index from a SINGLE open of the remote zip.
-
-        Same range-streaming as :meth:`read_annotation_streaming`, but opens the zip once for
-        all requested shards (instead of reopening — re-reading the central directory — per
-        shard), while still yielding one shard at a time so the caller can decode and release
-        each before the next. Bounded memory over a multi-shard pull.
-        """
-        with self._open_remote_zip(zip_filename) as z:
-            names = [n for n in z.namelist() if n.endswith(".parquet")]
-            for i in indices:
-                yield names[i], pd.read_parquet(io.BytesIO(z.read(names[i])))
-
     def _open_remote_zip(self, zip_filename: str) -> zipfile.ZipFile:
         """Open the record's zip as a seekable remote file (range requests), or local if cached."""
         local = self.cache._local_path(f"zenodo/{self.record_id}/{zip_filename}")
@@ -494,23 +485,3 @@ class RealLabels:
     raw_rt: list
     source_ids: list
     acquisition: dict
-
-
-def merge_real_labels(parts: list[RealLabels]) -> RealLabels:
-    """Concatenate decoded shards into one :class:`RealLabels` (union of acquisition maps).
-
-    Lets a full pool load shard-by-shard — decode each, merge, drop the raw annotation — so
-    peak memory stays at one shard rather than the whole multi-GB zip decompressed at once.
-    """
-    precursors: list = []
-    labels: list = []
-    raw_rt: list = []
-    source_ids: list = []
-    acquisition: dict = {}
-    for p in parts:
-        precursors += list(p.precursors)
-        labels += list(p.labels)
-        raw_rt += list(p.raw_rt)
-        source_ids += list(p.source_ids)
-        acquisition.update(p.acquisition)
-    return RealLabels(precursors, labels, raw_rt, source_ids, acquisition)

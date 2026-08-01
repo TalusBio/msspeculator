@@ -469,6 +469,25 @@ def test_decode_fragments_rejects_an_out_of_range_fragment_charge():
         decode_fragments(idx, frag, ProspectSchema())
 
 
+def test_decode_fragments_reports_a_nan_fragment_charge_through_the_named_error():
+    """A NaN in the fragment-charge column must produce decode_fragments' OWN message.
+
+    The per-row `int(x)` this validation used to do raised a bare "cannot convert float NaN to
+    integer" from the Python builtin, which names neither the column, the caller's mistake, nor
+    the fix. That is exactly the silent-ish failure the named errors exist to replace."""
+    idx = _index_for(Peptide("PEPK", ()))
+    frag = pd.DataFrame(
+        {
+            "raw_file": ["RUN_A"], "scan_number": [7], "ion_type": ["b"],
+            "no": [1], "charge": [float("nan")], "intensity": [1.0],
+        }
+    )
+    with pytest.raises(ValueError, match=r"requires fragment charge in \{1, 2\} only") as exc:
+        decode_fragments(idx, frag, ProspectSchema())
+    assert "fragment_filter_mask" in str(exc.value)
+    assert "cannot convert float NaN" not in str(exc.value)
+
+
 def test_decode_fragments_rejects_a_non_integral_scan_number():
     idx = _index_for(Peptide("PEPK", ()))
     frag = pd.DataFrame(

@@ -33,7 +33,11 @@ class MSContextEncoder(nn.Module):
     BatchNorm1d: a single-NCE batch would collapse a batch-statistic normalization to a
     degenerate center/scale, so the affine is a trained parameter instead). Every term is
     zero-init, so an all-unknown / energy-less input returns the zero vector — the
-    context-free base. Collision energy is never fabricated: pass ``energy=None`` to omit it.
+    context-free base. Collision energy is never fabricated: a spectrum with no recorded energy
+    carries NaN, and the NaN entries of the ``energy`` tensor are masked out per example, so
+    that term contributes zero for exactly those rows. (``energy=None`` omits the term for a
+    whole call; the real-data path always passes a tensor and relies on the mask, so it is
+    reachable only from callers that have no energy axis at all, e.g. tests.)
     """
 
     def __init__(

@@ -6,8 +6,11 @@ vectors, each generated from metadata rather than gradient-descended per source 
 
 - ``ms_context`` (MS2 side) comes from a run's acquisition factors — instrument, detector,
   fragmentation (categorical) plus collision energy (continuous) — via :class:`MSContextEncoder`.
-  Energy is never fabricated: a run with no recorded collision energy passes ``energy=None``,
-  so that term contributes zero rather than an invented center value.
+  Energy is never fabricated, and it is per EXAMPLE, not per run: a spectrum with no recorded
+  collision energy carries NaN through the batch and is masked out of the energy term, so that
+  term contributes zero for it rather than an invented center value. (The whole-call
+  ``energy=None`` escape hatch still exists on :class:`MSContextEncoder`, but this path always
+  passes a tensor.)
 - ``chrom_context`` (RT side) comes from a per-DATASET :class:`ChromRunbook` row (dataset,
   not raw_file — coarser but good enough to start). Row 0 is reserved as the neutral/iRT row.
   RT is dual-target: the context-free base head (``rt_base``, no chrom_context) is pinned to

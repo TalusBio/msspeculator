@@ -19,7 +19,7 @@ import sys
 import time
 
 from pepdistill.distill.pipeline import RunConfig, _build_train_stage, _TRAIN_SPLITS
-from pepdistill.distill.real_stream import StreamingRealDataset
+from pepdistill.distill.real_stream import StreamingRealDataset, _examples_from_shard
 from pepdistill.models.context import MSContextEncoder
 from pepdistill.models.registry import build_student
 
@@ -54,6 +54,23 @@ def main() -> None:
         train_shards, index, encoder, _TRAIN_SPLITS,
         seed=cfg.seed, shuffle_buffer=cfg.train.shuffle_buffer,
     )
+
+    # Decode time per shard: the per-epoch number below is the sum of these plus the shuffle
+    # buffer, and a single slow shard is invisible in that sum. Timed against the same entry
+    # point the stream uses, one shard at a time, so nothing else is in the measurement.
+    # No "bytes read per epoch" here: neither getrusage nor /proc gives a portable per-file
+    # read count (macOS has no io accounting, Linux's /proc/self/io counts page-cache hits as
+    # reads), so any number reported would be the OS's, not this stage's.
+    for shard in train_shards:
+        t0 = time.perf_counter()
+        n = len(_examples_from_shard(shard, index, encoder, _TRAIN_SPLITS, ds.schema,
+                                     allowed=ds._allowed_for(shard)))
+        dt = time.perf_counter() - t0
+        print(
+            f"decode {shard.path.split('/')[-1]:40s} {dt:7.2f}s  {n:,} examples  "
+            f"peak RSS {peak_rss_mb():8.1f} MB"
+        )
+
     for epoch in range(args.epochs):
         t0 = time.perf_counter()
         first = None

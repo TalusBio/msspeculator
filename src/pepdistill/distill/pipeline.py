@@ -458,7 +458,14 @@ def run_pipeline(cfg: RunConfig, log=print) -> dict:
                 f"std {float(model.rt_std):.4g}")
         else:
             log("[train] RT affine inherited from an earlier stage; not recalibrated")
-        runbook = ChromRunbook(n_datasets=len(dataset_index), context_dim=model.cfg.context_dim)
+        # Size by the HIGHEST row, not the count: rows are contiguous from 1 only when the
+        # index was built from scratch. resolve_dataset_index(existing=...) keeps whatever rows
+        # a continued curriculum already had, which can be sparse, and len() would then size an
+        # embedding that the top row indexes past.
+        runbook = ChromRunbook(
+            n_datasets=max(dataset_index.values(), default=0),
+            context_dim=model.cfg.context_dim,
+        )
         train_ds = StreamingRealDataset(
             train_shards,
             index,
@@ -467,7 +474,7 @@ def run_pipeline(cfg: RunConfig, log=print) -> dict:
             seed=cfg.seed,
             shuffle_buffer=cfg.train.shuffle_buffer,
         )
-        val_examples = collect_val_examples(val_shards, index, encoder, names_by_row)
+        val_examples = collect_val_examples(val_shards, index, encoder, names_by_row, log=log)
         val_ds = RealSpeclibDataset(val_examples) if val_examples else None
         log(f"[train] streaming {len(train_shards)} shard(s); val {len(val_examples)} examples")
         module = fit_realspeclib_datasets(

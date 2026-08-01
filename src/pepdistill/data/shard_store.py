@@ -11,6 +11,8 @@ our own — so the member name is the whole cache key and there is no staleness 
 
 from __future__ import annotations
 
+import shutil
+
 import pyarrow.parquet as pq
 
 from .prospect import ProspectSource
@@ -47,9 +49,12 @@ def extract_shard(src: ProspectSource, zip_filename: str, member: str) -> str:
     key = f"shards/{src.record}/{zip_filename.removesuffix('.zip')}/{member.split('/')[-1]}"
 
     def origin(dest: str) -> None:
+        # copyfileobj, not out.write(z.read(member)): the members are 90.7-387.6 MB, and
+        # z.read() inflates the whole thing into RAM before a byte is written. The point of
+        # extracting is to bound peak RSS, so the extract must be streaming too.
         with src._open_remote_zip(zip_filename) as z:
-            with open(dest, "wb") as out:
-                out.write(z.read(member))
+            with z.open(member) as member_f, open(dest, "wb") as out:
+                shutil.copyfileobj(member_f, out)
 
     return src.cache.resolve(key, origin)
 

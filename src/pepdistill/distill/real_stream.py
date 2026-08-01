@@ -16,6 +16,10 @@ Two facts shape this:
 - ``peptide_sequence`` is excluded from the projection even though the split filter is about
   sequences: it duplicates the meta's ``modified_sequence`` and costs 27% of the projected
   read. The filter keys on ``scan_number`` (0.3% of bytes) against a set from the meta index.
+
+Residency is one SHARD, not one batch: a shard is decoded whole and its ``RealExample`` objects
+(~60k for third-pool shard 0) stay alive until the shuffle buffer drains them. The bound this
+module offers is "one shard at a time", never "one batch at a time".
 """
 
 from __future__ import annotations
@@ -40,9 +44,9 @@ STREAM_COLUMNS: tuple[str, ...] = (
     "ion_type", "no", "charge", "intensity", "neutral_loss", "scan_number", "raw_file",
 )
 
-# The only values SpectrumMeta.split ever holds (see data/split.py's assign_split). Used to ask
+# The only values SpectrumMeta.split ever holds (see data/split.py's assign_split). It answers
 # "does this shard match ANY meta row at all, in any split" -- a question distinct from "does it
-# match the requested split" -- without reaching into MetaIndex.by_key directly.
+# match the requested split", and the two are decided in one pass (_allowed_keys_for_shard).
 _ALL_SPLITS: frozenset[str] = frozenset({"train", "val", "test"})
 
 
@@ -63,6 +67,43 @@ def _raise_zero_usable(shard_path: str, splits: frozenset[str]) -> None:
     )
 
 
+def _allowed_keys_for_shard(
+    shard: ShardSpec, index: MetaIndex, splits: frozenset[str]
+) -> set[tuple[str, int]]:
+    """The shard's ``(raw_file, scan_number)`` keys whose split is in ``splits``.
+
+    ONE pass over ``index.by_key``, not two. This used to be two ``MetaIndex.allowed_keys``
+    calls — one to build the answer, one whose only purpose was to ask "does this shard match
+    any meta row at all", discarding the set it built to do so. Against the merged index of a
+    six-shard run (338,734 entries) that was 2 x 6 x epochs full dictionary scans; the answer
+    is identical every epoch because the index and the splits are immutable for the run, so the
+    caller caches it per shard (see :class:`StreamingRealDataset`).
+
+    Raises if ``shard.raw_files`` matches no meta row in ANY split: that means the raw_files
+    were derived wrong (e.g. from the filename instead of ``shard_raw_files``) or the tuple is
+    empty, not that the shard is legitimately empty for the requested split. A shard that
+    matches meta rows but none in ``splits`` returns an empty set instead -- that emptiness is
+    real.
+    """
+    wanted = set(shard.raw_files)
+    allowed: set[tuple[str, int]] = set()
+    matched_any = False
+    for key, sm in index.by_key.items():
+        if key[0] not in wanted or sm.split not in _ALL_SPLITS:
+            continue
+        matched_any = True
+        if sm.split in splits:
+            allowed.add(key)
+    if not matched_any:
+        raise ValueError(
+            f"shard {shard.path!r} raw_files {shard.raw_files!r} match no meta rows in any "
+            "split; raw_files was likely derived from the filename instead of "
+            "shard_raw_files(path), or is empty -- this shard is misconfigured, not merely "
+            "outside the requested split"
+        )
+    return allowed
+
+
 def _examples_from_shard(
     shard: ShardSpec,
     index: MetaIndex,
@@ -70,33 +111,33 @@ def _examples_from_shard(
     splits: frozenset[str],
     schema: ProspectSchema,
     only_keys: set[tuple[str, int]] | None = None,
+    strict: bool = True,
+    allowed: set[tuple[str, int]] | None = None,
 ) -> list[RealExample]:
     """Read one shard row-group by row-group and decode it into examples.
 
     ``only_keys`` narrows further than ``splits`` — the val path passes the winner scans, so a
     val_only source decodes just those instead of everything it would then discard.
 
+    ``allowed`` is the shard's split-filtered key set; pass a cached one to skip the index scan
+    (see :func:`_allowed_keys_for_shard`). It is never mutated here.
+
+    ``strict`` controls what "no surviving rows" means. On the train path it is a damaged
+    export — a whole shard read for a whole split cannot legitimately scatter to nothing — so
+    it raises. On the val path ``only_keys`` has already narrowed the read to a handful of
+    hand-picked winner scans that may not live in this shard at all, so ``strict=False`` makes
+    that ordinary emptiness return ``[]``.
+
     Acquisition factors are resolved PER SPECTRUM from its own meta row. They used to be one
     value per raw file taken from its first spectrum, but a PROSPECT raw file mixes analyzers,
     fragmentation modes and NCE within itself, so that assigned a fabricated factor to about
     half the spectra of a mixed run. Categorical ids are memoised per distinct value, so this
     costs a dict lookup per example, not an embedding lookup.
-
-    Raises if ``shard.raw_files`` matches no meta row in ANY split: that means the raw_files
-    were derived wrong (e.g. from the filename instead of ``shard_raw_files``) or the tuple is
-    empty, not that the shard is legitimately empty for the requested split. A shard that
-    matches meta rows but none in ``splits`` returns ``[]`` instead -- that emptiness is real.
     """
-    if not index.allowed_keys(list(shard.raw_files), _ALL_SPLITS):
-        raise ValueError(
-            f"shard {shard.path!r} raw_files {shard.raw_files!r} match no meta rows in any "
-            "split; raw_files was likely derived from the filename instead of "
-            "shard_raw_files(path), or is empty -- this shard is misconfigured, not merely "
-            "outside the requested split"
-        )
-    allowed = index.allowed_keys(list(shard.raw_files), splits)
+    if allowed is None:
+        allowed = _allowed_keys_for_shard(shard, index, splits)
     if only_keys is not None:
-        allowed &= only_keys
+        allowed = allowed & only_keys  # new set: `allowed` may be the caller's cached one
     if not allowed:
         return []
     pf = pq.ParquetFile(shard.path)
@@ -111,9 +152,17 @@ def _examples_from_shard(
             if not sub.empty:
                 kept.append(sub)
     if not kept:
+        if not strict:
+            return []
         _raise_zero_usable(shard.path, splits)
-    real, keys = decode_fragments(index, pd.concat(kept, ignore_index=True), schema)
+    frag = pd.concat(kept, ignore_index=True)
+    # concat has copied every row group's slice into `frag`; holding `kept` as well doubles the
+    # filtered-fragment peak for as long as the scatter runs.
+    kept.clear()
+    real, keys = decode_fragments(index, frag, schema)
     if not real.precursors:
+        if not strict:
+            return []
         _raise_zero_usable(shard.path, splits)
 
     inst_id = encoder.instrument_id(shard.instrument)
@@ -169,6 +218,18 @@ class StreamingRealDataset:
         self.seed = seed
         self.shuffle_buffer = shuffle_buffer
         self.schema = schema or ProspectSchema()
+        # shard.path -> its split-filtered key set. The meta index and the splits are both
+        # immutable for the run, so this is the same answer every epoch; recomputing it meant
+        # a full scan of the MERGED index per shard per epoch (O(index x shards x epochs)) in
+        # the one function that exists to run at per-epoch scale.
+        self._allowed: dict[str, set[tuple[str, int]]] = {}
+
+    def _allowed_for(self, shard: ShardSpec) -> set[tuple[str, int]]:
+        cached = self._allowed.get(shard.path)
+        if cached is None:
+            cached = _allowed_keys_for_shard(shard, self.index, self.splits)
+            self._allowed[shard.path] = cached
+        return cached
 
     def iter_examples(self, epoch: int, shuffle: bool = True) -> Iterator[RealExample]:
         """Walk every shard once. ``shuffle=False`` is sequential — shard order untouched and
@@ -187,7 +248,8 @@ class StreamingRealDataset:
         buf: list[RealExample] = []
         for shard in order:
             for ex in _examples_from_shard(
-                shard, self.index, self.encoder, self.splits, self.schema
+                shard, self.index, self.encoder, self.splits, self.schema,
+                allowed=self._allowed_for(shard),
             ):
                 if not buf_size:
                     yield ex
@@ -228,8 +290,9 @@ def collect_val_examples(
     encoder: MSContextEncoder,
     dataset_names: dict[int, str],
     schema: ProspectSchema | None = None,
+    log=print,
 ) -> list[RealExample]:
-    """Decode the val winners, one per (dataset, modified_sequence, charge).
+    """Decode the val winners, at most one per (dataset, modified_sequence, charge).
 
     The winners are chosen by ``MetaIndex.val_winner_keys`` — argmax ``andromeda_score``, which
     lives in meta — so they are known before any fragment is read. Val is therefore a scan
@@ -243,9 +306,15 @@ def collect_val_examples(
     so the argmax runs across every shard of the dataset instead of restarting per shard (which
     would silently emit one "winner" per shard for the same key).
 
-    ``dataset_names`` must map every shard's ``dataset_id`` — a missing entry raises rather than
-    silently falling back to a ``dataset=None`` bucket, which would pool unrelated datasets'
-    dedup keys together.
+    ``dataset_names`` must map every shard's ``dataset_id`` — a missing entry raises. The row
+    is baked into the exported artifact and named in the checkpoint, so a shard whose row has
+    no name means the shard selection and the dataset index disagree; there is nothing sensible
+    to log the val set against, and nothing to name in the summary.
+
+    "At most one", not "exactly one": the winner is picked from meta before any fragment is
+    read, and a winner whose fragments scatter to an all-zero MS2 is dropped by
+    ``decode_fragments`` with no fallback to the runner-up. That shortfall is logged per
+    dataset rather than repaired — a ranked fallback would be a different design.
 
     The result is small (1,029 keys for a shard with 8.7M fragment rows) and is kept for the
     run: it makes the val set identical across every epoch by construction, and re-decoding the
@@ -262,18 +331,29 @@ def collect_val_examples(
             raise KeyError(
                 f"dataset_id={dataset_id!r} (shard path(s) {[s.path for s in group]!r}) has no "
                 f"entry in dataset_names (known: {sorted(dataset_names)}); every shard's "
-                "dataset_id must be named, or its val winners silently pool under one "
-                "dataset=None group with every other unmapped dataset"
+                "dataset_id is a ChromRunbook row that gets baked into the exported artifact, "
+                "so an unnamed row means the shard selection and the dataset index disagree"
             )
-        name = dataset_names[dataset_id]
         raw_files = [rf for shard in group for rf in shard.raw_files]
-        winners = index.val_winner_keys(raw_files, name)
+        winners = index.val_winner_keys(raw_files)
         if not winners:
             continue
+        got = 0
         for shard in group:
-            out.extend(
-                _examples_from_shard(shard, index, encoder, frozenset({"val"}), schema,
-                                     only_keys=winners)
+            # strict=False: only_keys has narrowed this read to the winner scans, which need
+            # not live in THIS shard of the dataset. Empty there is routine, not a damaged
+            # export, and the strict message would name the wrong cause.
+            decoded = _examples_from_shard(shard, index, encoder, frozenset({"val"}), schema,
+                                           only_keys=winners, strict=False)
+            got += len(decoded)
+            out.extend(decoded)
+        # Winners are chosen pre-decode, so one that scatters to an all-zero MS2 vanishes here
+        # with no runner-up to fall back on. Say so rather than let the val set quietly shrink.
+        if got < len(winners):
+            log(
+                f"[val] dataset {dataset_names[dataset_id]!r}: {got} of {len(winners)} winner "
+                f"scan(s) decoded; {len(winners) - got} produced no usable spectrum and have "
+                "no runner-up fallback"
             )
     return out
 

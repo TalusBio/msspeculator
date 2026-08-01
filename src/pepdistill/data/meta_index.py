@@ -63,10 +63,13 @@ class MetaIndex:
             if key[0] in wanted and sm.split in splits
         }
 
-    def val_winner_keys(
-        self, raw_files: list[str], dataset: str | None
-    ) -> set[tuple[str, int]]:
-        """The one val scan to keep per ``(dataset, modified_sequence, charge)``.
+    def val_winner_keys(self, raw_files: list[str]) -> set[tuple[str, int]]:
+        """The one val scan to keep per ``(modified_sequence, charge)`` within ``raw_files``.
+
+        The dataset is not part of the group key because it cannot vary inside one call: the
+        caller (``collect_val_examples``) groups shards by ``dataset_id`` first and calls this
+        once per group, so ``raw_files`` already scopes the reduction to a single dataset. A
+        ``dataset`` component would have been a constant in every tuple.
 
         Quality is ``andromeda_score``. Measured against a leave-one-out consensus over 300
         keys, it picks a spectrum with mean cosine 0.9374 to that peptide's other observations
@@ -84,7 +87,7 @@ class MetaIndex:
         for key, sm in self.by_key.items():
             if key[0] not in wanted or sm.split != "val":
                 continue
-            group = (dataset, sm.peptide.modified_sequence(), sm.charge)
+            group = (sm.peptide.modified_sequence(), sm.charge)
             cur = best.get(group)
             if cur is None or sm.andromeda > cur[0] or (
                 sm.andromeda == cur[0] and key < cur[1]

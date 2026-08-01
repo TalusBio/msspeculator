@@ -113,7 +113,7 @@ def test_val_winner_keys_picks_the_highest_andromeda_per_key(tmp_path):
     src = ProspectSource("prospect", cache=FileCache([str(tmp_path / "local")],
                                                      write_through=False))
     idx = build_meta_index(src, META, ["RUN_A"])
-    assert idx.val_winner_keys(["RUN_A"], "poolA") == {("RUN_A", 2), ("RUN_A", 3)}
+    assert idx.val_winner_keys(["RUN_A"]) == {("RUN_A", 2), ("RUN_A", 3)}
 
 
 def test_missing_factor_column_warns_and_still_loads_as_unknown(tmp_path):
