@@ -20,6 +20,7 @@ import os
 import re
 import zipfile
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import fsspec
 import numpy as np
@@ -34,6 +35,9 @@ from .precursors import Precursor
 from .prospect_catalog import load_catalog
 from .split import assign_split
 from .zenodo import ZenodoRecord
+
+if TYPE_CHECKING:
+    from .meta_index import MetaIndex
 
 _UNIMOD_TOKEN = re.compile(r"([A-Z])|\[UNIMOD:(\d+)\]")
 
@@ -156,6 +160,101 @@ def make_cache(
     if s3_prefix:
         tiers.append(s3_prefix)
     return FileCache(tiers, write_through=write_through)
+
+
+def decode_fragments(
+    index: "MetaIndex", frag: pd.DataFrame, schema: ProspectSchema
+) -> tuple["RealLabels", list[tuple[str, int]]]:
+    """Scatter one already-filtered fragment chunk into per-spectrum MS2 matrices.
+
+    ``frag`` must already be restricted to b/y ions at fragment charge 1-2 with no neutral
+    loss, and to the keys the caller wants; it carries its own ``raw_file`` column, so one call
+    handles a shard holding several raw files. This function does the (site, col) arithmetic,
+    the max-collapse of duplicate cells, and the per-spectrum scatter — nothing else. It is the
+    single scatter implementation: both the streaming reader and the in-memory ``to_labels``
+    path go through here.
+
+    Returns the labels plus each emitted example's ``(raw_file, scan_number)`` key, in order,
+    so the caller can attach that spectrum's own acquisition factors — which vary within a raw
+    file and must not be collapsed to one value per run.
+
+    Spectra whose key is absent from ``index`` are skipped: the meta join is what says a
+    spectrum is usable, and a fragment row without one has no peptide to attach to.
+    """
+    s = schema
+    n_ion = len(ION_TYPES)
+    empty = RealLabels([], [], [], [], {})
+    if frag.empty:
+        return empty, []
+
+    raws = frag[s.raw_file].astype(str).to_numpy()
+    scans = frag[s.scan_number].to_numpy().astype(np.int64)
+    keys = list(zip(raws, scans.tolist()))
+    lengths = np.array(
+        [
+            len(index.by_key[k].peptide.sequence) if k in index.by_key else 0
+            for k in keys
+        ],
+        dtype=np.int64,
+    )
+    is_b = frag[s.ann_ion_type].to_numpy() == "b"
+    z = frag[s.ann_frag_charge].to_numpy().astype(np.int64)
+    ordinal = frag[s.ann_ordinal].to_numpy().astype(np.int64)
+    # ION_TYPES order is b1,y1,b2,y2 -> col = (b?0:1) + 2*(z-1); b site = ord-1, y site = n-1-ord.
+    site = np.where(is_b, ordinal - 1, lengths - 1 - ordinal)
+    col = np.where(is_b, 0, 1) + 2 * (z - 1)
+    keep = (lengths > 1) & (site >= 0) & (site < lengths - 1)
+    if not keep.any():
+        return empty, []
+
+    work = frag.assign(
+        _raw=raws, _scan=scans, _site=site, _col=col,
+        _inten=frag[s.ann_intensity].to_numpy(dtype=np.float32),
+    )[keep]
+    agg = (
+        work.groupby(["_raw", "_scan", "_site", "_col"], sort=False)["_inten"]
+        .max()
+        .reset_index()
+    )
+
+    precursors: list[Precursor] = []
+    labels: list[PrecursorLabels] = []
+    raw_rt: list[float] = []
+    source_ids: list[str] = []
+    out_keys: list[tuple[str, int]] = []
+    acquisition: dict[str, dict] = {}
+    for (rf, scan), grp in agg.groupby(["_raw", "_scan"], sort=False):
+        key = (str(rf), int(scan))
+        sm = index.by_key[key]
+        ms2 = np.zeros((len(sm.peptide.sequence) - 1, n_ion), dtype=np.float32)
+        ms2[grp["_site"].to_numpy(), grp["_col"].to_numpy()] = grp["_inten"].to_numpy()
+        if not ms2.any():
+            continue
+        precursors.append(Precursor(sm.peptide, sm.charge, sm.split))
+        labels.append(PrecursorLabels(ms2=ms2, rt=sm.irt, ccs=float("nan")))
+        raw_rt.append(sm.raw_rt)
+        source_ids.append(key[0])
+        out_keys.append(key)
+        # Kept for RealLabels' documented shape. The per-example factors that actually reach
+        # the encoder come from SpectrumMeta via out_keys, not from this map.
+        acquisition.setdefault(
+            key[0],
+            {
+                "mass_analyzer": sm.mass_analyzer,
+                "fragmentation": sm.fragmentation,
+                "collision_energy": sm.energy,
+            },
+        )
+    return RealLabels(precursors, labels, raw_rt, source_ids, acquisition), out_keys
+
+
+def fragment_filter_mask(ann: pd.DataFrame, schema: ProspectSchema) -> np.ndarray:
+    """b/y ions, fragment charge 1-2, no neutral loss. Measured to keep 10-35% by pool."""
+    return (
+        ann[schema.ann_ion_type].isin(("b", "y")).to_numpy()
+        & ann[schema.ann_frag_charge].isin((1, 2)).to_numpy()
+        & (ann[schema.ann_neutral_loss].fillna("") == "").to_numpy()
+    )
 
 
 class ProspectSource:
@@ -307,12 +406,12 @@ class ProspectSource:
     ) -> "RealLabels":
         """Decode meta + long-format annotation into real student examples.
 
-        Joins on (raw_file, scan_number); keeps only b/y ions at fragment charge 1-2 with no
-        neutral loss; places each fragment intensity at its (site, ion) cell. RT is the
-        indexed_retention_time; CCS is NaN — PROSPECT has no ion mobility, so a real-data
-        regime must not supervise CCS from it. Each example carries its ``raw_file`` as the
-        context-stratification source id, plus per-run acquisition metadata.
+        Kept for the in-memory path (tests, small one-shot decodes). The streaming path builds
+        its MetaIndex once per run instead of once per call and goes straight to
+        ``decode_fragments``; both share that one scatter implementation.
         """
+        from .meta_index import MetaIndex, SpectrumMeta  # local: avoids a circular import
+
         split = split or SplitConfig()
         s = self.schema
         for col in (s.modified_sequence, s.charge, s.raw_file, s.scan_number):
@@ -324,107 +423,31 @@ class ProspectSource:
             else s.retention_time
         )
         raw_col = s.retention_time if s.retention_time in meta_df.columns else irt_col
-        n_ion = len(ION_TYPES)
 
-        # De-dup meta on the join key (first wins), parse each unique mod-string ONCE
-        # (parse_modseq is the only per-peptide Python cost; rows reuse the cached result).
-        # parse_modseq itself raises on an unresolvable accession, so every surviving parse
-        # is usable chemistry; the only remaining filter is a minimum length.
         meta_u = meta_df.drop_duplicates([s.raw_file, s.scan_number], keep="first")
-        parsed = {ms: parse_modseq(str(ms)) for ms in meta_u[s.modified_sequence].unique()}
-        n_of = {ms: len(v[0]) for ms, v in parsed.items()}
-        ok_len = {ms: len(v[0]) >= 2 for ms, v in parsed.items()}
-
-        acq_cols = [
-            f for f in ("mass_analyzer", "fragmentation") if getattr(s, f) in meta_df.columns
-        ]
-        has_ce = s.collision_energy in meta_df.columns
-        # Scalar meta columns to attach to each fragment row — no object columns keeps the merge fast.
-        carry = {s.raw_file, s.scan_number, s.modified_sequence, s.charge, irt_col, raw_col}
-        carry.update(getattr(s, f) for f in acq_cols)
-        if has_ce:
-            carry.add(s.collision_energy)
-
-        # Vectorized fragment filter: b/y ions, fragment charge 1-2, no neutral loss.
-        keep = (
-            ann_df[s.ann_ion_type].isin(("b", "y"))
-            & ann_df[s.ann_frag_charge].isin((1, 2))
-            & (ann_df[s.ann_neutral_loss].fillna("") == "")
-        )
-        frag = ann_df.loc[
-            keep,
-            [
-                s.raw_file,
-                s.scan_number,
-                s.ann_ion_type,
-                s.ann_ordinal,
-                s.ann_frag_charge,
-                s.ann_intensity,
-            ],
-        ].merge(meta_u[list(carry)], on=[s.raw_file, s.scan_number], how="inner")
-
-        # (site, col) computed for every surviving fragment at once. ION_TYPES order is
-        # b1,y1,b2,y2 -> col = (b?0:1) + 2*(z-1); b site = ord-1, y site = n-1-ord.
-        is_b = frag[s.ann_ion_type].to_numpy() == "b"
-        z = frag[s.ann_frag_charge].to_numpy().astype(np.int64)
-        ordinal = frag[s.ann_ordinal].to_numpy().astype(np.int64)
-        n_arr = frag[s.modified_sequence].map(n_of).to_numpy(dtype=np.int64)
-        oklen = frag[s.modified_sequence].map(ok_len).to_numpy(dtype=bool)
-        site = np.where(is_b, ordinal - 1, n_arr - 1 - ordinal)
-        col = np.where(is_b, 0, 1) + 2 * (z - 1)
-        mask = oklen & (site >= 0) & (site < n_arr - 1)
-        frag = frag.assign(
-            _site=site, _col=col, _inten=frag[s.ann_intensity].to_numpy(dtype=np.float32)
-        )[mask]
-
-        # Max-collapse duplicate (site, col) cells in C, then scatter per spectrum.
-        agg = (
-            frag.groupby([s.raw_file, s.scan_number, "_site", "_col"], sort=False)["_inten"]
-            .max()
-            .reset_index()
-        )
-
-        keymeta = frag.drop_duplicates([s.raw_file, s.scan_number], keep="first")
-        meta_at = {
-            (str(r), int(sc)): i
-            for i, (r, sc) in enumerate(
-                zip(keymeta[s.raw_file].to_numpy(), keymeta[s.scan_number].to_numpy())
+        index = MetaIndex()
+        parsed: dict[str, tuple[str, tuple]] = {}
+        for row in meta_u.itertuples(index=False):
+            modseq = str(getattr(row, s.modified_sequence))
+            if modseq not in parsed:
+                parsed[modseq] = parse_modseq(modseq)
+            stripped, mods = parsed[modseq]
+            rf = str(getattr(row, s.raw_file))
+            index.by_key[(rf, int(getattr(row, s.scan_number)))] = SpectrumMeta(
+                peptide=Peptide(stripped, mods),
+                charge=int(getattr(row, s.charge)),
+                irt=float(getattr(row, irt_col)),
+                raw_rt=float(getattr(row, raw_col)),
+                split=assign_split(stripped, split),
+                mass_analyzer=str(getattr(row, s.mass_analyzer, "")),
+                fragmentation=str(getattr(row, s.fragmentation, "")),
+                energy=float(getattr(row, s.collision_energy, float("nan"))),
+                andromeda=float(getattr(row, s.andromeda_score, float("nan"))),
             )
-        }
-        km_seq = keymeta[s.modified_sequence].to_numpy()
-        km_charge = keymeta[s.charge].to_numpy()
-        km_irt = keymeta[irt_col].to_numpy()
-        km_raw = keymeta[raw_col].to_numpy()
-        km_ce = keymeta[s.collision_energy].to_numpy() if has_ce else None
-        km_acq = {f: keymeta[getattr(s, f)].to_numpy() for f in acq_cols}
 
-        precursors: list[Precursor] = []
-        labels: list[PrecursorLabels] = []
-        raw_rt: list[float] = []
-        source_ids: list[str] = []
-        acquisition: dict[str, dict] = {}
-        for (raw_file, scan), grp in agg.groupby([s.raw_file, s.scan_number], sort=False):
-            i = meta_at.get((str(raw_file), int(scan)))
-            if i is None:
-                continue
-            stripped, mods = parsed[km_seq[i]]
-            ms2 = np.zeros((n_of[km_seq[i]] - 1, n_ion), dtype=np.float32)
-            ms2[grp["_site"].to_numpy(), grp["_col"].to_numpy()] = grp["_inten"].to_numpy()
-            if not ms2.any():
-                continue
-            precursors.append(
-                Precursor(Peptide(stripped, mods), int(km_charge[i]), assign_split(stripped, split))
-            )
-            # labels.rt = iRT (context-free base target); raw_rt = run-dependent target.
-            labels.append(PrecursorLabels(ms2=ms2, rt=float(km_irt[i]), ccs=float("nan")))
-            raw_rt.append(float(km_raw[i]))
-            rf = str(raw_file)
-            source_ids.append(rf)
-            if rf not in acquisition:
-                acquisition[rf] = {f: km_acq[f][i] for f in acq_cols} | {
-                    "collision_energy": float(km_ce[i]) if has_ce else float("nan")
-                }
-        return RealLabels(precursors, labels, raw_rt, source_ids, acquisition)
+        kept = ann_df.loc[fragment_filter_mask(ann_df, s)]
+        real, _keys = decode_fragments(index, kept, s)
+        return real
 
 
 @dataclass

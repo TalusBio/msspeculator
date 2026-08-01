@@ -12,11 +12,14 @@ import zipfile
 import pandas as pd
 import pytest
 
+from pepdistill.chem import Peptide
 from pepdistill.data.cache import FileCache
+from pepdistill.data.meta_index import MetaIndex, SpectrumMeta
 from pepdistill.data.prospect import (
     RECORDS,
     ProspectSchema,
     ProspectSource,
+    decode_fragments,
     parse_modseq,
 )
 from pepdistill.data.prospect_catalog import load_catalog
@@ -358,3 +361,70 @@ def test_annotation_shard_info_reports_names_and_sizes(tmp_path, monkeypatch):
 
     # The name-only view must stay consistent with it.
     assert src.annotation_shards("pool.zip") == [i.name for i in infos]
+
+
+def _index_for(peptide, charge=2, irt=50.0, raw_rt=5.0, split="train"):
+    idx = MetaIndex()
+    idx.by_key[("RUN_A", 7)] = SpectrumMeta(
+        peptide, charge, irt, raw_rt, split, "FTMS", "HCD", 28.0, 100.0
+    )
+    return idx
+
+
+def test_decode_fragments_scatters_b_and_y_into_the_right_cells():
+    idx = _index_for(Peptide("PEPK", ()))
+    frag = pd.DataFrame(
+        {
+            "raw_file": ["RUN_A"] * 3,
+            "scan_number": [7, 7, 7],
+            "ion_type": ["b", "y", "b"],
+            "no": [1, 1, 2],
+            "charge": [1, 1, 2],
+            "intensity": [0.5, 0.25, 0.75],
+        }
+    )
+    real, _ = decode_fragments(idx, frag, ProspectSchema())
+    assert len(real.precursors) == 1
+    ms2 = real.labels[0].ms2
+    assert ms2.shape == (3, 4)          # residues - 1, len(ION_TYPES)
+    assert ms2[0, 0] == 0.5             # b1 -> site 0, col 0
+    assert ms2[2, 1] == 0.25            # y1 -> site n-1-ord = 2, col 1
+    assert ms2[1, 2] == 0.75            # b2 z=2 -> site 1, col 0 + 2*(2-1)
+    assert real.raw_rt == [5.0] and real.source_ids == ["RUN_A"]
+    assert real.labels[0].rt == 50.0 and math.isnan(real.labels[0].ccs)
+
+
+def test_decode_fragments_drops_spectra_with_no_surviving_cells():
+    idx = _index_for(Peptide("PEPK", ()))
+    # ordinal 9 on a 4-mer: site is out of range, so nothing lands and the spectrum is dropped.
+    frag = pd.DataFrame(
+        {
+            "raw_file": ["RUN_A"], "scan_number": [7], "ion_type": ["b"],
+            "no": [9], "charge": [1], "intensity": [1.0],
+        }
+    )
+    real, _ = decode_fragments(idx, frag, ProspectSchema())
+    assert real.precursors == []
+
+
+def test_decode_fragments_max_collapses_duplicate_cells():
+    idx = _index_for(Peptide("PEPK", ()))
+    frag = pd.DataFrame(
+        {
+            "raw_file": ["RUN_A"] * 2, "scan_number": [7, 7], "ion_type": ["b", "b"],
+            "no": [1, 1], "charge": [1, 1], "intensity": [0.2, 0.9],
+        }
+    )
+    real, _ = decode_fragments(idx, frag, ProspectSchema())
+    assert real.labels[0].ms2[0, 0] == pytest.approx(0.9)
+
+
+def test_decode_fragments_ignores_scans_absent_from_the_index():
+    idx = _index_for(Peptide("PEPK", ()))
+    frag = pd.DataFrame(
+        {
+            "raw_file": ["RUN_A"], "scan_number": [999], "ion_type": ["b"],
+            "no": [1], "charge": [1], "intensity": [1.0],
+        }
+    )
+    assert decode_fragments(idx, frag, ProspectSchema())[0].precursors == []
