@@ -10,7 +10,8 @@
 #
 #   2. Real data + capacity, the recorded "real-data + longer" lever: preset small -> base
 #      (132K -> 899K params, d_model 64->128, 2->4 layers; width first per the arch sweep) and
-#      1 -> 6 third-pool shards (60,628 -> ~364,000 examples).
+#      1 -> 6 third-pool shards (60,628 -> ~364,000 examples measured under the old train+test
+#      filter -- see the split caveat below; actual train-only counts are smaller).
 #
 # epochs 60 -> 80 rather than 200: with 6x the data per epoch, 80 epochs is already ~8x the
 # example-views of the 0.626 run. 200 would be ~20x and mostly wall-clock.
@@ -21,9 +22,16 @@
 #     Terminal mods, mass-only, and the 18 newly-resolvable types stay unexercised.
 #   - All 6 shards are one pool -> one ChromRunbook dataset row, so the per-dataset RT affine
 #     still only ever fits a single row.
-#   - _load_real materializes every shard and merge_real_labels makes a second copy, so peak
-#     memory is ~2x the final size. The teacher is now released before this stage (a6f070a),
-#     which is what previously OOM-killed even a single-shard run.
+#   - Shards are streamed per epoch now, never materialized (_load_real is gone), so peak
+#     memory is one shard's filtered fragments + the shuffle buffer + the materialized val set --
+#     it does not grow with shard count. What DOES still grow with shard count is the meta
+#     index (440 B/spectrum measured): ~0.07 GB at 6 shards, ~5.94 GB at 500. The teacher is
+#     released before this stage (a6f070a), which is what previously OOM-killed even a
+#     single-shard run under the old materializing loader.
+#   - Training now uses the train split only -- test is genuinely held out, unlike the old
+#     `fit_realspeclib`, which trained on `split != "val"` (train+test combined). The example
+#     counts in lever 2 above predate that change and have not been re-measured; the ~6x scaling
+#     from 1 -> 6 shards is still the right order of magnitude.
 
 out = "runs/modrep-v2-dia"
 preset = "base"
@@ -64,9 +72,13 @@ max_var_mods = 1
 
 [train]
 enabled = true
+epochs = 80
+loss_weights = [1.0, 1.0, 1.0]
+
+[[train.sources]]
 record = "prospect"
 meta = "TUM_third_pool_meta_data.parquet"
 zip = "TUM_third_pool.zip"
 shards = [0, 1, 2, 3, 4, 5]
-epochs = 80
-loss_weights = [1.0, 1.0, 1.0]
+dataset = "third_pool"
+instrument = "Lumos"

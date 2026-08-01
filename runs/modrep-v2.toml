@@ -42,12 +42,14 @@ max_var_mods = 1
 
 [train]
 enabled = true
+epochs = 60
+loss_weights = [1.0, 1.0, 1.0]
+
+[[train.sources]]
 record = "prospect"
 meta = "TUM_third_pool_meta_data.parquet"
 zip = "TUM_third_pool.zip"
 shards = [0]
-epochs = 60
-loss_weights = [1.0, 1.0, 1.0]
 
 [export]
 enabled = true
