@@ -1,4 +1,4 @@
-# Scaled run targeting DIA-useful accuracy. The 0.626 run was preset=small, 1 shard, 60 epochs.
+# Scaled run targeting DIA-useful accuracy, against a preset=small / 1 shard / 60 epoch point.
 # Two levers move here, deliberately:
 #
 #   1. Pretrain peptide diversity. Pretrain losses fell 35-45% (MS2 0.227->0.147, CCS
@@ -23,7 +23,7 @@
 #      for the per-shard counts.)
 #
 # epochs 60 -> 80 rather than 200: with 5.6x the data per epoch, 80 epochs is already ~7.5x the
-# example-views of the 0.626 run. 200 would be ~20x and mostly wall-clock.
+# example-views of a single-shard run. 200 would be ~20x and mostly wall-clock.
 #
 # Caveats that bound what this can show:
 #   - Two variables move at once, so a disappointing result will not say which mattered.
@@ -59,8 +59,8 @@ passes = 1
 chunk_size = 10000
 
 [[pretrain.sources]]
-# E. coli K-12 (UP000000625), 4,403 proteins -> 211,347 tryptic peptides. Kept so the corpus
-# from the 0.626 baseline is still represented.
+# E. coli K-12 (UP000000625), 4,403 proteins -> 211,347 tryptic peptides. Kept so the original
+# pretrain corpus is still represented.
 fasta = "/Users/sebastianpaez/Downloads/ecoli_UP000000625.fasta"
 enzyme = "trypsin"
 missed = 2
