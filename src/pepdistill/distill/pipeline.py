@@ -25,6 +25,7 @@ import gc
 import json
 import time
 import tomllib
+import warnings
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
@@ -43,6 +44,28 @@ from ..teacher import get_teacher
 from .context_regime import RealSpeclibDataset, establish_rt_norm, fit_realspeclib_datasets
 from .real_stream import ShardSpec, StreamingRealDataset, collect_val_examples
 from .stream_pretrain import StreamMix, StreamPretrainCfg, fit_stream_pretrain
+
+
+def _configure_runtime_warnings() -> None:
+    """Filter known dependency chatter while preserving model/data warnings.
+
+    Lightning 2.6 still probes torch 2.3+'s deprecated ``LeafSpec`` API.  Its worker-count
+    suggestion is also not applicable to our stateful streaming iterable: adding workers
+    without explicit shard partitioning would duplicate each epoch.  Keep these two known,
+    non-actionable messages out of long training logs; genuine warnings continue through.
+    """
+    warnings.filterwarnings(
+        "ignore",
+        message=r"`isinstance\(treespec, LeafSpec\)` is deprecated.*",
+        category=DeprecationWarning,
+        module=r"lightning\.pytorch\.utilities\._pytree",
+    )
+    warnings.filterwarnings(
+        "ignore",
+        message=r"The '.*_dataloader' does not have many workers.*",
+        category=UserWarning,
+        module=r"lightning\.pytorch\.trainer\.connectors\.data_connector",
+    )
 
 
 @dataclass
@@ -422,6 +445,7 @@ def _run_pretrain(cfg: RunConfig, model, encoder, acc, log):
 
 def run_pipeline(cfg: RunConfig, log=print) -> dict:
     """Execute the enabled stages in order. Returns a summary dict of per-stage metrics."""
+    _configure_runtime_warnings()
     out = Path(cfg.out)
     out.mkdir(parents=True, exist_ok=True)
     acc = _accelerator(cfg.device)

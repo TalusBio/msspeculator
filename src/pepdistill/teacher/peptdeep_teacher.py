@@ -71,7 +71,10 @@ class PeptDeepTeacher(Teacher):
         self.nce = nce
         self.instrument = instrument
         self.batch_size = batch_size
-        self._mgr = ModelManager(mask_modloss=True, device=device)
+        # We only request ordinary b/y ions (no mod-loss columns), so masking mod-loss
+        # predictions has no effect here.  Passing True now emits peptdeep's deprecation
+        # warning because the model's charged-fragment configuration is the source of truth.
+        self._mgr = ModelManager(mask_modloss=False, device=device)
         self._mgr.load_installed_models()
 
     def _frame(self, precursors: list[Precursor], nces=None) -> pd.DataFrame:

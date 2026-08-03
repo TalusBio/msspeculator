@@ -26,6 +26,7 @@ new run), freeze the model and step only the encoder/runbook.
 from __future__ import annotations
 
 import math
+import time
 from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -263,6 +264,61 @@ class RealSpeclibModule(L.LightningModule):
         return torch.optim.AdamW(params, lr=self.lr, weight_decay=self.weight_decay)
 
 
+class _RealTrainProgress(L.Callback):
+    """Low-noise progress for the streaming real-data stage.
+
+    The iterable dataset cannot know its epoch length without decoding every shard first, so
+    Lightning's normal percentage bar is misleading here.  Report epoch/batch checkpoints and
+    elapsed time instead; the batch index is still useful for spotting a stalled shard or loader.
+    """
+
+    def __init__(self, every: int = 100) -> None:
+        super().__init__()
+        self.every = every
+        self._started = 0.0
+
+    def on_train_epoch_start(self, trainer: L.Trainer, pl_module: L.LightningModule) -> None:
+        self._started = time.perf_counter()
+        trainer.print(f"[train] epoch {trainer.current_epoch + 1}/{trainer.max_epochs} started")
+
+    def on_train_batch_end(
+        self,
+        trainer: L.Trainer,
+        pl_module: L.LightningModule,
+        outputs,
+        batch,
+        batch_idx: int,
+    ) -> None:
+        n = batch_idx + 1
+        if self.every > 0 and n % self.every == 0:
+            loss = trainer.callback_metrics.get("train_ms2")
+            loss_text = "" if loss is None else f", ms2={float(loss):.4f}"
+            elapsed = time.perf_counter() - self._started
+            trainer.print(
+                f"[train] epoch {trainer.current_epoch + 1}/{trainer.max_epochs}, "
+                f"batch {n}{loss_text}, elapsed {elapsed:.0f}s"
+            )
+
+    def on_train_epoch_end(self, trainer: L.Trainer, pl_module: L.LightningModule) -> None:
+        elapsed = time.perf_counter() - self._started
+        trainer.print(
+            f"[train] epoch {trainer.current_epoch + 1}/{trainer.max_epochs} finished "
+            f"in {elapsed:.1f}s"
+        )
+
+    def on_validation_epoch_end(self, trainer: L.Trainer, pl_module: L.LightningModule) -> None:
+        names = sorted(k for k in trainer.callback_metrics if k.startswith("val/"))
+        if names:
+            # Keep the line compact; the full per-dataset values remain in callback_metrics and
+            # are written to summary.json at the end of the run.
+            preview = ", ".join(
+                f"{k}={float(trainer.callback_metrics[k]):.4f}"
+                for k in names
+                if "/n" not in k
+            )
+            trainer.print(f"[val] epoch {trainer.current_epoch + 1}: {preview}")
+
+
 def _build_examples(
     real: RealLabels, encoder: MSContextEncoder, dataset_id: int, instrument: str
 ) -> list[RealExample]:
@@ -353,6 +409,7 @@ def fit_realspeclib_datasets(
     accelerator: str = "auto",
     freeze_backbone: bool = False,
     mod_align_weight: float = 1.0,
+    progress_log_every: int = 100,
     **trainer_kwargs,
 ) -> RealSpeclibModule:
     """Fit on datasets the caller already built.
@@ -386,7 +443,10 @@ def fit_realspeclib_datasets(
             return None
         return DataLoader(BatchIterable(ds, batch_size, shuffle, seed), batch_size=None)
 
-    trainer = build_trainer(epochs, accelerator, grad_clip, **trainer_kwargs)
+    callbacks = list(trainer_kwargs.pop("callbacks", []))
+    if progress_log_every > 0:
+        callbacks.append(_RealTrainProgress(progress_log_every))
+    trainer = build_trainer(epochs, accelerator, grad_clip, callbacks=callbacks, **trainer_kwargs)
     trainer.fit(module, loader(train_ds, True), loader(val_ds, False))
     return module
 
