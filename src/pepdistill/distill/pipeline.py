@@ -36,7 +36,7 @@ from ..data.config import DigestConfig, SplitConfig
 from ..data.digest import digest_fasta
 from ..data.meta_index import MetaIndex, build_meta_index
 from ..data.precursors import enumerate_precursors
-from ..data.prospect import ProspectSource
+from ..data.prospect import ProspectSource, make_cache
 from ..data.shard_store import extract_shards, select_members, shard_raw_files
 from ..models.context import ChromRunbook, MSContextEncoder
 from ..models.registry import PRESETS, build_student, load_checkpoint, load_context, save_checkpoint
@@ -282,6 +282,8 @@ class RunConfig:
     device: str = "auto"
     seed: int = 0
     model_in: str | None = None  # optional checkpoint to initialize pretrain/train/export/bench
+    cache_dir: str | None = None
+    cache_s3_prefix: str | None = None
     pretrain: PretrainCfg = field(default_factory=PretrainCfg)
     train: TrainCfg = field(default_factory=TrainCfg)
     export: ExportCfg = field(default_factory=ExportCfg)
@@ -296,7 +298,16 @@ class RunConfig:
         return cls(
             **{
                 k: raw[k]
-                for k in ("out", "preset", "activation", "device", "seed", "model_in")
+                for k in (
+                    "out",
+                    "preset",
+                    "activation",
+                    "device",
+                    "seed",
+                    "model_in",
+                    "cache_dir",
+                    "cache_s3_prefix",
+                )
                 if k in raw
             },
             pretrain=PretrainCfg(sources=sources, **pre),
@@ -353,7 +364,9 @@ def _release_accelerator_cache(acc: str) -> None:
 
 
 def _build_train_stage(
-    cfg: RunConfig, log, existing_dataset_index: dict[str, int] | None = None
+    cfg: RunConfig,
+    log,
+    existing_dataset_index: dict[str, int] | None = None,
 ):
     """Extract every source's shards, build its meta index, and assemble what the real-data
     stage needs: the train and val shard lists, one merged meta index, the dataset index (plus
@@ -364,6 +377,7 @@ def _build_train_stage(
     the meta index, not the spectra.
     """
     _check_train_sources(cfg.train)
+    cache = make_cache(cfg.cache_dir, cfg.cache_s3_prefix)
     dataset_index = resolve_dataset_index(cfg.train.sources, existing=existing_dataset_index)
     names_by_row = {row: name for name, row in dataset_index.items()}
     train_shards: list[ShardSpec] = []
@@ -372,7 +386,7 @@ def _build_train_stage(
     stats: list[tuple[int, float, float]] = []
     total_sources = len(cfg.train.sources)
     for source_num, s in enumerate(cfg.train.sources, start=1):
-        src = ProspectSource(s.record)
+        src = ProspectSource(s.record, cache=cache)
         source_label = f"{s.record}/{s.zip}"
         started = time.perf_counter()
         log(

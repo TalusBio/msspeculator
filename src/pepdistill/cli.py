@@ -43,6 +43,11 @@ def run(
         readable=True,
         help="Initialize pretrain/train/export/bench from a checkpoint.",
     ),
+    cache_s3_prefix: Optional[str] = typer.Option(
+        None,
+        "--cache-s3-prefix",
+        help="Shared S3 cache prefix (also configurable as PEPDISTILL_S3_PREFIX).",
+    ),
     no_pretrain: bool = typer.Option(False, help="Disable the teacher-distill pretrain stage."),
     no_train: bool = typer.Option(False, help="Disable the real-speclib train stage."),
 ) -> None:
@@ -54,6 +59,8 @@ def run(
         cfg = replace(cfg, device=device)
     if model_in is not None:
         cfg = replace(cfg, model_in=str(model_in))
+    if cache_s3_prefix is not None:
+        cfg = replace(cfg, cache_s3_prefix=cache_s3_prefix)
     if no_pretrain:
         cfg = replace(cfg, pretrain=replace(cfg.pretrain, enabled=False))
     if no_train:

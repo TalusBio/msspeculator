@@ -239,9 +239,11 @@ def make_cache(
 ) -> FileCache:
     """Build the tiered cache: local first, optional S3 mirror second.
 
-    ``s3_prefix`` like ``s3://my-bucket/prospect``. S3 creds come from the standard AWS
-    chain (env / profile); this never embeds them.
+    ``s3_prefix`` like ``s3://my-bucket/prospect``. If omitted, ``PEPDISTILL_S3_PREFIX``
+    enables the shared intermediate tier for normal pipeline-created sources. S3 creds come
+    from the standard AWS chain (env / profile); this never embeds them.
     """
+    s3_prefix = s3_prefix or os.environ.get("PEPDISTILL_S3_PREFIX")
     tiers = [local_dir or default_cache_dir()]
     if s3_prefix:
         tiers.append(s3_prefix)

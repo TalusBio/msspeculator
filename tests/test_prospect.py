@@ -61,6 +61,14 @@ def test_files_listed_from_catalog_offline(tmp_path):
     assert REAL_FILE in files and all(f.endswith(".parquet") for f in files)
 
 
+def test_make_cache_uses_s3_environment_tier(tmp_path, monkeypatch):
+    from pepdistill.data.prospect import make_cache
+
+    monkeypatch.setenv("PEPDISTILL_S3_PREFIX", "s3://bucket/pepdistill")
+    cache = make_cache(local_dir=str(tmp_path / "local"))
+    assert cache.tiers == [str(tmp_path / "local"), "s3://bucket/pepdistill"]
+
+
 def test_read_and_acquisition_factors(tmp_path):
     src = ProspectSource("prospect", cache=_seed(tmp_path))
     df = src.read(REAL_FILE)
