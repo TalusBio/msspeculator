@@ -12,6 +12,7 @@ our own — so the member name is the whole cache key and there is no staleness 
 from __future__ import annotations
 
 import shutil
+from collections.abc import Callable
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -62,7 +63,12 @@ def _shard_key(src: ProspectSource, zip_filename: str, member: str) -> str:
     return f"shards/{src.record}/{zip_filename.removesuffix('.zip')}/{member.split('/')[-1]}"
 
 
-def extract_shards(src: ProspectSource, zip_filename: str, members: list[str]) -> list[str]:
+def extract_shards(
+    src: ProspectSource,
+    zip_filename: str,
+    members: list[str],
+    progress: Callable[[int, int, str], None] | None = None,
+) -> list[str]:
     """Local parquet paths for ``members``, in the same order, opening the remote zip AT MOST
     ONCE for the whole batch.
 
@@ -82,7 +88,7 @@ def extract_shards(src: ProspectSource, zip_filename: str, members: list[str]) -
 
     if missing:
         with src._open_remote_zip(zip_filename) as z:
-            for i in missing:
+            for done, i in enumerate(missing, start=1):
                 member = members[i]
 
                 # copyfileobj, not out.write(z.read(member)): the members are 90.7-387.6 MB,
@@ -93,6 +99,8 @@ def extract_shards(src: ProspectSource, zip_filename: str, members: list[str]) -
                         shutil.copyfileobj(member_f, out)
 
                 paths[i] = cache.store(keys[i], write)
+                if progress is not None:
+                    progress(done, len(missing), member)
 
     return paths  # type: ignore[return-value]  # every entry was filled above
 

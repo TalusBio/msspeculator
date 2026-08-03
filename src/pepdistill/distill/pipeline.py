@@ -367,18 +367,49 @@ def _build_train_stage(cfg: RunConfig, log):
     val_shards: list[ShardSpec] = []
     indices: list[MetaIndex] = []
     stats: list[tuple[int, float, float]] = []
-    for s in cfg.train.sources:
+    total_sources = len(cfg.train.sources)
+    for source_num, s in enumerate(cfg.train.sources, start=1):
         src = ProspectSource(s.record)
+        source_label = f"{s.record}/{s.zip}"
+        started = time.perf_counter()
+        log(
+            f"[train] source {source_num}/{total_sources} {source_label}: "
+            f"resolving {len(s.shards)} shard index(es)"
+        )
         members = select_members(src, s.zip, s.shards)
+        log(
+            f"[train] source {source_num}/{total_sources} {source_label}: "
+            f"preparing {len(members)} shard file(s) (cached files are checked first)"
+        )
+
+        def extraction_progress(done: int, total: int, member: str) -> None:
+            log(
+                f"[train] source {source_num}/{total_sources} {source_label}: "
+                f"extracted missing shard {done}/{total} — {Path(member).name}"
+            )
+
         # Extract first: raw_files come from each shard's own column, never from its filename
         # (a third-pool shard holds three, none matching the member stem). One extract_shards
         # call per source, not one extract_shard call per member: each remote-zip open re-reads
         # the central directory and, cold, re-opens the whole HTTP stream, and a source can
         # have ~10 shards — enough opens in a row to trip Zenodo's rate limiter on its own.
-        paths = extract_shards(src, s.zip, members)
+        paths = extract_shards(src, s.zip, members, progress=extraction_progress)
+        log(
+            f"[train] source {source_num}/{total_sources} {source_label}: "
+            f"shard files ready ({time.perf_counter() - started:.1f}s); discovering raw files"
+        )
         per_shard = [tuple(shard_raw_files(p)) for p in paths]
         raw_files = sorted({r for rs in per_shard for r in rs})
+        log(
+            f"[train] source {source_num}/{total_sources} {source_label}: "
+            f"found {len(raw_files)} raw file(s); indexing metadata"
+        )
         index = build_meta_index(src, s.meta, raw_files)
+        log(
+            f"[train] source {source_num}/{total_sources} {source_label}: "
+            f"metadata indexed ({len(index.by_key):,} spectra, "
+            f"{time.perf_counter() - started:.1f}s elapsed)"
+        )
         indices.append(index)
         row = dataset_index[s.dataset or "default"]
         specs = [

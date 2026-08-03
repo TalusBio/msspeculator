@@ -157,6 +157,17 @@ def test_extract_shards_returns_paths_in_order_and_readable(tmp_path):
         assert list(pd.read_parquet(p).scan_number) == [i]
 
 
+def test_extract_shards_reports_missing_member_progress(tmp_path):
+    src = ProspectSource("prospect", cache=_seed_zip_n(tmp_path, 3))
+    members = select_members(src, ZIP_NAME, [0, 1, 2])
+    events = []
+    extract_shards(src, ZIP_NAME, members, progress=lambda done, total, member: events.append(
+        (done, total, member.split("/")[-1])
+    ))
+    assert [done for done, _, _ in events] == [1, 2, 3]
+    assert all(total == 3 for _, total, _ in events)
+
+
 def test_extract_shards_opens_zip_at_most_once_for_a_cold_batch(tmp_path, monkeypatch):
     """The point of extract_shards: N shards must not cost N zip opens.
 
