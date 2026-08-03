@@ -25,7 +25,7 @@ import gc
 import json
 import time
 import tomllib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import lightning as L
@@ -37,7 +37,7 @@ from ..data.precursors import enumerate_precursors
 from ..data.prospect import ProspectSource
 from ..data.shard_store import extract_shards, select_members, shard_raw_files
 from ..models.context import ChromRunbook, MSContextEncoder
-from ..models.registry import build_student, load_checkpoint, save_checkpoint
+from ..models.registry import PRESETS, build_student, load_checkpoint, save_checkpoint
 from ..predict.fast import TorchRunner, predict_library_fast
 from ..teacher import get_teacher
 from .context_regime import RealSpeclibDataset, establish_rt_norm, fit_realspeclib_datasets
@@ -244,6 +244,7 @@ class BenchCfg:
 class RunConfig:
     out: str = "runs/exp"
     preset: str = "small"
+    activation: str | None = None  # override preset activation for controlled retraining sweeps
     device: str = "auto"
     seed: int = 0
     model_in: str | None = None  # load this checkpoint instead of building (export/bench only)
@@ -259,7 +260,11 @@ class RunConfig:
         pre = raw.get("pretrain", {})
         sources = [DigestSource(**s) for s in pre.pop("sources", [])]
         return cls(
-            **{k: raw[k] for k in ("out", "preset", "device", "seed", "model_in") if k in raw},
+            **{
+                k: raw[k]
+                for k in ("out", "preset", "activation", "device", "seed", "model_in")
+                if k in raw
+            },
             pretrain=PretrainCfg(sources=sources, **pre),
             train=_train_cfg(raw.get("train", {})),
             export=ExportCfg(**raw.get("export", {})),
@@ -422,7 +427,13 @@ def run_pipeline(cfg: RunConfig, log=print) -> dict:
     acc = _accelerator(cfg.device)
     summary: dict = {}
 
-    model = load_checkpoint(cfg.model_in) if cfg.model_in else build_student(cfg.preset)
+    if cfg.model_in:
+        model = load_checkpoint(cfg.model_in)
+    else:
+        model_cfg = PRESETS[cfg.preset]
+        if cfg.activation is not None:
+            model_cfg = replace(model_cfg, activation=cfg.activation)
+        model = build_student(model_cfg)
     # The MSContextEncoder is needed by the real-data sink AND by streaming pretrain (the NCE
     # sweep); build once and share it across both. Either enabled stage conditions on it.
     need_encoder = cfg.train.enabled or cfg.pretrain.enabled

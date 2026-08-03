@@ -1,0 +1,75 @@
+# Controlled activation comparison against runs/multipool10.toml.
+# The only model change is GELU -> Leaky ReLU (negative slope 0.01).
+
+out = "runs/multipool10-leakyrelu"
+preset = "small"
+activation = "leaky_relu"
+device = "auto"
+seed = 0
+
+[pretrain]
+enabled = true
+teacher = "alphapeptdeep"
+nce_min = 20.0
+nce_max = 40.0
+passes = 1
+chunk_size = 10000
+
+[[pretrain.sources]]
+fasta = "/Users/sebastianpaez/Downloads/ecoli_UP000000625.fasta"
+enzyme = "trypsin"
+missed = 2
+min_len = 7
+max_len = 30
+min_charge = 2
+max_charge = 4
+max_var_mods = 1
+
+[train]
+enabled = true
+epochs = 60
+loss_weights = [1.0, 1.0, 1.0]
+
+[[train.sources]]
+record = "tmt"
+meta = "TMT_TUM_third_pool_meta_data.parquet"
+zip = "TMT_TUM_third_pool.zip"
+shards = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+dataset = "tmt_third_pool"
+instrument = "Lumos"
+
+[[train.sources]]
+record = "prospect"
+meta = "TUM_third_pool_meta_data.parquet"
+zip = "TUM_third_pool.zip"
+shards = [0]
+dataset = "third_pool_nomod"
+instrument = "Lumos"
+
+[[train.sources]]
+record = "prospect"
+meta = "TUM_HLA_meta_data.parquet"
+zip = "TUM_HLA.zip"
+shards = [84, 85]
+dataset = "hla_immuno"
+instrument = "Lumos"
+
+[[train.sources]]
+record = "test_ptm"
+meta = "Kmod_Acetyl_meta_data.parquet"
+zip = "Kmod_Acetyl.zip"
+shards = [1, 2]
+dataset = "kmod_acetyl"
+instrument = "Lumos"
+
+[[train.sources]]
+record = "tmt_ptm"
+meta = "TMT_TUM_mod_imp_pSTY_meta_data.parquet"
+zip = "TMT_TUM_mod_imp_pSTY.zip"
+shards = [21, 1, 7, 23]
+dataset = "tmt_phospho"
+instrument = "Lumos"
+
+[export]
+# ONNX is intentionally deferred; this run is for the activation comparison.
+enabled = false

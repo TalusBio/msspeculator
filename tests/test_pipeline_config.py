@@ -52,6 +52,14 @@ def test_sources_parse_into_train_source_objects(tmp_path):
     assert cfg.train.sources[0].instrument == "Lumos"
 
 
+def test_activation_override_parses(tmp_path):
+    text = BASE.replace("enabled = true", "enabled = false").replace(
+        '\n[pretrain]', '\nactivation = "leaky_relu"\n\n[pretrain]'
+    )
+    cfg = RunConfig.from_toml(_write(tmp_path, text))
+    assert cfg.activation == "leaky_relu"
+
+
 def test_flat_pool_keys_raise(tmp_path):
     text = BASE + '\nrecord = "prospect"\nzip = "TUM_third_pool.zip"\n'
     with pytest.raises(ValueError, match=r"\[\[train.sources\]\]"):

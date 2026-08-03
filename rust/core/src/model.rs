@@ -20,6 +20,7 @@ fn gelu(x: f32) -> f32 {
 fn act_scalar(v: f32, act: &str) -> f32 {
     match act {
         "relu" => v.max(0.0),
+        "leaky_relu" => if v < 0.0 { 0.01 * v } else { v },
         _ => gelu(v),
     }
 }
