@@ -653,6 +653,7 @@ def run_pipeline(cfg: RunConfig, log=print) -> dict:
             early_stop_min_delta=cfg.train.early_stop_min_delta,
             enable_progress_bar=False,
             progress_metrics_path=out / "train_metrics.jsonl",
+            checkpoint_dir=out,
         )
         summary["train"] = {k: float(v) for k, v in module.trainer.callback_metrics.items()}
         summary["dataset_index"] = dataset_index

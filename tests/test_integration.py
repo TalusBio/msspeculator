@@ -369,6 +369,8 @@ def test_two_source_streaming_train_stage_runs_end_to_end(tmp_path, monkeypatch)
     # leaking in moves the mean far outside this tolerance.
     model = load_checkpoint(out / "model.ckpt")
     assert float(model.rt_mean) == pytest.approx(expected["rt_mean"])
+    assert (out / "latest.ckpt").exists()
+    assert (out / "best.ckpt").exists()
 
 
 def test_model_in_continues_real_train_from_checkpoint(tmp_path, monkeypatch):

@@ -41,6 +41,7 @@ from torch.utils.data import DataLoader
 from ..data.precursors import Precursor
 from ..eval import best_per_key, ms2_intensity, precursor_key
 from ..models.context import ChromRunbook, MSContextEncoder
+from ..models.registry import save_checkpoint
 from ..models.student import StudentModel
 from ..teacher.base import PrecursorLabels
 from .dataset import BatchIterable, LabeledBatch, MSFactors, collate_with_labels, iter_batch_indices
@@ -393,6 +394,48 @@ class _RealValidationEarlyStop(L.Callback):
             )
 
 
+class _RealCheckpoint(L.Callback):
+    """Persist inference-ready latest/best snapshots during real-data training."""
+
+    def __init__(self, directory: str | Path, expected_keys: set[str]) -> None:
+        super().__init__()
+        self.directory = Path(directory)
+        self.expected_keys = expected_keys
+        self.best = float("inf")
+
+    def _save(self, name: str, pl_module: RealSpeclibModule) -> None:
+        self.directory.mkdir(parents=True, exist_ok=True)
+        save_checkpoint(
+            pl_module.model,
+            self.directory / name,
+            encoder=pl_module.encoder,
+            runbook=pl_module.runbook,
+            dataset_index=pl_module.dataset_index,
+        )
+
+    def on_train_epoch_end(self, trainer: L.Trainer, pl_module: RealSpeclibModule) -> None:
+        # This snapshot is available even when validation is disabled or crashes afterwards.
+        self._save("latest.ckpt", pl_module)
+
+    def on_validation_epoch_end(self, trainer: L.Trainer, pl_module: RealSpeclibModule) -> None:
+        if trainer.sanity_checking:
+            return
+        self._save("latest.ckpt", pl_module)
+        if not self.expected_keys:
+            return
+        metrics = {
+            key: value
+            for key, value in trainer.callback_metrics.items()
+            if key in self.expected_keys and torch.is_tensor(value) and value.numel() == 1
+        }
+        if len(metrics) != len(self.expected_keys):
+            return  # the early-stop callback below will report the missing keys
+        current = sum(float(value) for value in metrics.values()) / len(metrics)
+        if current < self.best:
+            self.best = current
+            self._save("best.ckpt", pl_module)
+
+
 def _build_examples(
     real: RealLabels, encoder: MSContextEncoder, dataset_id: int, instrument: str
 ) -> list[RealExample]:
@@ -485,6 +528,7 @@ def fit_realspeclib_datasets(
     mod_align_weight: float = 1.0,
     progress_log_every: int = 100,
     progress_metrics_path: str | Path | None = None,
+    checkpoint_dir: str | Path | None = None,
     early_stop_patience: int = 0,
     early_stop_min_delta: float = 1e-3,
     **trainer_kwargs,
@@ -535,6 +579,16 @@ def fit_realspeclib_datasets(
         callbacks.append(
             _RealValidationEarlyStop(early_stop_patience, early_stop_min_delta, expected_keys)
         )
+    if checkpoint_dir is not None:
+        checkpoint_keys = (
+            {
+                f"val/{module.dataset_names[int(dataset_id)]}/spectral_angle"
+                for dataset_id in np.unique(val_ds.dataset_id)
+            }
+            if val_ds is not None and len(val_ds)
+            else set()
+        )
+        callbacks.insert(0, _RealCheckpoint(checkpoint_dir, checkpoint_keys))
     trainer = build_trainer(epochs, accelerator, grad_clip, callbacks=callbacks, **trainer_kwargs)
     trainer.fit(module, loader(train_ds, True), loader(val_ds, False))
     return module
