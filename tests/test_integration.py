@@ -334,7 +334,14 @@ def test_two_source_streaming_train_stage_runs_end_to_end(tmp_path, monkeypatch)
 
     assert summary["dataset_index"] == {"poolA": 1, "poolB": 2}
     assert "train" in summary
-    assert "val_spectral_angle" in summary["train"]  # val ran
+    # Validation is source-resolved: a pooled score would be dominated by the larger pool and
+    # could hide a regression in the other one.
+    for dataset in ("poolA", "poolB"):
+        assert f"val/{dataset}/spectral_angle" in summary["train"]
+        assert f"val/{dataset}/irt_mae" in summary["train"]
+        assert f"val/{dataset}/rawrt_mae" in summary["train"]
+        assert summary["train"][f"val/{dataset}/n"] > 0
+    assert "val_spectral_angle" not in summary["train"]
 
     # Exactly poolA's train rows were streamed: the val_only pool is held out of training, and
     # so are val AND test. train_energy_present counts every example the epoch actually saw

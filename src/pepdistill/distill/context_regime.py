@@ -155,6 +155,9 @@ class RealSpeclibModule(L.LightningModule):
         self.mod_align_weight = mod_align_weight
         # dataset name -> chrom_context row; needed to address a trained dataset at inference.
         self.dataset_index = dataset_index
+        self.dataset_names = (
+            {row: name for name, row in dataset_index.items()} if dataset_index is not None else {}
+        )
         if freeze_backbone:  # PEFT: fit only the context modules, backbone stays fixed.
             self.model.requires_grad_(False)
 
@@ -223,14 +226,34 @@ class RealSpeclibModule(L.LightningModule):
     def validation_step(self, rb: RealBatch, batch_idx: int) -> None:
         out = self._forward(rb)
         lb = rb.base
-        sa = spectral_angle(out["ms2"], lb.ms2_target, lb.inputs.frag_mask).mean()
-        irt_mae = (self.model.unstandardize_rt(out["rt_base"]) - lb.rt_target).abs().mean()
-        rawrt_mae = (self.model.unstandardize_rt(out["rt"]) - rb.raw_rt).abs().mean()
-        self.log_dict(
-            {"val_spectral_angle": sa, "val_irt_mae": irt_mae, "val_rawrt_mae": rawrt_mae},
-            prog_bar=True,
-            batch_size=rb.raw_rt.shape[0],
-        )
+        sa = spectral_angle(out["ms2"], lb.ms2_target, lb.inputs.frag_mask)
+        irt_error = (self.model.unstandardize_rt(out["rt_base"]) - lb.rt_target).abs()
+        rawrt_error = (self.model.unstandardize_rt(out["rt"]) - rb.raw_rt).abs()
+
+        # A pooled score is dominated by whichever source contributes the most val winners and
+        # hides regressions on smaller sources. Report each dataset as its own measurement.
+        # Lightning combines repeated logs for a dataset across batches, weighted by the
+        # dataset's row count in each batch.
+        for dataset_id in rb.dataset_id.unique().tolist():
+            name = self.dataset_names.get(dataset_id)
+            if name is None:
+                raise KeyError(
+                    f"validation batch carries unnamed dataset_id={dataset_id!r}; known rows: "
+                    f"{sorted(self.dataset_names)}"
+                )
+            mask = rb.dataset_id == dataset_id
+            n = int(mask.sum())
+            prefix = f"val/{name}"
+            self.log_dict(
+                {
+                    f"{prefix}/spectral_angle": sa[mask].mean(),
+                    f"{prefix}/irt_mae": irt_error[mask].mean(),
+                    f"{prefix}/rawrt_mae": rawrt_error[mask].mean(),
+                },
+                prog_bar=False,
+                batch_size=n,
+            )
+            self.log(f"{prefix}/n", float(n), reduce_fx="sum")
 
     def configure_optimizers(self) -> torch.optim.Optimizer:
         # Optimize every trainable parameter across the registered submodules (model + runbook +

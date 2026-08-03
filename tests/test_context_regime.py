@@ -246,4 +246,9 @@ def test_fit_from_prebuilt_datasets_trains_and_reports_metrics(tmp_path):
         enable_progress_bar=False,
     )
     assert module.dataset_index == {"pool": 1}
-    assert "val_spectral_angle" in module.trainer.callback_metrics
+    metrics = module.trainer.callback_metrics
+    assert "val/pool/spectral_angle" in metrics
+    assert "val/pool/irt_mae" in metrics
+    assert "val/pool/rawrt_mae" in metrics
+    assert metrics["val/pool/n"] == 2
+    assert "val_spectral_angle" not in metrics
