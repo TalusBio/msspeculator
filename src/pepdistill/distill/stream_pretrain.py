@@ -74,9 +74,32 @@ class StreamPretrainCfg:
     min_delta: float = 1e-3
     check_every: int = 200
     warmup_steps: int = 500
+    # OneCycle is enabled by default for the streaming warmup. The stream is an iterable with no
+    # cheap, reliable length (teacher filtering changes the yielded batch count), so the cycle
+    # length is explicit and should be set to the expected optimizer-step count for a run.
+    onecycle_max_lr: float | None = 1e-3
+    onecycle_total_steps: int | None = 2500
+    onecycle_pct_start: float = 0.3
+    onecycle_div_factor: float = 25.0
+    onecycle_final_div_factor: float = 1e4
     # Ties mass_enc onto a stop-gradiented comp_enc (see losses.mod_align_loss); this regime
     # also drives a DistillModule, so it gets the same knob as fit_distill/fit_realspeclib.
     mod_align_weight: float = 1.0
+
+    def __post_init__(self) -> None:
+        if (self.onecycle_max_lr is None) != (self.onecycle_total_steps is None):
+            raise ValueError(
+                "onecycle_max_lr and onecycle_total_steps must be provided together"
+            )
+        if self.onecycle_max_lr is not None:
+            if self.onecycle_max_lr <= 0:
+                raise ValueError("onecycle_max_lr must be positive")
+            if self.onecycle_total_steps < 1:
+                raise ValueError("onecycle_total_steps must be positive")
+            if not 0.0 <= self.onecycle_pct_start <= 1.0:
+                raise ValueError("onecycle_pct_start must be between 0 and 1")
+            if self.onecycle_div_factor <= 0 or self.onecycle_final_div_factor <= 0:
+                raise ValueError("onecycle_div_factor and onecycle_final_div_factor must be positive")
 
 
 def default_mixes(fasta: str) -> list[StreamMix]:
@@ -267,6 +290,11 @@ def fit_stream_pretrain(
         lr=cfg.lr,
         context_encoder=encoder,
         mod_align_weight=cfg.mod_align_weight,
+        onecycle_max_lr=cfg.onecycle_max_lr,
+        onecycle_total_steps=cfg.onecycle_total_steps,
+        onecycle_pct_start=cfg.onecycle_pct_start,
+        onecycle_div_factor=cfg.onecycle_div_factor,
+        onecycle_final_div_factor=cfg.onecycle_final_div_factor,
     )
     loader = DataLoader(_StreamingDataset(teacher, encoder, cfg), batch_size=None)
     callbacks: list[L.Callback] = [_StepLogger(log_every, log)]

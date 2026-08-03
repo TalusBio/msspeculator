@@ -112,6 +112,13 @@ class PretrainCfg:
     check_every: int = 200
     warmup_steps: int = 500
     mod_align_weight: float = 1.0
+    # OneCycle is on by default. Streaming datasets have no cheap length, so this explicit step
+    # count should be adjusted when a corpus is expected to produce substantially more/less work.
+    onecycle_max_lr: float | None = 1e-3
+    onecycle_total_steps: int | None = 2500
+    onecycle_pct_start: float = 0.3
+    onecycle_div_factor: float = 25.0
+    onecycle_final_div_factor: float = 1e4
 
 
 @dataclass
@@ -435,10 +442,16 @@ def _run_pretrain(cfg: RunConfig, model, encoder, acc, log):
         detector=p.detector,
         fragmentation=p.fragmentation,
         mod_align_weight=p.mod_align_weight,
+        onecycle_max_lr=p.onecycle_max_lr,
+        onecycle_total_steps=p.onecycle_total_steps,
+        onecycle_pct_start=p.onecycle_pct_start,
+        onecycle_div_factor=p.onecycle_div_factor,
+        onecycle_final_div_factor=p.onecycle_final_div_factor,
     )
     log(
         f"[pretrain] stream: {[m.name for m in spc.mixes]}, NCE {spc.nce_range}, "
-        f"{spc.passes} pass(es), chunk {spc.chunk_size}"
+        f"{spc.passes} pass(es), chunk {spc.chunk_size}, "
+        f"OneCycle max_lr={spc.onecycle_max_lr} over {spc.onecycle_total_steps} step(s)"
     )
     return fit_stream_pretrain(model, encoder, teacher, spc, accelerator=acc, log=log)
 

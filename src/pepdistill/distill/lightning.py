@@ -22,6 +22,22 @@ from .dataset import BatchIterable, DistillDataset, LabeledBatch
 from .losses import distill_loss, mod_align_loss, spectral_angle
 
 
+class _CappedOneCycleLR(torch.optim.lr_scheduler.OneCycleLR):
+    """OneCycle schedule that holds its final LR if a streaming loader runs long.
+
+    Iterable datasets do not expose a reliable length before teacher labeling. A configured
+    ``total_steps`` therefore describes the intended cycle, not a hard training limit.
+    """
+
+    def step(self, epoch: int | None = None) -> None:
+        # OneCycleLR raises once ``last_epoch`` is already at the endpoint. Keep the final
+        # learning rate instead; this makes an approximate stream-size estimate safe.
+        if epoch is None and self.last_epoch >= self.total_steps:
+            self._step_count += 1
+            return
+        super().step(epoch)
+
+
 def build_trainer(epochs: int, accelerator: str, grad_clip: float, **trainer_kwargs) -> L.Trainer:
     """Shared Trainer defaults for the distill/real-speclib regimes: checkpointing and logging
     off unless the caller overrides via ``trainer_kwargs``; everything else passes straight
@@ -47,6 +63,11 @@ class DistillModule(L.LightningModule):
         loss_weights: tuple[float, float, float] = (1.0, 1.0, 1.0),
         context_encoder: MSContextEncoder | None = None,
         mod_align_weight: float = 1.0,
+        onecycle_max_lr: float | None = None,
+        onecycle_total_steps: int | None = None,
+        onecycle_pct_start: float = 0.3,
+        onecycle_div_factor: float = 25.0,
+        onecycle_final_div_factor: float = 1e4,
     ) -> None:
         super().__init__()
         self.model = model  # shared backbone; NOT a hyperparameter
@@ -62,6 +83,24 @@ class DistillModule(L.LightningModule):
         # Ties mass_enc onto a stop-gradiented comp_enc (see losses.mod_align_loss); a separate
         # scalar rather than a 4th slot in loss_weights, which already means (ms2, rt, ccs).
         self.mod_align_weight = mod_align_weight
+        if (onecycle_max_lr is None) != (onecycle_total_steps is None):
+            raise ValueError(
+                "onecycle_max_lr and onecycle_total_steps must be provided together"
+            )
+        if onecycle_max_lr is not None:
+            if onecycle_max_lr <= 0:
+                raise ValueError("onecycle_max_lr must be positive")
+            if onecycle_total_steps < 1:
+                raise ValueError("onecycle_total_steps must be positive")
+            if not 0.0 <= onecycle_pct_start <= 1.0:
+                raise ValueError("onecycle_pct_start must be between 0 and 1")
+            if onecycle_div_factor <= 0 or onecycle_final_div_factor <= 0:
+                raise ValueError("onecycle_div_factor and onecycle_final_div_factor must be positive")
+        self.onecycle_max_lr = onecycle_max_lr
+        self.onecycle_total_steps = onecycle_total_steps
+        self.onecycle_pct_start = onecycle_pct_start
+        self.onecycle_div_factor = onecycle_div_factor
+        self.onecycle_final_div_factor = onecycle_final_div_factor
 
     def transfer_batch_to_device(self, batch: LabeledBatch, device, dataloader_idx: int):
         return batch.to(device)
@@ -107,8 +146,22 @@ class DistillModule(L.LightningModule):
             batch_size=bs,
         )
 
-    def configure_optimizers(self) -> torch.optim.Optimizer:
-        return torch.optim.AdamW(self.parameters(), lr=self.lr, weight_decay=self.weight_decay)
+    def configure_optimizers(self):
+        optimizer = torch.optim.AdamW(self.parameters(), lr=self.lr, weight_decay=self.weight_decay)
+        if self.onecycle_max_lr is None:
+            return optimizer
+        scheduler = _CappedOneCycleLR(
+            optimizer,
+            max_lr=self.onecycle_max_lr,
+            total_steps=self.onecycle_total_steps,
+            pct_start=self.onecycle_pct_start,
+            div_factor=self.onecycle_div_factor,
+            final_div_factor=self.onecycle_final_div_factor,
+        )
+        return {
+            "optimizer": optimizer,
+            "lr_scheduler": {"scheduler": scheduler, "interval": "step"},
+        }
 
 
 class DistillDataModule(L.LightningDataModule):

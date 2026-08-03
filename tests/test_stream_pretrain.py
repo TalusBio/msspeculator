@@ -100,6 +100,27 @@ def test_stream_pretrain_early_stops_on_plateau(tmp_path):
 def test_stream_pretrain_cfg_defaults_teacher_acquisition():
     cfg = StreamPretrainCfg()
     assert (cfg.instrument, cfg.detector, cfg.fragmentation) == ("Lumos", "FTMS", "HCD")
+    assert (cfg.onecycle_max_lr, cfg.onecycle_total_steps) == (1e-3, 2500)
+
+
+def test_onecycle_holds_final_lr_after_configured_steps():
+    model = build_student("tiny")
+    module = DistillModule(
+        model,
+        lr=1e-3,
+        onecycle_max_lr=2e-3,
+        onecycle_total_steps=3,
+    )
+    optim_cfg = module.configure_optimizers()
+    optimizer = optim_cfg["optimizer"]
+    scheduler = optim_cfg["lr_scheduler"]["scheduler"]
+    for _ in range(4):
+        optimizer.step()
+        scheduler.step()
+    final_lr = optimizer.param_groups[0]["lr"]
+    optimizer.step()
+    scheduler.step()
+    assert optimizer.param_groups[0]["lr"] == final_lr
 
 
 def test_label_chunk_sets_ms_factors_with_swept_energy(tmp_path):
