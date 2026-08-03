@@ -218,9 +218,10 @@ class _StepLogger(L.Callback):
     def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
         if (batch_idx + 1) % self.every == 0:
             m = trainer.callback_metrics
+            lr = float(trainer.optimizers[0].param_groups[0]["lr"])
             self._emit(
                 f"  step {batch_idx + 1}: ms2={float(m.get('train_ms2', float('nan'))):.3f} "
-                f"total={float(m.get('train_total', float('nan'))):.3f}"
+                f"total={float(m.get('train_total', float('nan'))):.3f} lr={lr:.6g}"
             )
 
 

@@ -59,6 +59,7 @@ def test_stream_pretrain_runs_and_moves_encoder(tmp_path):
 
     assert isinstance(module, DistillModule)
     assert any("step" in ln for ln in lines)  # _StepLogger fired (guards the .log shadow bug)
+    assert any("lr=" in ln for ln in lines)
     # energy was fed through the MLP -> encoder weights received gradient and moved.
     assert not torch.allclose(before, enc.energy_mlp[-1].weight.detach())
     # rt/ccs norm was estimated from a teacher sample (not left at the 0/1 identity).

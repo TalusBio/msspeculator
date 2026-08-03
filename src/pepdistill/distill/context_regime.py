@@ -288,7 +288,8 @@ class _RealTrainProgress(L.Callback):
             if "/n" in key or not torch.is_tensor(value) or value.numel() != 1:
                 continue
             values[key] = float(value.detach().cpu())
-        record = {"epoch": trainer.current_epoch + 1, **values}
+        lr = float(trainer.optimizers[0].param_groups[0]["lr"])
+        record = {"epoch": trainer.current_epoch + 1, "lr": lr, **values}
         self.metrics_path.parent.mkdir(parents=True, exist_ok=True)
         with self.metrics_path.open("a") as fh:
             fh.write(json.dumps(record, sort_keys=True) + "\n")
@@ -309,17 +310,18 @@ class _RealTrainProgress(L.Callback):
         if self.every > 0 and n % self.every == 0:
             loss = trainer.callback_metrics.get("train_ms2")
             loss_text = "" if loss is None else f", ms2={float(loss):.4f}"
+            lr = float(trainer.optimizers[0].param_groups[0]["lr"])
             elapsed = time.perf_counter() - self._started
             trainer.print(
                 f"[train] epoch {trainer.current_epoch + 1}/{trainer.max_epochs}, "
-                f"batch {n}{loss_text}, elapsed {elapsed:.0f}s"
+                f"batch {n}{loss_text}, lr={lr:.6g}, elapsed {elapsed:.0f}s"
             )
 
     def on_train_epoch_end(self, trainer: L.Trainer, pl_module: L.LightningModule) -> None:
         elapsed = time.perf_counter() - self._started
         trainer.print(
             f"[train] epoch {trainer.current_epoch + 1}/{trainer.max_epochs} finished "
-            f"in {elapsed:.1f}s"
+            f"in {elapsed:.1f}s, lr={float(trainer.optimizers[0].param_groups[0]['lr']):.6g}"
         )
 
     def on_validation_epoch_end(self, trainer: L.Trainer, pl_module: L.LightningModule) -> None:
