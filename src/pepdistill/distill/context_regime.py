@@ -373,13 +373,21 @@ class _RealValidationEarlyStop(L.Callback):
             )
         values = [float(value) for value in metrics.values()]
         current = sum(values) / len(values)
-        if self.best - current > self.min_delta:
+        improved = self.best - current > self.min_delta
+        if improved:
             self.best, self.bad = current, 0
-            return
-        self.bad += 1
+        else:
+            self.bad += 1
+        trainer_print = getattr(trainer, "print", print)
+        trainer_print(
+            f"[early-stop] epoch {trainer.current_epoch + 1}: mean spectral angle "
+            f"current={current:.4f}, best={self.best:.4f}, "
+            f"bad={self.bad}/{self.patience}"
+            f"{' (new best)' if improved else ''}"
+        )
         if self.bad >= self.patience:
             trainer.should_stop = True
-            trainer.print(
+            trainer_print(
                 f"[early-stop] validation spectral angle plateaued at {current:.4f} "
                 f"(best {self.best:.4f}) -> stopping after epoch {trainer.current_epoch + 1}"
             )

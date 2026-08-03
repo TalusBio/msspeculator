@@ -277,3 +277,20 @@ def test_validation_early_stop_ignores_sanity_check_missing_keys():
     )
     callback.on_validation_epoch_end(Trainer(), None)
     assert callback.bad == 0
+
+
+def test_validation_early_stop_reports_current_and_best_each_epoch():
+    lines = []
+
+    class Trainer:
+        callback_metrics = {"val/pool/spectral_angle": torch.tensor(0.5)}
+        sanity_checking = False
+        current_epoch = 2
+        print = lines.append
+        should_stop = False
+
+    callback = _RealValidationEarlyStop(
+        patience=5, min_delta=1e-3, expected_keys={"val/pool/spectral_angle"}
+    )
+    callback.on_validation_epoch_end(Trainer(), None)
+    assert lines == ["[early-stop] epoch 3: mean spectral angle current=0.5000, best=0.5000, bad=0/5 (new best)"]
