@@ -161,11 +161,21 @@ def test_extract_shards_reports_missing_member_progress(tmp_path):
     src = ProspectSource("prospect", cache=_seed_zip_n(tmp_path, 3))
     members = select_members(src, ZIP_NAME, [0, 1, 2])
     events = []
-    extract_shards(src, ZIP_NAME, members, progress=lambda done, total, member: events.append(
-        (done, total, member.split("/")[-1])
-    ))
+    byte_events = []
+    extract_shards(
+        src,
+        ZIP_NAME,
+        members,
+        progress=lambda done, total, member: events.append(
+            (done, total, member.split("/")[-1])
+        ),
+        byte_progress=lambda member, done, total: byte_events.append(
+            (member.split("/")[-1], done, total)
+        ),
+    )
     assert [done for done, _, _ in events] == [1, 2, 3]
     assert all(total == 3 for _, total, _ in events)
+    assert byte_events and all(done <= total for _, done, total in byte_events)
 
 
 def test_extract_shards_opens_zip_at_most_once_for_a_cold_batch(tmp_path, monkeypatch):

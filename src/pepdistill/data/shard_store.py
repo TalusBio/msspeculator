@@ -11,7 +11,6 @@ our own — so the member name is the whole cache key and there is no staleness 
 
 from __future__ import annotations
 
-import shutil
 from collections.abc import Callable
 
 import pyarrow as pa
@@ -68,6 +67,7 @@ def extract_shards(
     zip_filename: str,
     members: list[str],
     progress: Callable[[int, int, str], None] | None = None,
+    byte_progress: Callable[[str, int, int], None] | None = None,
 ) -> list[str]:
     """Local parquet paths for ``members``, in the same order, opening the remote zip AT MOST
     ONCE for the whole batch.
@@ -95,8 +95,14 @@ def extract_shards(
                 # and z.read() inflates the whole thing into RAM before a byte is written. The
                 # point of extracting is to bound peak RSS, so the extract must be streaming.
                 def write(dest: str, member: str = member) -> None:
+                    total_bytes = z.getinfo(member).file_size
+                    copied = 0
                     with z.open(member) as member_f, open(dest, "wb") as out:
-                        shutil.copyfileobj(member_f, out)
+                        while chunk := member_f.read(8 * 1024 * 1024):
+                            out.write(chunk)
+                            copied += len(chunk)
+                            if byte_progress is not None:
+                                byte_progress(member, copied, total_bytes)
 
                 paths[i] = cache.store(keys[i], write)
                 if progress is not None:

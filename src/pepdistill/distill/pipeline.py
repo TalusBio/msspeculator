@@ -388,12 +388,38 @@ def _build_train_stage(cfg: RunConfig, log):
                 f"extracted missing shard {done}/{total} — {Path(member).name}"
             )
 
+        last_byte_log = 0.0
+        last_member = ""
+        member_started = 0.0
+
+        def extraction_byte_progress(member: str, done: int, total: int) -> None:
+            nonlocal last_byte_log, last_member, member_started
+            now = time.perf_counter()
+            # Emit immediately for a new shard, then at most every five seconds, plus its end.
+            if member != last_member or now - last_byte_log >= 5.0 or done >= total:
+                if member != last_member:
+                    member_started = now
+                elapsed = max(now - member_started, 1e-9)
+                rate = done / elapsed / 1e6
+                log(
+                    f"[train] source {source_num}/{total_sources} {source_label}: "
+                    f"extracting {Path(member).name}: {done / 1e6:.0f}/{total / 1e6:.0f} MB "
+                    f"({rate:.1f} MB/s)"
+                )
+                last_byte_log, last_member = now, member
+
         # Extract first: raw_files come from each shard's own column, never from its filename
         # (a third-pool shard holds three, none matching the member stem). One extract_shards
         # call per source, not one extract_shard call per member: each remote-zip open re-reads
         # the central directory and, cold, re-opens the whole HTTP stream, and a source can
         # have ~10 shards — enough opens in a row to trip Zenodo's rate limiter on its own.
-        paths = extract_shards(src, s.zip, members, progress=extraction_progress)
+        paths = extract_shards(
+            src,
+            s.zip,
+            members,
+            progress=extraction_progress,
+            byte_progress=extraction_byte_progress,
+        )
         log(
             f"[train] source {source_num}/{total_sources} {source_label}: "
             f"shard files ready ({time.perf_counter() - started:.1f}s); discovering raw files"
