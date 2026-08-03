@@ -60,6 +60,13 @@ def test_activation_override_parses(tmp_path):
     assert cfg.activation == "leaky_relu"
 
 
+def test_model_in_parses_as_training_initializer(tmp_path):
+    text = BASE.replace('out = "runs/x"', 'model_in = "pretrain.ckpt"\nout = "runs/x"')
+    text = text.replace("[train]\nenabled = true", "[train]\nenabled = false")
+    cfg = RunConfig.from_toml(_write(tmp_path, text))
+    assert cfg.model_in == "pretrain.ckpt"
+
+
 def test_flat_pool_keys_raise(tmp_path):
     text = BASE + '\nrecord = "prospect"\nzip = "TUM_third_pool.zip"\n'
     with pytest.raises(ValueError, match=r"\[\[train.sources\]\]"):

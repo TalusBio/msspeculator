@@ -30,6 +30,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import lightning as L
+import torch
 
 from ..data.config import DigestConfig, SplitConfig
 from ..data.digest import digest_fasta
@@ -38,7 +39,7 @@ from ..data.precursors import enumerate_precursors
 from ..data.prospect import ProspectSource
 from ..data.shard_store import extract_shards, select_members, shard_raw_files
 from ..models.context import ChromRunbook, MSContextEncoder
-from ..models.registry import PRESETS, build_student, load_checkpoint, save_checkpoint
+from ..models.registry import PRESETS, build_student, load_checkpoint, load_context, save_checkpoint
 from ..predict.fast import TorchRunner, predict_library_fast
 from ..teacher import get_teacher
 from .context_regime import RealSpeclibDataset, establish_rt_norm, fit_realspeclib_datasets
@@ -280,7 +281,7 @@ class RunConfig:
     activation: str | None = None  # override preset activation for controlled retraining sweeps
     device: str = "auto"
     seed: int = 0
-    model_in: str | None = None  # load this checkpoint instead of building (export/bench only)
+    model_in: str | None = None  # optional checkpoint to initialize pretrain/train/export/bench
     pretrain: PretrainCfg = field(default_factory=PretrainCfg)
     train: TrainCfg = field(default_factory=TrainCfg)
     export: ExportCfg = field(default_factory=ExportCfg)
@@ -351,7 +352,9 @@ def _release_accelerator_cache(acc: str) -> None:
         torch.cuda.empty_cache()
 
 
-def _build_train_stage(cfg: RunConfig, log):
+def _build_train_stage(
+    cfg: RunConfig, log, existing_dataset_index: dict[str, int] | None = None
+):
     """Extract every source's shards, build its meta index, and assemble what the real-data
     stage needs: the train and val shard lists, one merged meta index, the dataset index (plus
     its inverse), and the iRT sufficient statistics the RT affine is established from.
@@ -361,7 +364,7 @@ def _build_train_stage(cfg: RunConfig, log):
     the meta index, not the spectra.
     """
     _check_train_sources(cfg.train)
-    dataset_index = resolve_dataset_index(cfg.train.sources)
+    dataset_index = resolve_dataset_index(cfg.train.sources, existing=existing_dataset_index)
     names_by_row = {row: name for name, row in dataset_index.items()}
     train_shards: list[ShardSpec] = []
     val_shards: list[ShardSpec] = []
@@ -480,6 +483,28 @@ def _build_train_stage(cfg: RunConfig, log):
     return train_shards, val_shards, merged, dataset_index, names_by_row, stats
 
 
+def _runbook_for_index(
+    existing: ChromRunbook | None, dataset_index: dict[str, int], context_dim: int
+) -> ChromRunbook:
+    """Reuse a checkpoint's runbook, expanding it without discarding learned rows if needed."""
+    needed = max(dataset_index.values(), default=0)
+    if existing is None:
+        return ChromRunbook(n_datasets=needed, context_dim=context_dim)
+    if existing.context_dim != context_dim:
+        raise ValueError(
+            f"checkpoint runbook context_dim {existing.context_dim} != model's {context_dim}"
+        )
+    if existing.n_datasets >= needed:
+        return existing
+    expanded = ChromRunbook(n_datasets=needed, context_dim=context_dim)
+    rows = existing.n_datasets + 1  # include neutral row zero
+    with torch.no_grad():
+        expanded.emb.weight[:rows].copy_(existing.emb.weight)
+        expanded.log_scale.weight[:rows].copy_(existing.log_scale.weight)
+        expanded.shift.weight[:rows].copy_(existing.shift.weight)
+    return expanded
+
+
 def _run_pretrain(cfg: RunConfig, model, encoder, acc, log):
     p = cfg.pretrain
     assert encoder is not None  # guaranteed by need_encoder in run_pipeline
@@ -524,8 +549,11 @@ def run_pipeline(cfg: RunConfig, log=print) -> dict:
     acc = _accelerator(cfg.device)
     summary: dict = {}
 
+    loaded_context = None
     if cfg.model_in:
         model = load_checkpoint(cfg.model_in)
+        loaded_context = load_context(cfg.model_in)
+        log(f"loaded checkpoint {cfg.model_in}")
     else:
         model_cfg = PRESETS[cfg.preset]
         if cfg.activation is not None:
@@ -534,13 +562,29 @@ def run_pipeline(cfg: RunConfig, log=print) -> dict:
     # The MSContextEncoder is needed by the real-data sink AND by streaming pretrain (the NCE
     # sweep); build once and share it across both. Either enabled stage conditions on it.
     need_encoder = cfg.train.enabled or cfg.pretrain.enabled
-    encoder = MSContextEncoder(context_dim=model.cfg.context_dim) if need_encoder else None
+    if need_encoder and loaded_context is not None and loaded_context.encoder is not None:
+        encoder = loaded_context.encoder
+    else:
+        encoder = MSContextEncoder(context_dim=model.cfg.context_dim) if need_encoder else None
+    if need_encoder:
+        # Registry loaders return inference-ready modules; put a checkpoint initializer back in
+        # training mode before Lightning constructs its Trainer (which otherwise warns about an
+        # eval-mode module at the start of a resumed run).
+        model.train()
+        assert encoder is not None
+        encoder.train()
+        if loaded_context is not None and loaded_context.runbook is not None:
+            loaded_context.runbook.train()
     log(f"student '{cfg.preset}' — {model.num_parameters():,} params (device={cfg.device})")
 
     if cfg.pretrain.enabled:
         mod = _run_pretrain(cfg, model, encoder, acc, log)
         summary["pretrain"] = {k: float(v) for k, v in mod.trainer.callback_metrics.items()}
         log(f"[pretrain] {summary['pretrain']}")
+        pretrain_ckpt = out / "pretrain.ckpt"
+        save_checkpoint(model, pretrain_ckpt, encoder=encoder)
+        summary["pretrain_checkpoint"] = str(pretrain_ckpt)
+        log(f"[pretrain] saved {pretrain_ckpt}")
         # Release the pretrain module before the train stage allocates. `mod` is needed only
         # for the metrics just extracted, but it transitively pins the Lightning Trainer ->
         # dataloader -> _StreamingDataset -> teacher -> peptdeep's models (hundreds of MB).
@@ -560,7 +604,9 @@ def run_pipeline(cfg: RunConfig, log=print) -> dict:
         # already drawn from it.
         L.seed_everything(cfg.seed, verbose=False)
         train_shards, val_shards, index, dataset_index, names_by_row, stats = _build_train_stage(
-            cfg, log
+            cfg,
+            log,
+            existing_dataset_index=loaded_context.dataset_index if loaded_context else None,
         )
         # Whether the affine was set here or inherited is the difference between a cold start
         # and a continued curriculum, for a value that is permanent once set — so say which.
@@ -573,9 +619,10 @@ def run_pipeline(cfg: RunConfig, log=print) -> dict:
         # index was built from scratch. resolve_dataset_index(existing=...) keeps whatever rows
         # a continued curriculum already had, which can be sparse, and len() would then size an
         # embedding that the top row indexes past.
-        runbook = ChromRunbook(
-            n_datasets=max(dataset_index.values(), default=0),
-            context_dim=model.cfg.context_dim,
+        runbook = _runbook_for_index(
+            loaded_context.runbook if loaded_context else None,
+            dataset_index,
+            model.cfg.context_dim,
         )
         train_ds = StreamingRealDataset(
             train_shards,

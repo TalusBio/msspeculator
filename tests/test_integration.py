@@ -130,6 +130,7 @@ enabled = false
     result = CliRunner().invoke(app, ["run", str(config)])
     assert result.exit_code == 0, result.output
     assert (workdir / "model.ckpt").exists()
+    assert (workdir / "pretrain.ckpt").exists()
     assert (workdir / "summary.json").exists()
 
     from pepdistill.models.registry import load_context
@@ -368,6 +369,23 @@ def test_two_source_streaming_train_stage_runs_end_to_end(tmp_path, monkeypatch)
     # leaking in moves the mean far outside this tolerance.
     model = load_checkpoint(out / "model.ckpt")
     assert float(model.rt_mean) == pytest.approx(expected["rt_mean"])
+
+
+def test_model_in_continues_real_train_from_checkpoint(tmp_path, monkeypatch):
+    """A finished checkpoint can seed another real-data stage, including its context state."""
+    _seed_two_synthetic_pools(tmp_path, monkeypatch)
+    first = _two_pool_toml(tmp_path)
+    run_pipeline(RunConfig.from_toml(first), log=lambda *_: None)
+
+    second = tmp_path / "continued.toml"
+    second.write_text(
+        first.read_text().replace(
+            f'out = "{tmp_path / "out"}"',
+            f'out = "{tmp_path / "continued"}"\nmodel_in = "{tmp_path / "out" / "model.ckpt"}"',
+        )
+    )
+    summary = run_pipeline(RunConfig.from_toml(second), log=lambda *_: None)
+    assert summary["dataset_index"] == {"poolA": 1, "poolB": 2}
 
 
 def test_val_only_source_with_no_val_rows_raises(tmp_path, monkeypatch):
