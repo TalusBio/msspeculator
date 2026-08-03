@@ -32,9 +32,9 @@ class StudentConfig:
     # FFN expansion inside each transformer block. 4x is the classic default; 2x roughly
     # halves FFN FLOPs so the budget can go to depth (Rust/candle-friendly).
     ff_mult: int = 4
-    # Activation everywhere (backbone + heads). "gelu" | "relu" | "leaky_relu". gelu is the
-    # conventional transformer default; the ReLU variants are explicit retraining experiments,
-    # never silent inference substitutions.
+    # Activation everywhere (backbone + heads). "gelu" | "gelu_tanh" | "relu" | "leaky_relu".
+    # gelu is the conventional transformer default; the alternatives are explicit retraining
+    # experiments, never silent inference substitutions.
     activation: str = "gelu"
     # Acquisition-context conditioning. A per-source context VECTOR (not id) enters at the
     # heads as a zero-init additive bias: ms_context drives MS2 fragments (instrument /
@@ -62,6 +62,8 @@ class StudentConfig:
     def act_module(self) -> nn.Module:
         if self.activation == "gelu":
             return nn.GELU()
+        if self.activation == "gelu_tanh":
+            return nn.GELU(approximate="tanh")
         if self.activation == "relu":
             return nn.ReLU()
         if self.activation == "leaky_relu":
