@@ -33,9 +33,9 @@ class StudentConfig:
     # halves FFN FLOPs so the budget can go to depth (Rust/candle-friendly).
     ff_mult: int = 4
     # Activation everywhere (backbone + heads). "gelu" | "gelu_tanh" | "relu" | "leaky_relu".
-    # gelu is the conventional transformer default; the alternatives are explicit retraining
-    # experiments, never silent inference substitutions.
-    activation: str = "gelu"
+    # tanh-GELU is the production default; exact GELU remains available as an explicit
+    # compatibility/reproducibility choice.
+    activation: str = "gelu_tanh"
     # Acquisition-context conditioning. A per-source context VECTOR (not id) enters at the
     # heads as a zero-init additive bias: ms_context drives MS2 fragments (instrument /
     # collision energy / fragmentation), chrom_context drives RT (chromatography). CCS takes

@@ -21,6 +21,8 @@
 
 out = "runs/multipool10"
 preset = "small"
+# Historical exact-GELU baseline; production runs use the tanh-GELU default.
+activation = "gelu"
 device = "auto"
 seed = 0
 
