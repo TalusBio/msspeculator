@@ -293,4 +293,28 @@ def test_validation_early_stop_reports_current_and_best_each_epoch():
         patience=5, min_delta=1e-3, expected_keys={"val/pool/spectral_angle"}
     )
     callback.on_validation_epoch_end(Trainer(), None)
-    assert lines == ["[early-stop] epoch 3: mean spectral angle current=0.5000, best=0.5000, bad=0/5 (new best)"]
+    assert lines == [
+        "[early-stop] epoch 3: mean spectral agreement current=0.5000, "
+        "best=0.5000, bad=0/5 (new best)"
+    ]
+
+
+def test_validation_early_stop_treats_higher_agreement_as_better():
+    lines = []
+
+    class Trainer:
+        callback_metrics = {"val/pool/spectral_angle": torch.tensor(0.5)}
+        sanity_checking = False
+        current_epoch = 0
+        print = lines.append
+        should_stop = False
+
+    callback = _RealValidationEarlyStop(
+        patience=2, min_delta=1e-3, expected_keys={"val/pool/spectral_angle"}
+    )
+    callback.on_validation_epoch_end(Trainer(), None)
+    Trainer.current_epoch = 1
+    Trainer.callback_metrics = {"val/pool/spectral_angle": torch.tensor(0.6)}
+    callback.on_validation_epoch_end(Trainer(), None)
+    assert callback.best == pytest.approx(0.6)
+    assert callback.bad == 0

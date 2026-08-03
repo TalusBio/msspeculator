@@ -340,14 +340,15 @@ class _RealTrainProgress(L.Callback):
 
 
 class _RealValidationEarlyStop(L.Callback):
-    """Stop real-data training when the mean per-dataset validation angle plateaus."""
+    """Stop real-data training when mean per-dataset spectral agreement plateaus."""
 
     def __init__(self, patience: int, min_delta: float, expected_keys: set[str]) -> None:
         super().__init__()
         self.patience = patience
         self.min_delta = min_delta
         self.expected_keys = expected_keys
-        self.best = float("inf")
+        # spectral_angle is normalized agreement: 1.0 = identical, so higher is better.
+        self.best = float("-inf")
         self.bad = 0
 
     def on_validation_epoch_end(self, trainer: L.Trainer, pl_module: L.LightningModule) -> None:
@@ -374,14 +375,14 @@ class _RealValidationEarlyStop(L.Callback):
             )
         values = [float(value) for value in metrics.values()]
         current = sum(values) / len(values)
-        improved = self.best - current > self.min_delta
+        improved = current - self.best > self.min_delta
         if improved:
             self.best, self.bad = current, 0
         else:
             self.bad += 1
         trainer_print = getattr(trainer, "print", print)
         trainer_print(
-            f"[early-stop] epoch {trainer.current_epoch + 1}: mean spectral angle "
+            f"[early-stop] epoch {trainer.current_epoch + 1}: mean spectral agreement "
             f"current={current:.4f}, best={self.best:.4f}, "
             f"bad={self.bad}/{self.patience}"
             f"{' (new best)' if improved else ''}"
@@ -389,7 +390,7 @@ class _RealValidationEarlyStop(L.Callback):
         if self.bad >= self.patience:
             trainer.should_stop = True
             trainer_print(
-                f"[early-stop] validation spectral angle plateaued at {current:.4f} "
+                f"[early-stop] validation spectral agreement plateaued at {current:.4f} "
                 f"(best {self.best:.4f}) -> stopping after epoch {trainer.current_epoch + 1}"
             )
 
@@ -401,7 +402,8 @@ class _RealCheckpoint(L.Callback):
         super().__init__()
         self.directory = Path(directory)
         self.expected_keys = expected_keys
-        self.best = float("inf")
+        # spectral_angle is normalized agreement: 1.0 = identical, so higher is better.
+        self.best = float("-inf")
 
     def _save(self, name: str, pl_module: RealSpeclibModule) -> None:
         self.directory.mkdir(parents=True, exist_ok=True)
@@ -431,7 +433,7 @@ class _RealCheckpoint(L.Callback):
         if len(metrics) != len(self.expected_keys):
             return  # the early-stop callback below will report the missing keys
         current = sum(float(value) for value in metrics.values()) / len(metrics)
-        if current < self.best:
+        if current > self.best:
             self.best = current
             self._save("best.ckpt", pl_module)
 
