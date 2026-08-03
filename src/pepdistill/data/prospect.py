@@ -102,10 +102,11 @@ _RATE_LIMIT_MAX_ATTEMPTS = 5
 
 
 def _rate_limit_verdict(exc: Exception) -> bool | None:
-    """Whether ``exc`` looks like Zenodo throttling: ``True``/``False`` if we can tell, else
+    """Whether ``exc`` is a retryable Zenodo response: ``True``/``False`` if we can tell, else
     ``None`` for genuinely ambiguous.
 
-    ``aiohttp.ClientResponseError`` with ``status == 429`` is unambiguous. fsspec's HTTP
+    ``aiohttp.ClientResponseError`` with ``status == 429`` or a transient 5xx status is
+    unambiguous. fsspec's HTTP
     backend, though, has been observed turning a throttled response into a bare
     ``FileNotFoundError`` (see ``prospect_catalog.build_shard_index``'s docstring) —
     indistinguishable, from this call site alone, from the file genuinely being gone from
@@ -117,7 +118,7 @@ def _rate_limit_verdict(exc: Exception) -> bool | None:
         ClientResponseError = None  # type: ignore[assignment]
 
     if ClientResponseError is not None and isinstance(exc, ClientResponseError):
-        return exc.status == 429
+        return exc.status == 429 or 500 <= exc.status < 600
     if isinstance(exc, FileNotFoundError):
         return None
     return False
@@ -508,7 +509,7 @@ class ProspectSource:
         Zenodo's rate limiter well before any single zip finishes reading — a real 19-shard,
         5-pool run died here with an explicit ``429 TOO MANY REQUESTS``. So this retries with
         exponential backoff (see ``_RATE_LIMIT_DELAY_S`` / ``_RATE_LIMIT_MAX_ATTEMPTS``) on
-        both shapes Zenodo throttling is known to take — an explicit 429 and the
+        explicit 429s, transient 5xx responses, and the
         ``FileNotFoundError`` fsspec sometimes substitutes for it — capped at a few attempts.
         It never retries an unrelated failure (a genuine 404, a bad zip, ...) and never retries
         forever: once attempts are exhausted it raises a named error stating plainly that this
@@ -537,13 +538,19 @@ class ProspectSource:
                     break
                 time.sleep(_RATE_LIMIT_DELAY_S * 2**attempt)
 
-        hedge = (
-            "fsspec surfaced this as FileNotFoundError, a shape Zenodo throttling is known to "
-            "produce -- but a genuinely missing file looks identical, so this cannot be told "
-            "apart from a real 404 from here"
-            if ambiguous
-            else "Zenodo returned 429 TOO MANY REQUESTS"
-        )
+        status = getattr(last_exc, "status", None)
+        if ambiguous:
+            hedge = (
+                "fsspec surfaced this as FileNotFoundError, a shape Zenodo throttling is known "
+                "to produce -- but a genuinely missing file looks identical, so this cannot be "
+                "told apart from a real 404 from here"
+            )
+        elif status == 429:
+            hedge = "Zenodo returned 429 TOO MANY REQUESTS"
+        elif isinstance(status, int) and 500 <= status < 600:
+            hedge = f"Zenodo returned transient HTTP {status}"
+        else:
+            hedge = "Zenodo returned a retryable HTTP error"
         raise RuntimeError(
             f"could not open {zip_filename!r} (record {self.record_id}) after "
             f"{_RATE_LIMIT_MAX_ATTEMPTS} attempts: {hedge}. The local cache tier is likely "

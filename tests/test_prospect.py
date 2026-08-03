@@ -410,6 +410,14 @@ def _make_429():
     )
 
 
+def _make_http_error(status):
+    from aiohttp import ClientResponseError
+
+    return ClientResponseError(
+        request_info=_FakeRequestInfo(), history=(), status=status, message="INTERNAL SERVER ERROR"
+    )
+
+
 def _zip_bytes():
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as z:
@@ -447,6 +455,36 @@ def test_open_remote_zip_retries_429_then_succeeds(tmp_path, monkeypatch):
     z = src._open_remote_zip(_RATE_LIMIT_ZIP)
     assert z.namelist() == ["a.parquet"]
     assert calls["n"] == 3
+
+
+def test_open_remote_zip_retries_transient_500_then_succeeds(tmp_path, monkeypatch):
+    """Zenodo occasionally returns a transient 500 while serving a large archive."""
+    src = _rate_limit_src(tmp_path)
+    calls = {"n": 0}
+
+    def fake_open(url, mode):
+        calls["n"] += 1
+        return _FakeOpenFile(ok=calls["n"] >= 3, exc=_make_http_error(500))
+
+    monkeypatch.setattr("pepdistill.data.prospect.fsspec.open", fake_open)
+    monkeypatch.setattr("pepdistill.data.prospect.time.sleep", lambda s: None)
+
+    z = src._open_remote_zip(_RATE_LIMIT_ZIP)
+    assert z.namelist() == ["a.parquet"]
+    assert calls["n"] == 3
+
+
+def test_open_remote_zip_names_transient_500_after_retries(tmp_path, monkeypatch):
+    src = _rate_limit_src(tmp_path)
+
+    def fake_open(url, mode):
+        return _FakeOpenFile(ok=False, exc=_make_http_error(500))
+
+    monkeypatch.setattr("pepdistill.data.prospect.fsspec.open", fake_open)
+    monkeypatch.setattr("pepdistill.data.prospect.time.sleep", lambda s: None)
+
+    with pytest.raises(RuntimeError, match="transient HTTP 500"):
+        src._open_remote_zip(_RATE_LIMIT_ZIP)
 
 
 def test_open_remote_zip_retries_filenotfounderror_then_succeeds(tmp_path, monkeypatch):
