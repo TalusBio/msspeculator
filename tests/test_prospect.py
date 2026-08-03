@@ -377,6 +377,20 @@ def test_annotation_shard_info_reports_names_and_sizes(tmp_path, monkeypatch):
     assert src.annotation_shards("pool.zip") == [i.name for i in infos]
 
 
+def test_annotation_shard_info_uses_offline_index_without_remote(tmp_path, monkeypatch):
+    """Known pools must enumerate shards offline, even when only members are cached."""
+    src = ProspectSource("tmt", cache=FileCache([str(tmp_path / "local")]))
+
+    def fail_remote(_name):
+        raise AssertionError("offline shard index should avoid opening the remote ZIP")
+
+    monkeypatch.setattr(src, "_open_remote_zip", fail_remote)
+    infos = src.annotation_shard_info("TMT_TUM_third_pool.zip")
+    assert len(infos) == 12
+    assert infos[0].short_name.startswith("4065_BF1-")
+    assert infos[0].raw_bytes > infos[0].packed_bytes
+
+
 # ZIP_NAME below must be a real "prospect"-record catalog entry so _open_remote_zip resolves a
 # URL from the checked-in catalog and never calls the live ZenodoRecord fallback (network).
 _RATE_LIMIT_ZIP = "TUM_third_pool.zip"

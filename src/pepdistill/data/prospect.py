@@ -33,7 +33,7 @@ from ..teacher.base import PrecursorLabels
 from .cache import FileCache, default_cache_dir, http_origin
 from .config import SplitConfig
 from .precursors import Precursor
-from .prospect_catalog import load_catalog
+from .prospect_catalog import load_catalog, load_shard_index
 from .split import assign_split
 from .zenodo import ZenodoRecord
 
@@ -121,6 +121,26 @@ def _rate_limit_verdict(exc: Exception) -> bool | None:
     if isinstance(exc, FileNotFoundError):
         return None
     return False
+
+
+def _describe_exception(exc: BaseException) -> str:
+    """Render an exception and any wrapped HTTP cause without discarding diagnostics."""
+    parts: list[str] = []
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        detail = f"{type(current).__name__}: {current}"
+        status = getattr(current, "status", None)
+        if status is not None:
+            detail += f" (status={status})"
+        request_info = getattr(current, "request_info", None)
+        real_url = getattr(request_info, "real_url", None)
+        if real_url:
+            detail += f" url={real_url}"
+        parts.append(detail)
+        current = current.__cause__ or current.__context__
+    return " <- ".join(parts)
 
 
 @dataclass(frozen=True, slots=True)
@@ -422,6 +442,27 @@ class ProspectSource:
         per-epoch read time, not download time, are what bound how many shards a run can take.
         Check here before committing to a pool.
         """
+        # A complete local source ZIP is authoritative (tests and users may provide one), so
+        # preserve its exact member order before consulting the checked-in index.
+        local = self.cache._local_path(f"zenodo/{self.record_id}/{zip_filename}")
+        if os.path.exists(local):
+            with zipfile.ZipFile(local) as z:
+                return [
+                    ShardInfo(i.filename, i.compress_size, i.file_size)
+                    for i in z.infolist()
+                    if i.filename.endswith(".parquet")
+                ]
+
+        # The checked-in index was built from the ZIP central directories and is deliberately
+        # available offline.  Prefer it here: extracted shard members are cached independently
+        # of the multi-GB source ZIP, so probing Zenodo just to recover their names defeats the
+        # cache and can trigger rate limiting on an otherwise fully local run.
+        indexed = load_shard_index().get("records", {}).get(self.record, {}).get(zip_filename)
+        if indexed is not None:
+            return [
+                ShardInfo(name=name, packed_bytes=int(packed), raw_bytes=int(raw))
+                for name, packed, raw in indexed
+            ]
         with self._open_remote_zip(zip_filename) as z:
             return [
                 ShardInfo(i.filename, i.compress_size, i.file_size)
@@ -481,6 +522,7 @@ class ProspectSource:
         url = entry["url"] if entry else self.zenodo.file_url(zip_filename)
 
         last_exc: Exception | None = None
+        attempt_errors: list[str] = []
         ambiguous = False
         for attempt in range(1, _RATE_LIMIT_MAX_ATTEMPTS + 1):
             try:
@@ -489,6 +531,7 @@ class ProspectSource:
                 verdict = _rate_limit_verdict(exc)
                 if verdict is False:
                     raise  # not a rate-limit shape at all: don't mask a different failure
+                attempt_errors.append(f"attempt {attempt}: {_describe_exception(exc)}")
                 last_exc, ambiguous = exc, verdict is None
                 if attempt == _RATE_LIMIT_MAX_ATTEMPTS:
                     break
@@ -506,7 +549,7 @@ class ProspectSource:
             f"{_RATE_LIMIT_MAX_ATTEMPTS} attempts: {hedge}. The local cache tier is likely "
             "partially populated from shards that already succeeded before this failure; "
             "re-running this job resumes from there instead of repeating the cost that failed. "
-            f"Underlying error: {type(last_exc).__name__}: {last_exc}"
+            f"Attempt errors: {'; '.join(attempt_errors)}"
         ) from last_exc
 
     def to_labels(
