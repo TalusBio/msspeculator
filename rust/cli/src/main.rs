@@ -1,14 +1,16 @@
-//! pepdistill Rust predict CLI: one peptide -> JSON prediction on stdout.
+//! pepdistill Rust inference CLI: FASTA -> DIA-NN TSV library, or one peptide -> JSON.
 
 use anyhow::{anyhow, Result};
 use clap::Parser;
 use pepdistill_core::{predict, Artifact, MsContext, Prediction};
 use serde_json::json;
 
+mod library;
+
 #[derive(Parser)]
 #[command(
     name = "pepdistill-cli",
-    about = "Predict MS2/RT/CCS for one peptide (torch parity)."
+    about = "Generate a DIA-NN TSV library from FASTA or predict one peptide."
 )]
 struct Args {
     /// Path to the .safetensors artifact (from `pepdistill export-rust`).
@@ -24,10 +26,32 @@ struct Args {
     /// Examples: `PEPTIDER`, `PEPC[Carbamidomethyl@C]IDER`, `[TMT6plex]PEPTIDER`,
     /// `PEP[+42.010565]TIDER`.
     #[arg(long)]
-    peptide: String,
+    peptide: Option<String>,
     /// Precursor charge.
     #[arg(long)]
-    charge: i64,
+    charge: Option<i64>,
+    /// Digest this FASTA and write a DIA-NN TSV spectral library using Rust inference.
+    #[arg(long)]
+    fasta: Option<String>,
+    /// Output path for --fasta library generation.
+    #[arg(long)]
+    out: Option<String>,
+    #[arg(long, default_value_t = 2)]
+    missed_cleavages: usize,
+    #[arg(long, default_value_t = 7)]
+    min_length: usize,
+    #[arg(long, default_value_t = 30)]
+    max_length: usize,
+    #[arg(long, default_value_t = 2)]
+    min_charge: i64,
+    #[arg(long, default_value_t = 4)]
+    max_charge: i64,
+    /// Maximum number of variable Oxidation@M modifications per peptide.
+    #[arg(long, default_value_t = 1)]
+    max_variable_oxidation: usize,
+    /// Do not apply fixed Carbamidomethyl@C during FASTA library generation.
+    #[arg(long)]
+    no_fixed_carbamidomethyl: bool,
     /// Full acquisition context "INSTRUMENT::DETECTOR::FRAGMENTATION::ENERGY".
     #[arg(long)]
     ms_context: Option<String>,
@@ -96,12 +120,53 @@ fn to_json(
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    let art = Artifact::load(&args.model)?;
     let ms_ctx = parse_ms_context(&args)?;
+    if let Some(fasta) = args.fasta.as_deref() {
+        if args.peptide.is_some() || args.charge.is_some() {
+            return Err(anyhow!(
+                "--fasta cannot be combined with --peptide/--charge"
+            ));
+        }
+        let out = args
+            .out
+            .as_deref()
+            .ok_or_else(|| anyhow!("--fasta requires --out"))?;
+        let stats = library::write_diann_tsv(&library::LibraryOptions {
+            model: &args.model,
+            fasta,
+            out,
+            ms_context: ms_ctx.as_ref(),
+            chrom_context: args.chrom_context.as_deref(),
+            min_intensity: args.min_intensity,
+            missed_cleavages: args.missed_cleavages,
+            min_length: args.min_length,
+            max_length: args.max_length,
+            min_charge: args.min_charge,
+            max_charge: args.max_charge,
+            max_variable_oxidation: args.max_variable_oxidation,
+            no_fixed_carbamidomethyl: args.no_fixed_carbamidomethyl,
+        })?;
+        eprintln!(
+            "{} proteins -> {} peptides -> {} precursors -> {} fragments -> {}",
+            stats.proteins, stats.peptides, stats.precursors, stats.fragments, out
+        );
+        return Ok(());
+    }
+    let peptide = args
+        .peptide
+        .as_deref()
+        .ok_or_else(|| anyhow!("provide --peptide or --fasta"))?;
+    let charge = args
+        .charge
+        .ok_or_else(|| anyhow!("--peptide requires --charge"))?;
+    if args.out.is_some() {
+        return Err(anyhow!("--out is only valid with --fasta"));
+    }
+    let art = Artifact::load(&args.model)?;
     let pred = predict(
         &art,
-        &args.peptide,
-        args.charge,
+        peptide,
+        charge,
         ms_ctx.as_ref(),
         args.chrom_context.as_deref(),
         args.min_intensity,

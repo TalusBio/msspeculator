@@ -16,8 +16,11 @@ implementations.
   `Peptide` pyclass, vocab/chemistry constants, and numpy-returning functions
   (`fragment_mz`, `fragment_mz_matrix`, `ms2_target_shape`, `collate`, ...). It adds no
   chemistry or tokenization logic of its own.
-- `cli/` (`pepdistill-cli`) — a standalone Rust binary (no Python) used for the
-  Python-vs-Rust prediction-parity check (`tests/test_rust_parity.py`). `--peptide` takes a
+- `cli/` (`pepdistill-cli`) — a standalone Rust binary (no Python) used for spectral-library
+  generation and the Python-vs-Rust prediction-parity check (`tests/test_rust_parity.py`).
+  `--fasta ... --out library.tsv` digests and enumerates precursors, loads the `.safetensors`
+  weights once, predicts in Rust, converts CCS to Bruker 1/K0, and writes DIA-NN TSV.
+  `--peptide` takes a
   **modified sequence** (`[TMT6plex]PEPC[Carbamidomethyl@C]IDER`, or a bare Dalton delta
   `PEP[+42.010565]TIDER`), parsed by `Peptide::parse` — the inverse of `modified_sequence()`.
   The `.safetensors` artifact carries a `format_version`; `core/src/artifact.rs` rejects any

@@ -21,6 +21,7 @@ rust/target/
 docs/
 runs/*
 !runs/*.toml
+fasta_ignore/
 
 # subagent-driven-development scratch (ledger, briefs, review packages)
 .superpowers/

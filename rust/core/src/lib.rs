@@ -57,6 +57,20 @@ pub fn predict(
     // `peptide` is a modified sequence, not a bare one: parsing is what puts the mods on the
     // sites the runtime will encode. An unparseable string is an error, never a bare fallback.
     let pep = peptide::Peptide::parse(peptide)?;
+    predict_peptide(art, &pep, charge, ms_context, chrom_context, min_intensity)
+}
+
+/// Run an already-constructed peptide end to end. This avoids round-tripping through the
+/// modified-sequence grammar, which intentionally renders a final-residue modification in the
+/// same position as a C-terminal modification and therefore cannot disambiguate those cases.
+pub fn predict_peptide(
+    art: &Artifact,
+    pep: &peptide::Peptide,
+    charge: i64,
+    ms_context: Option<&MsContext>,
+    chrom_context: Option<&str>,
+    min_intensity: f64,
+) -> Result<Prediction> {
     if pep.sequence.len() < 2 {
         anyhow::bail!("peptide must have at least 2 residues");
     }
@@ -84,7 +98,7 @@ pub fn predict(
     };
 
     let (ms2, rt, ccs) = predictor.forward(
-        &pep,
+        pep,
         charge,
         ms_vec.as_ref(),
         chrom_vec.as_ref(),

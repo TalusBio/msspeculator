@@ -109,14 +109,26 @@ pepdistill predict --model work/model.ckpt --fasta proteome.fasta -o library.par
 RT and CCS are always predicted context-free (RT through the runbook's neutral/iRT row); only
 MS2 fragment intensities move with `--ms-context`/`--nce`.
 
-### Predict one peptide in Rust (experimental)
+### Generate a library or predict one peptide in Rust
 
 A pure-Rust inference path mirrors the torch `predict` for a single peptide. Export the trained
 checkpoint to a self-contained `.safetensors` artifact (weights + config/vocab/norm in the
-metadata), then run the standalone binary:
+metadata), then run the standalone binary. FASTA mode digests with trypsin, applies fixed
+Carbamidomethyl@C plus up to one variable Oxidation@M by default, predicts charges 2–4, converts
+predicted CCS to Bruker 1/K0, and writes a streaming DIA-NN TSV accepted by `timsseek`:
 
 ```bash
 pepdistill export-rust --model work/model.ckpt -o work/model.safetensors
+cargo run -q --release -p pepdistill-cli -- \
+  --model work/model.safetensors --fasta proteome.fasta --out library.tsv \
+  --ms-context "Lumos::FTMS::HCD::30"
+
+timsseek --raw-inputs sample.d --speclib-uri library.tsv --output-uri search-results
+```
+
+Single-peptide JSON remains available:
+
+```bash
 cargo run -q --release -p pepdistill-cli -- \
   --model work/model.safetensors --peptide PEPTIDER --charge 2 \
   --ms-context "Lumos::FTMS::HCD::30"      # or --nce 30, or omit for base MS2

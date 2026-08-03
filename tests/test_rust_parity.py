@@ -5,6 +5,7 @@ is exported and run through both `predict_library_fast` and the Rust binary; we 
 max-abs-diff on ms2/rt/ccs/mz is tiny and print the deltas. Skipped without a Rust toolchain.
 """
 
+import csv
 import json
 import shutil
 import subprocess
@@ -89,6 +90,47 @@ def _frag_map_rust(rj):
         (f["ion"][i], f["ord"][i], f["z"][i]): (f["mz"][i], f["rel"][i])
         for i in range(len(f["ion"]))
     }
+
+
+def test_rust_fasta_generates_diann_tsv(artifact, tmp_path):
+    """The production Rust path digests FASTA and emits a timsseek-readable DIA-NN table."""
+    fasta = tmp_path / "tiny.fasta"
+    fasta.write_text(">protein_one description\nPEPTIDEM\n")
+    out = tmp_path / "library.tsv"
+    r = subprocess.run(
+        [
+            _binary(),
+            "--model",
+            str(artifact["path"]),
+            "--fasta",
+            str(fasta),
+            "--out",
+            str(out),
+            "--min-length",
+            "8",
+            "--max-length",
+            "8",
+            "--min-charge",
+            "2",
+            "--max-charge",
+            "2",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert r.returncode == 0, r.stderr
+    with out.open() as fh:
+        rows = list(csv.DictReader(fh, delimiter="\t"))
+
+    assert rows
+    assert {row["ModifiedPeptide"] for row in rows} == {
+        "PEPTIDEM",
+        "PEPTIDEM(UniMod:35)",
+    }
+    assert {row["ProteinID"] for row in rows} == {"protein_one"}
+    assert {row["FragmentLossType"] for row in rows} == {"noloss"}
+    assert {row["Decoy"] for row in rows} == {"0"}
+    assert all(float(row["IonMobility"]) > 0 for row in rows)
 
 
 @pytest.mark.parametrize(
