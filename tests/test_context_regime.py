@@ -258,9 +258,22 @@ def test_fit_from_prebuilt_datasets_trains_and_reports_metrics(tmp_path):
 def test_validation_early_stop_fails_on_missing_metric_key():
     class Trainer:
         callback_metrics = {"val/other/spectral_angle": torch.tensor(0.5)}
+        sanity_checking = False
 
     callback = _RealValidationEarlyStop(
         patience=5, min_delta=1e-3, expected_keys={"val/pool/spectral_angle"}
     )
     with pytest.raises(RuntimeError, match="missing=.*val/pool/spectral_angle"):
         callback.on_validation_epoch_end(Trainer(), None)
+
+
+def test_validation_early_stop_ignores_sanity_check_missing_keys():
+    class Trainer:
+        callback_metrics = {"val/other/spectral_angle": torch.tensor(0.5)}
+        sanity_checking = True
+
+    callback = _RealValidationEarlyStop(
+        patience=5, min_delta=1e-3, expected_keys={"val/pool/spectral_angle"}
+    )
+    callback.on_validation_epoch_end(Trainer(), None)
+    assert callback.bad == 0

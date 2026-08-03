@@ -350,6 +350,11 @@ class _RealValidationEarlyStop(L.Callback):
         self.bad = 0
 
     def on_validation_epoch_end(self, trainer: L.Trainer, pl_module: L.LightningModule) -> None:
+        # Lightning runs only a couple of validation batches before epoch 0 as a sanity check.
+        # With per-dataset dynamic metric names that prefix is not guaranteed to contain every
+        # dataset, so checking completeness here would reject a healthy run before training.
+        if trainer.sanity_checking:
+            return
         metrics = {
             key: value
             for key, value in trainer.callback_metrics.items()
