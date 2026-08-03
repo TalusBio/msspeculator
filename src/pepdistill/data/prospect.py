@@ -18,6 +18,7 @@ from __future__ import annotations
 import io
 import os
 import re
+import threading
 import time
 import zipfile
 from dataclasses import dataclass
@@ -99,6 +100,28 @@ RECORDS: dict[str, str] = {
 # here, capped at a few attempts: enough to ride out a burst, not enough to hang forever.
 _RATE_LIMIT_DELAY_S = 2.0
 _RATE_LIMIT_MAX_ATTEMPTS = 5
+_REMOTE_OPEN_MIN_INTERVAL_S = 2.0
+_REMOTE_OPEN_LOCK = threading.Lock()
+_LAST_REMOTE_OPEN: tuple[str, float] | None = None
+
+
+def _pace_remote_zip_open(url: str) -> None:
+    """Keep cold opens of different Zenodo archives from arriving as a burst.
+
+    A single archive is opened once per extraction batch; retries of that same URL already
+    have exponential backoff. The process-wide ticker matters across the distinct source
+    archives in one training run, and the lock also prevents concurrent callers from opening
+    different archives simultaneously. Range requests made internally by fsspec are outside
+    this small guard, but this removes the avoidable burst at the archive boundary.
+    """
+    global _LAST_REMOTE_OPEN
+    with _REMOTE_OPEN_LOCK:
+        now = time.monotonic()
+        if _LAST_REMOTE_OPEN is not None and _LAST_REMOTE_OPEN[0] != url:
+            wait = _REMOTE_OPEN_MIN_INTERVAL_S - (now - _LAST_REMOTE_OPEN[1])
+            if wait > 0:
+                time.sleep(wait)
+        _LAST_REMOTE_OPEN = (url, time.monotonic())
 
 
 def _rate_limit_verdict(exc: Exception) -> bool | None:
@@ -142,6 +165,19 @@ def _describe_exception(exc: BaseException) -> str:
         parts.append(detail)
         current = current.__cause__ or current.__context__
     return " <- ".join(parts)
+
+
+def _retry_delay(exc: Exception, attempt: int) -> float:
+    """Choose backoff, respecting a server-provided ``Retry-After`` when available."""
+    delay = _RATE_LIMIT_DELAY_S * 2**attempt
+    headers = getattr(exc, "headers", None)
+    raw = headers.get("Retry-After") if headers is not None else None
+    if raw is not None:
+        try:
+            delay = max(delay, float(raw))
+        except (TypeError, ValueError):
+            pass
+    return delay
 
 
 @dataclass(frozen=True, slots=True)
@@ -525,6 +561,7 @@ class ProspectSource:
         last_exc: Exception | None = None
         attempt_errors: list[str] = []
         ambiguous = False
+        _pace_remote_zip_open(url)
         for attempt in range(1, _RATE_LIMIT_MAX_ATTEMPTS + 1):
             try:
                 return zipfile.ZipFile(fsspec.open(url, "rb").open())
@@ -536,7 +573,7 @@ class ProspectSource:
                 last_exc, ambiguous = exc, verdict is None
                 if attempt == _RATE_LIMIT_MAX_ATTEMPTS:
                     break
-                time.sleep(_RATE_LIMIT_DELAY_S * 2**attempt)
+                time.sleep(_retry_delay(exc, attempt))
 
         status = getattr(last_exc, "status", None)
         if ambiguous:

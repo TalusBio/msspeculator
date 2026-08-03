@@ -87,7 +87,20 @@ def extract_shards(
     missing = [i for i, p in enumerate(paths) if p is None]
 
     if missing:
-        with src._open_remote_zip(zip_filename) as z:
+        missing_names = [members[i] for i in missing]
+        try:
+            z = src._open_remote_zip(zip_filename)
+        except Exception as exc:  # noqa: BLE001 - add archive/member context, preserve cause
+            preview = ", ".join(missing_names[:3])
+            if len(missing_names) > 3:
+                preview += f", ... (+{len(missing_names) - 3} more)"
+            raise RuntimeError(
+                f"could not open annotation archive {zip_filename!r} for {src.record}: "
+                f"{len(missing_names)} missing shard(s) remain; first missing members: "
+                f"{preview}. Original error: {exc}"
+            ) from exc
+
+        with z:
             for done, i in enumerate(missing, start=1):
                 member = members[i]
 
@@ -104,7 +117,14 @@ def extract_shards(
                             if byte_progress is not None:
                                 byte_progress(member, copied, total_bytes)
 
-                paths[i] = cache.store(keys[i], write)
+                try:
+                    paths[i] = cache.store(keys[i], write)
+                except Exception as exc:  # noqa: BLE001 - add the failing member to the cause
+                    raise RuntimeError(
+                        f"failed extracting annotation shard {member!r} from "
+                        f"{zip_filename!r} ({src.record}); shard {done}/{len(missing)}. "
+                        f"Original error: {exc}"
+                    ) from exc
                 if progress is not None:
                     progress(done, len(missing), member)
 

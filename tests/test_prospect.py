@@ -12,6 +12,7 @@ import zipfile
 import pandas as pd
 import pytest
 
+import pepdistill.data.prospect as prospect_module
 from pepdistill.chem import Peptide
 from pepdistill.data.cache import FileCache
 from pepdistill.data.meta_index import MetaIndex, SpectrumMeta
@@ -410,11 +411,15 @@ def _make_429():
     )
 
 
-def _make_http_error(status):
+def _make_http_error(status, headers=None):
     from aiohttp import ClientResponseError
 
     return ClientResponseError(
-        request_info=_FakeRequestInfo(), history=(), status=status, message="INTERNAL SERVER ERROR"
+        request_info=_FakeRequestInfo(),
+        history=(),
+        status=status,
+        message="INTERNAL SERVER ERROR",
+        headers=headers,
     )
 
 
@@ -457,6 +462,17 @@ def test_open_remote_zip_retries_429_then_succeeds(tmp_path, monkeypatch):
     assert calls["n"] == 3
 
 
+def test_remote_zip_open_paces_distinct_archives(monkeypatch):
+    monkeypatch.setattr(prospect_module, "_LAST_REMOTE_OPEN", ("https://zenodo/one", 100.0))
+    monkeypatch.setattr(prospect_module.time, "monotonic", lambda: 101.0)
+    sleeps = []
+    monkeypatch.setattr(prospect_module.time, "sleep", lambda s: sleeps.append(s))
+
+    prospect_module._pace_remote_zip_open("https://zenodo/two")
+
+    assert sleeps == [1.0]
+
+
 def test_open_remote_zip_retries_transient_500_then_succeeds(tmp_path, monkeypatch):
     """Zenodo occasionally returns a transient 500 while serving a large archive."""
     src = _rate_limit_src(tmp_path)
@@ -485,6 +501,21 @@ def test_open_remote_zip_names_transient_500_after_retries(tmp_path, monkeypatch
 
     with pytest.raises(RuntimeError, match="transient HTTP 500"):
         src._open_remote_zip(_RATE_LIMIT_ZIP)
+
+
+def test_open_remote_zip_honors_retry_after(tmp_path, monkeypatch):
+    src = _rate_limit_src(tmp_path)
+
+    def fake_open(url, mode):
+        return _FakeOpenFile(ok=False, exc=_make_http_error(500, {"Retry-After": "60"}))
+
+    monkeypatch.setattr("pepdistill.data.prospect.fsspec.open", fake_open)
+    sleeps = []
+    monkeypatch.setattr("pepdistill.data.prospect.time.sleep", lambda s: sleeps.append(s))
+
+    with pytest.raises(RuntimeError, match="transient HTTP 500"):
+        src._open_remote_zip(_RATE_LIMIT_ZIP)
+    assert sleeps[:4] == [60.0, 60.0, 60.0, 60.0]
 
 
 def test_open_remote_zip_retries_filenotfounderror_then_succeeds(tmp_path, monkeypatch):

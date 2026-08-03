@@ -219,3 +219,26 @@ def test_extract_shards_partial_cache_extracts_only_missing(tmp_path, monkeypatc
     assert calls["n"] == 1  # one open covers both still-missing members
     for i, p in enumerate(paths):
         assert list(pd.read_parquet(p).scan_number) == [i]
+
+
+def test_extract_shards_reports_archive_error_with_missing_members(tmp_path, monkeypatch):
+    src = ProspectSource("prospect", cache=_seed_zip_n(tmp_path, 3))
+    members = select_members(src, ZIP_NAME, [0, 1, 2])
+
+    def fail_open(_zip_filename):
+        raise RuntimeError("Zenodo returned transient HTTP 500")
+
+    monkeypatch.setattr(src, "_open_remote_zip", fail_open)
+    with pytest.raises(RuntimeError, match="shard_0_annotation.parquet") as exc_info:
+        extract_shards(src, ZIP_NAME, members)
+    assert "3 missing shard(s)" in str(exc_info.value)
+    assert "Original error: Zenodo returned transient HTTP 500" in str(exc_info.value)
+
+
+def test_extract_shards_reports_member_error_with_shard_name(tmp_path):
+    src = ProspectSource("prospect", cache=_seed_zip_n(tmp_path, 3))
+    member = "TUM_third_pool/not_present_annotation.parquet"
+
+    with pytest.raises(RuntimeError, match="not_present_annotation.parquet") as exc_info:
+        extract_shards(src, ZIP_NAME, [member])
+    assert "shard 1/1" in str(exc_info.value)
