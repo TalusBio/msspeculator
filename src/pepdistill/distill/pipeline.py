@@ -150,6 +150,9 @@ class TrainCfg:
     lr: float = 1e-3
     loss_weights: tuple[float, float, float] = (1.0, 1.0, 1.0)  # ms2, irt, raw_rt
     mod_align_weight: float = 1.0
+    # Validation spectral-angle early stop; 0 disables it. Patience is in real-data epochs.
+    early_stop_patience: int = 0
+    early_stop_min_delta: float = 1e-3
     # Examples held for cross-shard shuffling. Shards are also visited in a per-epoch shuffled
     # order, so this only has to break up within-shard correlation. 0 disables shuffling
     # entirely (sequential shard order) for debugging a data problem.
@@ -542,6 +545,8 @@ def run_pipeline(cfg: RunConfig, log=print) -> dict:
             seed=cfg.seed,
             accelerator=acc,
             mod_align_weight=cfg.train.mod_align_weight,
+            early_stop_patience=cfg.train.early_stop_patience,
+            early_stop_min_delta=cfg.train.early_stop_min_delta,
             enable_progress_bar=False,
             progress_metrics_path=out / "train_metrics.jsonl",
         )

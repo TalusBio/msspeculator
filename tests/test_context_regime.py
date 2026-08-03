@@ -20,6 +20,7 @@ from pepdistill.distill.context_regime import (
     RealExample,
     RealSpeclibDataset,
     RealSpeclibModule,
+    _RealValidationEarlyStop,
     _build_examples,
     establish_rt_norm,
     fit_realspeclib,
@@ -252,3 +253,14 @@ def test_fit_from_prebuilt_datasets_trains_and_reports_metrics(tmp_path):
     assert "val/pool/rawrt_mae" in metrics
     assert metrics["val/pool/n"] == 2
     assert "val_spectral_angle" not in metrics
+
+
+def test_validation_early_stop_fails_on_missing_metric_key():
+    class Trainer:
+        callback_metrics = {"val/other/spectral_angle": torch.tensor(0.5)}
+
+    callback = _RealValidationEarlyStop(
+        patience=5, min_delta=1e-3, expected_keys={"val/pool/spectral_angle"}
+    )
+    with pytest.raises(RuntimeError, match="missing=.*val/pool/spectral_angle"):
+        callback.on_validation_epoch_end(Trainer(), None)

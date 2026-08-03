@@ -336,6 +336,48 @@ class _RealTrainProgress(L.Callback):
             trainer.print(f"[val] epoch {trainer.current_epoch + 1}: {preview}")
 
 
+class _RealValidationEarlyStop(L.Callback):
+    """Stop real-data training when the mean per-dataset validation angle plateaus."""
+
+    def __init__(self, patience: int, min_delta: float, expected_keys: set[str]) -> None:
+        super().__init__()
+        self.patience = patience
+        self.min_delta = min_delta
+        self.expected_keys = expected_keys
+        self.best = float("inf")
+        self.bad = 0
+
+    def on_validation_epoch_end(self, trainer: L.Trainer, pl_module: L.LightningModule) -> None:
+        metrics = {
+            key: value
+            for key, value in trainer.callback_metrics.items()
+            if key in self.expected_keys and torch.is_tensor(value) and value.numel() == 1
+        }
+        missing = sorted(self.expected_keys - metrics.keys())
+        if missing:
+            available = sorted(
+                key
+                for key in trainer.callback_metrics
+                if key.startswith("val/") and key.endswith("/spectral_angle")
+            )
+            raise RuntimeError(
+                "early stopping expected per-dataset validation metrics that were not logged: "
+                f"missing={missing}, available={available}"
+            )
+        values = [float(value) for value in metrics.values()]
+        current = sum(values) / len(values)
+        if self.best - current > self.min_delta:
+            self.best, self.bad = current, 0
+            return
+        self.bad += 1
+        if self.bad >= self.patience:
+            trainer.should_stop = True
+            trainer.print(
+                f"[early-stop] validation spectral angle plateaued at {current:.4f} "
+                f"(best {self.best:.4f}) -> stopping after epoch {trainer.current_epoch + 1}"
+            )
+
+
 def _build_examples(
     real: RealLabels, encoder: MSContextEncoder, dataset_id: int, instrument: str
 ) -> list[RealExample]:
@@ -428,6 +470,8 @@ def fit_realspeclib_datasets(
     mod_align_weight: float = 1.0,
     progress_log_every: int = 100,
     progress_metrics_path: str | Path | None = None,
+    early_stop_patience: int = 0,
+    early_stop_min_delta: float = 1e-3,
     **trainer_kwargs,
 ) -> RealSpeclibModule:
     """Fit on datasets the caller already built.
@@ -464,6 +508,18 @@ def fit_realspeclib_datasets(
     callbacks = list(trainer_kwargs.pop("callbacks", []))
     if progress_log_every > 0:
         callbacks.append(_RealTrainProgress(progress_log_every, progress_metrics_path))
+    if early_stop_patience < 0:
+        raise ValueError("early_stop_patience must be non-negative")
+    if early_stop_min_delta < 0:
+        raise ValueError("early_stop_min_delta must be non-negative")
+    if early_stop_patience > 0 and val_ds is not None and len(val_ds):
+        expected_names = {
+            module.dataset_names[int(dataset_id)] for dataset_id in np.unique(val_ds.dataset_id)
+        }
+        expected_keys = {f"val/{name}/spectral_angle" for name in expected_names}
+        callbacks.append(
+            _RealValidationEarlyStop(early_stop_patience, early_stop_min_delta, expected_keys)
+        )
     trainer = build_trainer(epochs, accelerator, grad_clip, callbacks=callbacks, **trainer_kwargs)
     trainer.fit(module, loader(train_ds, True), loader(val_ds, False))
     return module
