@@ -2,6 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
+use std::sync::{mpsc, Arc, Mutex};
+use std::thread;
 
 use anyhow::{bail, Context, Result};
 use pepdistill_core::peptide::{ModSpec, Peptide, Site};
@@ -191,6 +193,13 @@ struct PendingPeptide {
     diann_sequence: String,
 }
 
+struct PredictedPeptide {
+    stripped: String,
+    protein_group: String,
+    diann_sequence: String,
+    predictions: Vec<Prediction>,
+}
+
 fn write_prediction<W: Write>(
     writer: &mut W,
     stats: &mut LibraryStats,
@@ -264,15 +273,13 @@ fn write_prediction<W: Write>(
     Ok(())
 }
 
-fn write_batch<W: Write>(
-    writer: &mut W,
-    stats: &mut LibraryStats,
+fn predict_batch(
     artifact: &Artifact,
     context: &PreparedContext,
     charges: &[i64],
     min_intensity: f64,
     batch: Vec<PendingPeptide>,
-) -> Result<()> {
+) -> Result<Vec<PredictedPeptide>> {
     let (metadata, peptides): (Vec<_>, Vec<_>) = batch
         .into_iter()
         .map(|item| {
@@ -289,16 +296,33 @@ fn write_batch<W: Write>(
         context,
         min_intensity,
     )?;
-    for ((stripped, protein_group, diann_sequence), peptide_predictions) in
-        metadata.into_iter().zip(predictions)
-    {
-        for prediction in peptide_predictions {
+    Ok(metadata
+        .into_iter()
+        .zip(predictions)
+        .map(
+            |((stripped, protein_group, diann_sequence), predictions)| PredictedPeptide {
+                stripped,
+                protein_group,
+                diann_sequence,
+                predictions,
+            },
+        )
+        .collect())
+}
+
+fn write_predicted_batch<W: Write>(
+    writer: &mut W,
+    stats: &mut LibraryStats,
+    batch: Vec<PredictedPeptide>,
+) -> Result<()> {
+    for item in batch {
+        for prediction in item.predictions {
             write_prediction(
                 writer,
                 stats,
-                &stripped,
-                &protein_group,
-                &diann_sequence,
+                &item.stripped,
+                &item.protein_group,
+                &item.diann_sequence,
                 prediction,
             )?;
         }
@@ -341,16 +365,65 @@ pub fn write_diann_tsv(opts: &LibraryOptions<'_>) -> Result<LibraryStats> {
     let artifact = Artifact::load(opts.model)?;
     let context = PreparedContext::new(&artifact, opts.ms_context, opts.chrom_context)?;
     let charges = (opts.min_charge..=opts.max_charge).collect::<Vec<_>>();
-    let mut writer = BufWriter::new(
-        File::create(opts.out).with_context(|| format!("creating library {}", opts.out))?,
-    );
-    writeln!(writer, "ModifiedPeptide\tStrippedPeptide\tPrecursorMz\tPrecursorCharge\tTr_recalibrated\tIonMobility\tProteinID\tDecoy\tFragmentMz\tFragmentType\tFragmentNumber\tFragmentCharge\tFragmentLossType\tRelativeIntensity")?;
-
-    let mut stats = LibraryStats {
+    let stats = LibraryStats {
         proteins: records.len(),
         peptides: peptides.len(),
         ..LibraryStats::default()
     };
+
+    let worker_count = thread::available_parallelism()
+        .map(|n| n.get().saturating_sub(1).max(1))
+        .unwrap_or(1);
+    let queue_capacity = worker_count * 2;
+    let (work_tx, work_rx) = mpsc::sync_channel::<Option<Vec<PendingPeptide>>>(queue_capacity);
+    let work_rx = Arc::new(Mutex::new(work_rx));
+    let (result_tx, result_rx) =
+        mpsc::sync_channel::<Result<Vec<PredictedPeptide>>>(queue_capacity);
+    let artifact = Arc::new(artifact);
+
+    let writer_file = File::create(opts.out)
+        .with_context(|| format!("creating library {}", opts.out))?;
+    let writer_handle = thread::spawn(move || -> Result<LibraryStats> {
+        let mut writer = BufWriter::new(writer_file);
+        writeln!(writer, "ModifiedPeptide\tStrippedPeptide\tPrecursorMz\tPrecursorCharge\tTr_recalibrated\tIonMobility\tProteinID\tDecoy\tFragmentMz\tFragmentType\tFragmentNumber\tFragmentCharge\tFragmentLossType\tRelativeIntensity")?;
+        let mut stats = stats;
+        for result in result_rx {
+            write_predicted_batch(&mut writer, &mut stats, result?)?;
+        }
+        writer.flush()?;
+        Ok(stats)
+    });
+
+    let mut worker_handles = Vec::with_capacity(worker_count);
+    for _ in 0..worker_count {
+        let work_rx = Arc::clone(&work_rx);
+        let result_tx = result_tx.clone();
+        let artifact = Arc::clone(&artifact);
+        let context = context.clone();
+        let charges = charges.clone();
+        let min_intensity = opts.min_intensity;
+        worker_handles.push(thread::spawn(move || {
+            loop {
+                let work = work_rx.lock().expect("work queue mutex poisoned").recv();
+                match work {
+                    Ok(Some(batch)) => {
+                        let result = predict_batch(
+                            &artifact,
+                            &context,
+                            &charges,
+                            min_intensity,
+                            batch,
+                        );
+                        if result_tx.send(result).is_err() {
+                            break;
+                        }
+                    }
+                    Ok(None) | Err(_) => break,
+                }
+            }
+        }));
+    }
+
     let mut pending: BTreeMap<usize, Vec<PendingPeptide>> = BTreeMap::new();
     for (sequence, proteins) in peptides {
         let protein_group = proteins.into_iter().collect::<Vec<_>>().join(";");
@@ -369,31 +442,24 @@ pub fn write_diann_tsv(opts: &LibraryOptions<'_>) -> Result<LibraryStats> {
                 (bucket.len() >= INFERENCE_BATCH_SIZE).then(|| std::mem::take(bucket))
             };
             if let Some(batch) = ready {
-                write_batch(
-                    &mut writer,
-                    &mut stats,
-                    &artifact,
-                    &context,
-                    &charges,
-                    opts.min_intensity,
-                    batch,
-                )?;
+                work_tx.send(Some(batch)).context("sending inference batch")?;
             }
         }
     }
     for batch in pending.into_values().filter(|batch| !batch.is_empty()) {
-        write_batch(
-            &mut writer,
-            &mut stats,
-            &artifact,
-            &context,
-            &charges,
-            opts.min_intensity,
-            batch,
-        )?;
+        work_tx.send(Some(batch)).context("sending inference batch")?;
     }
-    writer.flush()?;
-    Ok(stats)
+    for _ in 0..worker_count {
+        work_tx.send(None).context("stopping inference worker")?;
+    }
+    drop(work_tx);
+    for handle in worker_handles {
+        handle.join().map_err(|_| anyhow::anyhow!("inference worker panicked"))?;
+    }
+    drop(result_tx);
+    writer_handle
+        .join()
+        .map_err(|_| anyhow::anyhow!("library writer panicked"))?
 }
 
 #[cfg(test)]

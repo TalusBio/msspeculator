@@ -46,6 +46,7 @@ pub struct MsContext {
 }
 
 /// Context terms resolved once for repeated predictions with one acquisition setup.
+#[derive(Clone)]
 pub struct PreparedContext {
     ms_shift: Option<Array1<f32>>,
     chrom_shift: Option<Array1<f32>>,
