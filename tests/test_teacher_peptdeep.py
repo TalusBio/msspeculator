@@ -29,6 +29,17 @@ def test_labels_align_with_input_order(teacher):
         assert 0.0 <= lab.ms2.max() <= 1.0 + 1e-6
 
 
+def test_teacher_construction_does_not_emit_mask_modloss_warning():
+    import warnings
+
+    from pepdistill.teacher.peptdeep_teacher import PeptDeepTeacher
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        PeptDeepTeacher(device="cpu")
+    assert not any("mask_modloss is deprecated" in str(w.message) for w in caught)
+
+
 def test_modified_peptide_gets_labels(teacher):
     prec = Precursor(Peptide("ACDEMK", ((1, "Carbamidomethyl@C"), (4, "Oxidation@M"))), 2, "train")
     (lab,) = teacher.predict([prec])

@@ -71,10 +71,11 @@ class PeptDeepTeacher(Teacher):
         self.nce = nce
         self.instrument = instrument
         self.batch_size = batch_size
-        # We only request ordinary b/y ions (no mod-loss columns), so masking mod-loss
-        # predictions has no effect here.  Passing True now emits peptdeep's deprecation
-        # warning because the model's charged-fragment configuration is the source of truth.
-        self._mgr = ModelManager(mask_modloss=False, device=device)
+        # We only consume ordinary b/y columns below, so mod-loss outputs have no effect here.
+        # ``None`` is intentional: peptdeep warns for either True or False because
+        # ``mask_modloss`` is deprecated; None leaves the model's charged-fragment configuration
+        # untouched while keeping the ordinary b/y columns we consume.
+        self._mgr = ModelManager(mask_modloss=None, device=device)
         self._mgr.load_installed_models()
 
     def _frame(self, precursors: list[Precursor], nces=None) -> pd.DataFrame:
