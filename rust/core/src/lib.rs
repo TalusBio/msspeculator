@@ -124,62 +124,85 @@ pub fn predict_peptide_prepared(
     context: &PreparedContext,
     min_intensity: f64,
 ) -> Result<Prediction> {
+    let mut predictions =
+        predict_peptide_charges_prepared(art, pep, &[charge], context, min_intensity)?;
+    Ok(predictions.pop().expect("one requested charge yields one prediction"))
+}
+
+/// Encode a peptide once and run its charge-dependent heads for every requested charge.
+pub fn predict_peptide_charges_prepared(
+    art: &Artifact,
+    pep: &peptide::Peptide,
+    charges: &[i64],
+    context: &PreparedContext,
+    min_intensity: f64,
+) -> Result<Vec<Prediction>> {
     if pep.sequence.len() < 2 {
         anyhow::bail!("peptide must have at least 2 residues");
+    }
+    if charges.is_empty() {
+        return Ok(Vec::new());
     }
     let rm = pep.residue_masses()?;
 
     let predictor = Predictor::new(art);
-    let (ms2, rt, ccs) = predictor.forward(
-        pep,
-        charge,
-        context.ms_shift.as_ref(),
+    let encoded = predictor.encode(pep)?;
+    let rt = predictor.predict_rt(
+        &encoded,
         context.chrom_shift.as_ref(),
         context.chrom_affine,
     )?;
-
     let mz = chem::fragment_mz_matrix(&rm); // [L-1, n_ion]
     let frag_pos = pep.sequence.len() - 1;
+    let modified_sequence = pep.modified_sequence();
+    let mut predictions = Vec::with_capacity(charges.len());
 
-    // Base peak over the whole spectrum (matches predict_library_fast).
-    let peak = ms2.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-    let peak = if peak <= 0.0 { 1.0 } else { peak };
+    for &charge in charges {
+        let (ms2, ccs) =
+            predictor.predict_charge(&encoded, charge, context.ms_shift.as_ref())?;
 
-    let mut f = Fragments {
-        ion: vec![],
-        ord: vec![],
-        z: vec![],
-        mz: vec![],
-        rel: vec![],
-    };
-    // Position-major, then ION_TYPES column order — same flatten as the Python reference.
-    for i in 0..frag_pos {
-        for (col, &(is_b, z)) in chem::ION_TYPES.iter().enumerate() {
-            let rel = (ms2[[i, col]] / peak) as f64;
-            if rel < min_intensity {
-                continue;
+        // Base peak over the whole spectrum (matches predict_library_fast).
+        let peak = ms2.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        let peak = if peak <= 0.0 { 1.0 } else { peak };
+
+        let mut f = Fragments {
+            ion: vec![],
+            ord: vec![],
+            z: vec![],
+            mz: vec![],
+            rel: vec![],
+        };
+        // Position-major, then ION_TYPES column order — same flatten as the Python reference.
+        for i in 0..frag_pos {
+            for (col, &(is_b, z)) in chem::ION_TYPES.iter().enumerate() {
+                let rel = (ms2[[i, col]] / peak) as f64;
+                if rel < min_intensity {
+                    continue;
+                }
+                let ordinal = if is_b {
+                    (i + 1) as i64
+                } else {
+                    (frag_pos - i) as i64
+                };
+                f.ion.push(if is_b { "b" } else { "y" }.to_string());
+                f.ord.push(ordinal);
+                f.z.push(z as i64);
+                f.mz.push(mz[i][col]);
+                f.rel.push(rel);
             }
-            let ordinal = if is_b {
-                (i + 1) as i64
-            } else {
-                (frag_pos - i) as i64
-            };
-            f.ion.push(if is_b { "b" } else { "y" }.to_string());
-            f.ord.push(ordinal);
-            f.z.push(z as i64);
-            f.mz.push(mz[i][col]);
-            f.rel.push(rel);
         }
+
+        predictions.push(Prediction {
+            // Report the re-rendered form, not the caller's string, so output shows how the
+            // input was actually read (e.g. a trailing `[mod]` resolved to the C-terminus).
+            peptide: modified_sequence.clone(),
+            charge,
+            precursor_mz: chem::precursor_mz(&rm, charge),
+            rt,
+            ccs,
+            fragments: f,
+        });
     }
 
-    Ok(Prediction {
-        // Report the re-rendered form, not the caller's string, so the output shows how the
-        // input was actually read (e.g. a trailing `[mod]` resolved to the C-terminus).
-        peptide: pep.modified_sequence(),
-        charge,
-        precursor_mz: chem::precursor_mz(&rm, charge),
-        rt,
-        ccs,
-        fragments: f,
-    })
+    Ok(predictions)
 }

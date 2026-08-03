@@ -113,7 +113,7 @@ def test_rust_fasta_generates_diann_tsv(artifact, tmp_path):
             "--min-charge",
             "2",
             "--max-charge",
-            "2",
+            "3",
         ],
         capture_output=True,
         text=True,
@@ -128,6 +128,7 @@ def test_rust_fasta_generates_diann_tsv(artifact, tmp_path):
         "PEPTIDEM(UniMod:35)",
     }
     assert {row["ProteinID"] for row in rows} == {"protein_one"}
+    assert {int(row["PrecursorCharge"]) for row in rows} == {2, 3}
     assert {row["FragmentLossType"] for row in rows} == {"noloss"}
     assert {row["Decoy"] for row in rows} == {"0"}
     assert all(float(row["IonMobility"]) > 0 for row in rows)

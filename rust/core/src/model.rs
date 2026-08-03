@@ -110,6 +110,12 @@ pub struct Predictor<'a> {
     art: &'a Artifact,
 }
 
+/// Charge-independent transformer output for one modified peptide.
+pub struct EncodedPeptide {
+    pooled: Array1<f32>,
+    frag: Array2<f32>,
+}
+
 impl<'a> Predictor<'a> {
     pub fn new(art: &'a Artifact) -> Self {
         Self { art }
@@ -344,19 +350,12 @@ impl<'a> Predictor<'a> {
         ))
     }
 
-    /// Forward pass. Returns (ms2 [L-1, n_ion] in (0,1), rt native, ccs native).
-    pub fn forward(
-        &self,
-        pep: &Peptide,
-        charge: i64,
-        ms_shift: Option<&Array1<f32>>,
-        chrom_shift: Option<&Array1<f32>>,
-        chrom_affine: Option<(f32, f32)>,
-    ) -> Result<(Array2<f32>, f32, f32)> {
+    /// Encode one modified peptide through the shared transformer trunk.
+    pub fn encode(&self, pep: &Peptide) -> Result<EncodedPeptide> {
         let cfg = self.cfg();
         let d = cfg.d_model;
         let seq = pep.sequence.as_bytes();
-        // Guarded here, not just in `predict`: `forward` is public, and below `seq.len() - 1`
+        // Guarded here, not just in `predict`: `encode` is public, and below `seq.len() - 1`
         // would wrap to usize::MAX on an empty peptide and abort in an allocation.
         if seq.len() < 2 {
             return Err(anyhow!(
@@ -375,16 +374,6 @@ impl<'a> Predictor<'a> {
                 cfg.max_len
             ));
         }
-        // charge_emb has max_charge + 1 rows. Without this the `.row(charge as usize)` below
-        // aborts the process on an ndarray bounds assertion (and a negative charge wraps to a
-        // huge usize first), which is not a diagnosis a CLI user can act on.
-        if charge < 1 || charge as usize > cfg.max_charge {
-            return Err(anyhow!(
-                "charge {charge} is out of range; this model's charge_emb covers 1..={}",
-                cfg.max_charge
-            ));
-        }
-
         // --- embed: token + position + routed mod vector ---
         // Eval routing sends named mods through comp_enc and mass-only mods through mass_enc,
         // never both; unmodified columns (termini included) contribute exactly zero (there is
@@ -427,15 +416,8 @@ impl<'a> Predictor<'a> {
             x = self.layer(x, l)?;
         }
 
-        // --- pooled peptide rep + charge embedding ---
+        // --- pooled peptide and adjacent-pool fragment representations ---
         let pooled = x.mean_axis(ndarray::Axis(0)).unwrap(); // [d]
-        let ce = self
-            .art
-            .get2("model.charge_emb.weight")?
-            .row(charge as usize)
-            .to_owned();
-
-        // --- MS2 head: adjacent-pool fragment features + ms_context + charge (added) ---
         // Adjacent-pool row p covers tokens (p, p+1). With the mandatory N-term token at column
         // 0, the first inter-RESIDUE site is row 1 (residues 1 and 2), so the L-1 real fragment
         // sites are rows [1, L). Rows 0 and L (the N-/C-term pools) are dropped, exactly as
@@ -449,6 +431,33 @@ impl<'a> Predictor<'a> {
                 frag[[i, j]] = 0.5 * (x[[p, j]] + x[[p + 1, j]]);
             }
         }
+        Ok(EncodedPeptide { pooled, frag })
+    }
+
+    /// Run the charge-dependent MS2 and CCS heads over an encoded peptide.
+    pub fn predict_charge(
+        &self,
+        encoded: &EncodedPeptide,
+        charge: i64,
+        ms_shift: Option<&Array1<f32>>,
+    ) -> Result<(Array2<f32>, f32)> {
+        let cfg = self.cfg();
+        let d = cfg.d_model;
+        // charge_emb has max_charge + 1 rows. Without this the `.row(charge as usize)` below
+        // aborts on an ndarray bounds assertion (and a negative charge wraps first).
+        if charge < 1 || charge as usize > cfg.max_charge {
+            return Err(anyhow!(
+                "charge {charge} is out of range; this model's charge_emb covers 1..={}",
+                cfg.max_charge
+            ));
+        }
+        let ce = self
+            .art
+            .get2("model.charge_emb.weight")?
+            .row(charge as usize)
+            .to_owned();
+
+        let mut frag = encoded.frag.clone();
         if let Some(shift) = ms_shift {
             for mut row in frag.rows_mut() {
                 for (r, &sh) in row.iter_mut().zip(shift.iter()) {
@@ -466,14 +475,23 @@ impl<'a> Predictor<'a> {
 
         // --- CCS head: concat[pooled, charge] ---
         let mut ccs_in = Array1::<f32>::zeros(2 * d);
-        ccs_in.slice_mut(s![0..d]).assign(&pooled);
+        ccs_in.slice_mut(s![0..d]).assign(&encoded.pooled);
         ccs_in.slice_mut(s![d..2 * d]).assign(&ce);
         let ccs_2d = ccs_in.insert_axis(ndarray::Axis(0)); // [1,2d]
         let ccs_out = self.head(&ccs_2d, "model.ccs_head")?;
         let ccs = ccs_out[[0, 0]] * self.art.meta.norm.ccs_std + self.art.meta.norm.ccs_mean;
 
-        // --- RT head: pooled (+ chrom_context); never sees charge ---
-        let mut rt_feat = pooled.clone();
+        Ok((ms2, ccs))
+    }
+
+    /// Run the charge-independent RT head over an encoded peptide.
+    pub fn predict_rt(
+        &self,
+        encoded: &EncodedPeptide,
+        chrom_shift: Option<&Array1<f32>>,
+        chrom_affine: Option<(f32, f32)>,
+    ) -> Result<f32> {
+        let mut rt_feat = encoded.pooled.clone();
         if let Some(shift) = chrom_shift {
             rt_feat = &rt_feat + shift;
         }
@@ -489,6 +507,21 @@ impl<'a> Predictor<'a> {
         };
         let rt = rt_std_space * self.art.meta.norm.rt_std + self.art.meta.norm.rt_mean;
 
+        Ok(rt)
+    }
+
+    /// Forward pass. Returns (ms2 [L-1, n_ion] in (0,1), rt native, ccs native).
+    pub fn forward(
+        &self,
+        pep: &Peptide,
+        charge: i64,
+        ms_shift: Option<&Array1<f32>>,
+        chrom_shift: Option<&Array1<f32>>,
+        chrom_affine: Option<(f32, f32)>,
+    ) -> Result<(Array2<f32>, f32, f32)> {
+        let encoded = self.encode(pep)?;
+        let (ms2, ccs) = self.predict_charge(&encoded, charge, ms_shift)?;
+        let rt = self.predict_rt(&encoded, chrom_shift, chrom_affine)?;
         Ok((ms2, rt, ccs))
     }
 }
