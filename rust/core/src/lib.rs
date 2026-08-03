@@ -14,6 +14,7 @@ pub mod tokenize;
 pub mod unimod;
 
 use anyhow::Result;
+use ndarray::Array1;
 
 pub use artifact::Artifact;
 pub use model::Predictor;
@@ -44,6 +45,46 @@ pub struct MsContext {
     pub energy: Option<f32>,
 }
 
+/// Context terms resolved once for repeated predictions with one acquisition setup.
+pub struct PreparedContext {
+    ms_shift: Option<Array1<f32>>,
+    chrom_shift: Option<Array1<f32>>,
+    chrom_affine: Option<(f32, f32)>,
+}
+
+impl PreparedContext {
+    pub fn new(
+        art: &Artifact,
+        ms_context: Option<&MsContext>,
+        chrom_context: Option<&str>,
+    ) -> Result<Self> {
+        let predictor = Predictor::new(art);
+        let ms_shift = match ms_context {
+            Some(c) => Some(predictor.ms_context_shift(
+                &c.instrument,
+                &c.detector,
+                &c.fragmentation,
+                c.energy,
+            )?),
+            None => None,
+        };
+        // A named dataset supplies both its feature shift and output affine. Resolving only one
+        // would silently apply half of the chromatography adaptation fitted during training.
+        let (chrom_shift, chrom_affine) = match chrom_context {
+            Some(name) => (
+                Some(predictor.chrom_context_shift(name)?),
+                Some(predictor.chrom_affine(name)?),
+            ),
+            None => (None, None),
+        };
+        Ok(Self {
+            ms_shift,
+            chrom_shift,
+            chrom_affine,
+        })
+    }
+}
+
 /// Run one peptide end to end. `peptide` is a modified sequence in the form
 /// [`peptide::Peptide::modified_sequence`] renders, e.g. `"[TMT6plex]PEPC[Carbamidomethyl@C]IDER"`.
 pub fn predict(
@@ -71,38 +112,30 @@ pub fn predict_peptide(
     chrom_context: Option<&str>,
     min_intensity: f64,
 ) -> Result<Prediction> {
+    let context = PreparedContext::new(art, ms_context, chrom_context)?;
+    predict_peptide_prepared(art, pep, charge, &context, min_intensity)
+}
+
+/// Run a peptide using context that has already been resolved for a bulk prediction job.
+pub fn predict_peptide_prepared(
+    art: &Artifact,
+    pep: &peptide::Peptide,
+    charge: i64,
+    context: &PreparedContext,
+    min_intensity: f64,
+) -> Result<Prediction> {
     if pep.sequence.len() < 2 {
         anyhow::bail!("peptide must have at least 2 residues");
     }
     let rm = pep.residue_masses()?;
 
     let predictor = Predictor::new(art);
-    let ms_vec = match ms_context {
-        Some(c) => Some(predictor.encode_ms_context(
-            &c.instrument,
-            &c.detector,
-            &c.fragmentation,
-            c.energy,
-        )?),
-        None => None,
-    };
-    // A named dataset supplies BOTH chromatography terms: the additive context vector and the
-    // output scale+shift. Resolving one without the other would silently apply half of what
-    // training fitted.
-    let (chrom_vec, chrom_affine) = match chrom_context {
-        Some(name) => (
-            Some(predictor.chrom_context(name)?),
-            Some(predictor.chrom_affine(name)?),
-        ),
-        None => (None, None),
-    };
-
     let (ms2, rt, ccs) = predictor.forward(
         pep,
         charge,
-        ms_vec.as_ref(),
-        chrom_vec.as_ref(),
-        chrom_affine,
+        context.ms_shift.as_ref(),
+        context.chrom_shift.as_ref(),
+        context.chrom_affine,
     )?;
 
     let mz = chem::fragment_mz_matrix(&rm); // [L-1, n_ion]

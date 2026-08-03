@@ -6,7 +6,7 @@
 //! features; `chrom_context` shifts the RT head; CCS takes no context.
 
 use anyhow::{anyhow, Result};
-use ndarray::{s, Array1, Array2};
+use ndarray::{s, Array1, Array2, ArrayBase, Data, Ix1, Ix2};
 
 use crate::artifact::Artifact;
 use crate::peptide::Peptide;
@@ -29,7 +29,16 @@ fn sigmoid(x: f32) -> f32 {
 }
 
 /// y = x @ Wᵀ + b, with x [n,in], W [out,in], b [out].
-fn linear(x: &Array2<f32>, w: &Array2<f32>, b: &Array1<f32>) -> Array2<f32> {
+fn linear<SX, SW, SB>(
+    x: &ArrayBase<SX, Ix2>,
+    w: &ArrayBase<SW, Ix2>,
+    b: &ArrayBase<SB, Ix1>,
+) -> Array2<f32>
+where
+    SX: Data<Elem = f32>,
+    SW: Data<Elem = f32>,
+    SB: Data<Elem = f32>,
+{
     let mut y = x.dot(&w.t());
     for mut row in y.rows_mut() {
         for (r, &bb) in row.iter_mut().zip(b.iter()) {
@@ -40,7 +49,16 @@ fn linear(x: &Array2<f32>, w: &Array2<f32>, b: &Array1<f32>) -> Array2<f32> {
 }
 
 /// y = W @ x + b, with x [in], W [out,in], b [out].
-fn linear1(x: &Array1<f32>, w: &Array2<f32>, b: &Array1<f32>) -> Array1<f32> {
+fn linear1<SX, SW, SB>(
+    x: &ArrayBase<SX, Ix1>,
+    w: &ArrayBase<SW, Ix2>,
+    b: &ArrayBase<SB, Ix1>,
+) -> Array1<f32>
+where
+    SX: Data<Elem = f32>,
+    SW: Data<Elem = f32>,
+    SB: Data<Elem = f32>,
+{
     let mut y = w.dot(x);
     for (r, &bb) in y.iter_mut().zip(b.iter()) {
         *r += bb;
@@ -49,9 +67,18 @@ fn linear1(x: &Array1<f32>, w: &Array2<f32>, b: &Array1<f32>) -> Array1<f32> {
 }
 
 /// LayerNorm over the last dim (biased variance, eps inside sqrt) — matches torch nn.LayerNorm.
-fn layernorm(x: &Array2<f32>, g: &Array1<f32>, b: &Array1<f32>) -> Array2<f32> {
+fn layernorm<SX, SG, SB>(
+    x: &ArrayBase<SX, Ix2>,
+    g: &ArrayBase<SG, Ix1>,
+    b: &ArrayBase<SB, Ix1>,
+) -> Array2<f32>
+where
+    SX: Data<Elem = f32>,
+    SG: Data<Elem = f32>,
+    SB: Data<Elem = f32>,
+{
     const EPS: f32 = 1e-5;
-    let mut y = x.clone();
+    let mut y = x.to_owned();
     let n = x.ncols() as f32;
     for mut row in y.rows_mut() {
         let mean = row.sum() / n;
@@ -199,11 +226,28 @@ impl<'a> Predictor<'a> {
             let b0 = self.art.get1("enc.energy_mlp.0.bias")?;
             let w2 = self.art.get2("enc.energy_mlp.2.weight")?; // [d,d]
             let b2 = self.art.get1("enc.energy_mlp.2.bias")?;
-            let mut hidden = &w0.column(0).to_owned() * e + &b0;
+            let mut hidden = &w0.column(0).to_owned() * e + b0;
             hidden.mapv_inplace(gelu);
             ctx = &ctx + &linear1(&hidden, &w2, &b2);
         }
         Ok(ctx)
+    }
+
+    /// Resolve acquisition context all the way to the additive fragment-feature shift.
+    /// This projection is peptide- and charge-independent and should be cached by bulk callers.
+    pub fn ms_context_shift(
+        &self,
+        instrument: &str,
+        detector: &str,
+        fragmentation: &str,
+        energy: Option<f32>,
+    ) -> Result<Array1<f32>> {
+        let ctx = self.encode_ms_context(instrument, detector, fragmentation, energy)?;
+        Ok(linear1(
+            &ctx,
+            &self.art.get2("model.ms_to_frag.weight")?,
+            &self.art.get1("model.ms_to_frag.bias")?,
+        ))
     }
 
     /// chrom_context for a named dataset (ChromRunbook row lookup).
@@ -222,6 +266,17 @@ impl<'a> Predictor<'a> {
             .get2("runbook.emb.weight")?
             .row(row as usize)
             .to_owned())
+    }
+
+    /// Resolve chromatography context to the additive RT-feature shift. Like MS context, this
+    /// depends only on the selected dataset and can be prepared once for a whole library.
+    pub fn chrom_context_shift(&self, dataset: &str) -> Result<Array1<f32>> {
+        let ctx = self.chrom_context(dataset)?;
+        Ok(linear1(
+            &ctx,
+            &self.art.get2("model.chrom_to_rt.weight")?,
+            &self.art.get1("model.chrom_to_rt.bias")?,
+        ))
     }
 
     /// Per-dataset RT output affine `(scale, shift)` — the ChromRunbook's scale+shift row.
@@ -294,8 +349,8 @@ impl<'a> Predictor<'a> {
         &self,
         pep: &Peptide,
         charge: i64,
-        ms_ctx: Option<&Array1<f32>>,
-        chrom_ctx: Option<&Array1<f32>>,
+        ms_shift: Option<&Array1<f32>>,
+        chrom_shift: Option<&Array1<f32>>,
         chrom_affine: Option<(f32, f32)>,
     ) -> Result<(Array2<f32>, f32, f32)> {
         let cfg = self.cfg();
@@ -394,12 +449,7 @@ impl<'a> Predictor<'a> {
                 frag[[i, j]] = 0.5 * (x[[p, j]] + x[[p + 1, j]]);
             }
         }
-        if let Some(ctx) = ms_ctx {
-            let shift = linear1(
-                ctx,
-                &self.art.get2("model.ms_to_frag.weight")?,
-                &self.art.get1("model.ms_to_frag.bias")?,
-            );
+        if let Some(shift) = ms_shift {
             for mut row in frag.rows_mut() {
                 for (r, &sh) in row.iter_mut().zip(shift.iter()) {
                     *r += sh;
@@ -424,13 +474,8 @@ impl<'a> Predictor<'a> {
 
         // --- RT head: pooled (+ chrom_context); never sees charge ---
         let mut rt_feat = pooled.clone();
-        if let Some(ctx) = chrom_ctx {
-            let shift = linear1(
-                ctx,
-                &self.art.get2("model.chrom_to_rt.weight")?,
-                &self.art.get1("model.chrom_to_rt.bias")?,
-            );
-            rt_feat = &rt_feat + &shift;
+        if let Some(shift) = chrom_shift {
+            rt_feat = &rt_feat + shift;
         }
         let rt_2d = rt_feat.insert_axis(ndarray::Axis(0)); // [1,d]
         let rt_out = self.head(&rt_2d, "model.rt_head")?;

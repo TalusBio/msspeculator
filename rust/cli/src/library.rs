@@ -5,7 +5,7 @@ use std::path::Path;
 
 use anyhow::{bail, Context, Result};
 use pepdistill_core::peptide::{ModSpec, Peptide, Site};
-use pepdistill_core::{predict_peptide, Artifact, MsContext};
+use pepdistill_core::{predict_peptide_prepared, Artifact, MsContext, PreparedContext};
 
 const VALID_AA: &str = "GASPVTCLINDQKEMHFRYW";
 const CCS_IM_COEF: f64 = 1059.62245;
@@ -214,6 +214,7 @@ pub fn write_diann_tsv(opts: &LibraryOptions<'_>) -> Result<LibraryStats> {
     }
 
     let artifact = Artifact::load(opts.model)?;
+    let context = PreparedContext::new(&artifact, opts.ms_context, opts.chrom_context)?;
     let mut writer = BufWriter::new(
         File::create(opts.out).with_context(|| format!("creating library {}", opts.out))?,
     );
@@ -230,12 +231,11 @@ pub fn write_diann_tsv(opts: &LibraryOptions<'_>) -> Result<LibraryStats> {
             let (peptide, diann_sequence) =
                 modified_peptide(&sequence, &oxidized, !opts.no_fixed_carbamidomethyl);
             for charge in opts.min_charge..=opts.max_charge {
-                let prediction = predict_peptide(
+                let prediction = predict_peptide_prepared(
                     &artifact,
                     &peptide,
                     charge,
-                    opts.ms_context,
-                    opts.chrom_context,
+                    &context,
                     opts.min_intensity,
                 )?;
                 if !prediction.precursor_mz.is_finite()

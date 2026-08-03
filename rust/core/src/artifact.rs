@@ -4,7 +4,6 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::{anyhow, Context, Result};
-use ndarray::{Array1, Array2};
 use safetensors::SafeTensors;
 use serde::Deserialize;
 
@@ -130,20 +129,20 @@ impl Artifact {
             .ok_or_else(|| anyhow!("missing tensor {name}"))
     }
 
-    pub fn get1(&self, name: &str) -> Result<Array1<f32>> {
+    pub fn get1(&self, name: &str) -> Result<ndarray::ArrayView1<'_, f32>> {
         let (shape, data) = self.raw(name)?;
         if shape.len() != 1 {
             return Err(anyhow!("tensor {name} is {shape:?}, expected 1-D"));
         }
-        Ok(Array1::from(data.clone()))
+        Ok(ndarray::ArrayView1::from(data.as_slice()))
     }
 
-    pub fn get2(&self, name: &str) -> Result<Array2<f32>> {
+    pub fn get2(&self, name: &str) -> Result<ndarray::ArrayView2<'_, f32>> {
         let (shape, data) = self.raw(name)?;
         if shape.len() != 2 {
             return Err(anyhow!("tensor {name} is {shape:?}, expected 2-D"));
         }
-        Array2::from_shape_vec((shape[0], shape[1]), data.clone())
+        ndarray::ArrayView2::from_shape((shape[0], shape[1]), data.as_slice())
             .with_context(|| format!("reshaping {name}"))
     }
 }
