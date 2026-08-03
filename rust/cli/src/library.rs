@@ -389,8 +389,15 @@ pub fn write_diann_tsv(opts: &LibraryOptions<'_>) -> Result<LibraryStats> {
         ..LibraryStats::default()
     };
 
-    let worker_count = thread::available_parallelism()
-        .map(|n| n.get().saturating_sub(1).max(1))
+    let worker_count = std::env::var("PEPDISTILL_WORKERS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|&value| value > 0)
+        .or_else(|| {
+            thread::available_parallelism()
+                .ok()
+                .map(|n| n.get().saturating_sub(1).max(1))
+        })
         .unwrap_or(1);
     let queue_capacity = worker_count * 2;
     let (work_tx, work_rx) = mpsc::sync_channel::<Option<Vec<PendingPeptide>>>(queue_capacity);
