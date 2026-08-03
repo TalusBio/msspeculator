@@ -26,9 +26,11 @@ new run), freeze the model and step only the encoder/runbook.
 from __future__ import annotations
 
 import math
+import json
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import lightning as L
@@ -272,10 +274,24 @@ class _RealTrainProgress(L.Callback):
     elapsed time instead; the batch index is still useful for spotting a stalled shard or loader.
     """
 
-    def __init__(self, every: int = 100) -> None:
+    def __init__(self, every: int = 100, metrics_path: str | Path | None = None) -> None:
         super().__init__()
         self.every = every
+        self.metrics_path = Path(metrics_path) if metrics_path is not None else None
         self._started = 0.0
+
+    def _write_epoch_metrics(self, trainer: L.Trainer) -> None:
+        if self.metrics_path is None:
+            return
+        values = {}
+        for key, value in trainer.callback_metrics.items():
+            if "/n" in key or not torch.is_tensor(value) or value.numel() != 1:
+                continue
+            values[key] = float(value.detach().cpu())
+        record = {"epoch": trainer.current_epoch + 1, **values}
+        self.metrics_path.parent.mkdir(parents=True, exist_ok=True)
+        with self.metrics_path.open("a") as fh:
+            fh.write(json.dumps(record, sort_keys=True) + "\n")
 
     def on_train_epoch_start(self, trainer: L.Trainer, pl_module: L.LightningModule) -> None:
         self._started = time.perf_counter()
@@ -307,6 +323,7 @@ class _RealTrainProgress(L.Callback):
         )
 
     def on_validation_epoch_end(self, trainer: L.Trainer, pl_module: L.LightningModule) -> None:
+        self._write_epoch_metrics(trainer)
         names = sorted(k for k in trainer.callback_metrics if k.startswith("val/"))
         if names:
             # Keep the line compact; the full per-dataset values remain in callback_metrics and
@@ -410,6 +427,7 @@ def fit_realspeclib_datasets(
     freeze_backbone: bool = False,
     mod_align_weight: float = 1.0,
     progress_log_every: int = 100,
+    progress_metrics_path: str | Path | None = None,
     **trainer_kwargs,
 ) -> RealSpeclibModule:
     """Fit on datasets the caller already built.
@@ -445,7 +463,7 @@ def fit_realspeclib_datasets(
 
     callbacks = list(trainer_kwargs.pop("callbacks", []))
     if progress_log_every > 0:
-        callbacks.append(_RealTrainProgress(progress_log_every))
+        callbacks.append(_RealTrainProgress(progress_log_every, progress_metrics_path))
     trainer = build_trainer(epochs, accelerator, grad_clip, callbacks=callbacks, **trainer_kwargs)
     trainer.fit(module, loader(train_ds, True), loader(val_ds, False))
     return module

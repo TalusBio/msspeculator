@@ -530,6 +530,7 @@ def run_pipeline(cfg: RunConfig, log=print) -> dict:
             accelerator=acc,
             mod_align_weight=cfg.train.mod_align_weight,
             enable_progress_bar=False,
+            progress_metrics_path=out / "train_metrics.jsonl",
         )
         summary["train"] = {k: float(v) for k, v in module.trainer.callback_metrics.items()}
         summary["dataset_index"] = dataset_index
