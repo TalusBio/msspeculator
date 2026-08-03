@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+import fsspec
 import pyarrow as pa
 import pyarrow.parquet as pq
 
@@ -30,6 +31,9 @@ def _read_raw_file_column(path: str) -> pa.Table:
     with ``read_dictionary`` keeps the column as indices + a small dictionary, so `.unique()`
     reads the dictionary instead of materializing a string per row.
     """
+    if "://" in path:
+        with fsspec.open(path, "rb") as stream:
+            return pq.read_table(stream, columns=["raw_file"], read_dictionary=["raw_file"])
     return pq.read_table(path, columns=["raw_file"], read_dictionary=["raw_file"])
 
 
@@ -89,7 +93,13 @@ def extract_shards(
     """
     cache = src.cache
     keys = [_shard_key(src, zip_filename, m) for m in members]
-    paths: list[str | None] = [cache.probe(k) for k in keys]
+    # Prefer a warm remote shard URI over materializing it into the local cache.  This is
+    # essential on small ephemeral workers (e.g. the 32 GB Launchpad queue): parquet and
+    # fsspec both support seekable S3 reads, so the worker only holds the row group currently
+    # being decoded.  A local hit still wins, preserving the fast path for laptops.
+    paths: list[str | None] = [
+        cache.local_path_if_exists(k) or cache.remote_uri(k) for k in keys
+    ]
     missing = [i for i, p in enumerate(paths) if p is None]
 
     if missing:

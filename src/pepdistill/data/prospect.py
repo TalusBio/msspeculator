@@ -244,10 +244,11 @@ def make_cache(
     from the standard AWS chain (env / profile); this never embeds them.
     """
     s3_prefix = s3_prefix or os.environ.get("PEPDISTILL_S3_PREFIX")
+    source_prefix = os.environ.get("PEPDISTILL_SOURCE_S3_PREFIX")
     tiers = [local_dir or default_cache_dir()]
     if s3_prefix:
         tiers.append(s3_prefix)
-    return FileCache(tiers, write_through=write_through)
+    return FileCache(tiers, write_through=write_through, source_prefix=source_prefix)
 
 
 def decode_fragments(
@@ -424,7 +425,7 @@ class ProspectSource:
         entry = self._catalog.get(filename)
         if entry:
             key = f"zenodo/{self.record_id}/{filename}"
-            return self.cache.resolve(key, http_origin(entry["url"]))
+            return self.cache.resolve_uri(key, http_origin(entry["url"]))
         return self.zenodo.resolve_file(filename)
 
     def read(self, filename: str, columns: list[str] | None = None) -> pd.DataFrame:
@@ -461,7 +462,8 @@ class ProspectSource:
         """
         zpath = self.resolve_file(zip_filename)
         frames = []
-        with zipfile.ZipFile(zpath) as z:
+        stream = fsspec.open(zpath, "rb").open() if "://" in zpath else zpath
+        with zipfile.ZipFile(stream) as z:
             members = [n for n in z.namelist() if n.endswith(".parquet")]
             for name in members[:max_members] if max_members else members:
                 frames.append(pd.read_parquet(io.BytesIO(z.read(name))))
@@ -559,6 +561,12 @@ class ProspectSource:
             return zipfile.ZipFile(local)
         entry = self._catalog.get(zip_filename)
         url = entry["url"] if entry else self.zenodo.file_url(zip_filename)
+
+        # A raw S3 mirror may contain the complete archive at its root.  Use it before
+        # contacting Zenodo; this also makes a cold shard miss recoverable in cloud jobs.
+        mirrored = self.cache.remote_uri(f"zenodo/{self.record_id}/{zip_filename}")
+        if mirrored is not None:
+            return zipfile.ZipFile(fsspec.open(mirrored, "rb").open())
 
         last_exc: Exception | None = None
         attempt_errors: list[str] = []

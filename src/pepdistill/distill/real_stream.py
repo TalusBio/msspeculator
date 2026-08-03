@@ -28,6 +28,7 @@ import random
 from collections.abc import Iterator
 from dataclasses import dataclass
 
+import fsspec
 import pandas as pd
 import pyarrow.parquet as pq
 import torch
@@ -151,17 +152,24 @@ def _examples_from_shard(
         allowed = allowed & only_keys  # new set: `allowed` may be the caller's cached one
     if not allowed:
         return []
-    pf = pq.ParquetFile(shard.path, read_dictionary=list(STREAM_DICT_COLUMNS))
-    kept: list[pd.DataFrame] = []
-    for i in range(pf.num_row_groups):
-        df = pf.read_row_group(i, columns=list(STREAM_COLUMNS)).to_pandas()
-        mask = fragment_filter_mask(df, schema)
-        if mask.any():
-            sub = df.loc[mask]
-            midx = pd.MultiIndex.from_arrays([sub[schema.raw_file], sub[schema.scan_number]])
-            sub = sub.loc[midx.isin(allowed)]
-            if not sub.empty:
-                kept.append(sub)
+    stream = fsspec.open(shard.path, "rb").open() if "://" in shard.path else None
+    try:
+        pf = pq.ParquetFile(
+            stream or shard.path, read_dictionary=list(STREAM_DICT_COLUMNS)
+        )
+        kept: list[pd.DataFrame] = []
+        for i in range(pf.num_row_groups):
+            df = pf.read_row_group(i, columns=list(STREAM_COLUMNS)).to_pandas()
+            mask = fragment_filter_mask(df, schema)
+            if mask.any():
+                sub = df.loc[mask]
+                midx = pd.MultiIndex.from_arrays([sub[schema.raw_file], sub[schema.scan_number]])
+                sub = sub.loc[midx.isin(allowed)]
+                if not sub.empty:
+                    kept.append(sub)
+    finally:
+        if stream is not None:
+            stream.close()
     if not kept:
         if not strict:
             return []

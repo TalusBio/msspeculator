@@ -24,11 +24,22 @@ import fsspec
 
 
 class FileCache:
-    def __init__(self, tiers: list[str], write_through: bool = True) -> None:
+    def __init__(
+        self,
+        tiers: list[str],
+        write_through: bool = True,
+        source_prefix: str | None = None,
+    ) -> None:
         if not tiers:
             raise ValueError("need at least one cache tier (a local directory)")
         self.tiers = [t.rstrip("/") for t in tiers]
         self.write_through = write_through
+        # ``source_prefix`` is an optional mirror whose objects predate this cache's
+        # canonical key layout.  The PROSPECT export commonly lives as
+        # ``<archive>.zip``/``<archive>/<archive>/<member>`` at the prefix root.  Keeping
+        # this mapping here lets the cloud runner consume those objects directly, without
+        # copying hundreds of GB into the Batch scratch volume.
+        self.source_prefix = source_prefix.rstrip("/") if source_prefix else None
         self._local_fs = fsspec.filesystem("file")
         self._local_root = self.tiers[0]
 
@@ -39,6 +50,56 @@ class FileCache:
 
     def _local_path(self, key: str) -> str:
         return f"{self._local_root}/{key}"
+
+    def local_path_if_exists(self, key: str) -> str | None:
+        path = self._local_path(key)
+        return path if self._local_fs.exists(path) else None
+
+    def _remote_candidates(self, tier: str, key: str) -> list[tuple[object, str, str]]:
+        """Return ``(filesystem, path, uri)`` candidates for a remote cache lookup."""
+        candidates: list[tuple[object, str, str]] = []
+
+        def add(uri: str) -> None:
+            fs, _, paths = fsspec.get_fs_token_paths(uri)
+            candidates.append((fs, paths[0], uri))
+
+        add(f"{tier}/{key}")
+        if self.source_prefix is not None:
+            if key.startswith("zenodo/"):
+                # Archive and metadata files are stored at the raw-mirror root.
+                add(f"{self.source_prefix}/{key.rsplit('/', 1)[-1]}")
+            elif key.startswith("shards/"):
+                # Extracted members are stored as <stem>/<stem>/<basename>.
+                parts = key.split("/")
+                if len(parts) >= 4:
+                    stem = parts[-2]
+                    add(f"{self.source_prefix}/{stem}/{stem}/{parts[-1]}")
+        return candidates
+
+    def remote_uri(self, key: str) -> str | None:
+        """Return a readable remote URI for ``key`` without downloading it.
+
+        This is intentionally separate from :meth:`probe`: parquet readers can seek against
+        an S3 file, so a warm object need not be materialized in the local tier at all.
+        """
+        for tier in self.tiers[1:]:
+            for fs, path, uri in self._remote_candidates(tier, key):
+                try:
+                    if fs.exists(path):
+                        return uri
+                except Exception:  # unreachable/unauthorized tier — try the next candidate
+                    continue
+        return None
+
+    def resolve_uri(self, key: str, origin: Callable[[str], None]) -> str:
+        """Resolve to a local path or a readable remote URI, preferring zero-copy remote data."""
+        local = self._local_path(key)
+        if self._local_fs.exists(local):
+            return local
+        remote = self.remote_uri(key)
+        if remote is not None:
+            return remote
+        return self.resolve(key, origin)
 
     def probe(self, key: str) -> str | None:
         """Local path for ``key`` if resolvable WITHOUT an origin call, else ``None``.
@@ -56,13 +117,13 @@ class FileCache:
 
         # Probe the remaining (remote) tiers; first hit is copied down to local.
         for tier in self.tiers[1:]:
-            fs, path = self._split(tier, key)
-            try:
-                if fs.exists(path):
-                    fs.get_file(path, local)
-                    return local
-            except Exception:  # unreachable/unauthorized tier — skip, try the next
-                continue
+            for fs, path, _uri in self._remote_candidates(tier, key):
+                try:
+                    if fs.exists(path):
+                        fs.get_file(path, local)
+                        return local
+                except Exception:  # unreachable/unauthorized tier — skip, try the next
+                    continue
         return None
 
     def store(self, key: str, write: Callable[[str], None]) -> str:
@@ -75,6 +136,8 @@ class FileCache:
         swallowed error.
         """
         local = self._local_path(key)
+        os.makedirs(os.path.dirname(local) or self._local_root, exist_ok=True)
+        os.makedirs(self._local_root, exist_ok=True)
         fd, tmp = tempfile.mkstemp(dir=self._local_root)
         os.close(fd)
         try:

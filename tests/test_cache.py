@@ -81,3 +81,19 @@ def test_missing_origin_on_miss_raises(tmp_path):
 
     with pytest.raises(RuntimeError):
         cache.resolve("k/f.bin", boom)
+
+
+def test_raw_prospect_mirror_resolves_zero_copy_uris(tmp_path):
+    fsspec.filesystem("memory").store.clear()
+    mirror = "memory://raw-prospect"
+    mem = fsspec.filesystem("memory")
+    mem.pipe("raw-prospect/TUM_HLA/TUM_HLA/shard.parquet", b"parquet")
+    mem.pipe("raw-prospect/TUM_HLA_meta_data.parquet", b"meta")
+    cache = FileCache(
+        [str(tmp_path / "local"), mirror], source_prefix=mirror, write_through=True
+    )
+
+    shard = cache.remote_uri("shards/prospect/TUM_HLA/shard.parquet")
+    meta = cache.remote_uri("zenodo/6602020/TUM_HLA_meta_data.parquet")
+    assert shard == "memory://raw-prospect/TUM_HLA/TUM_HLA/shard.parquet"
+    assert meta == "memory://raw-prospect/TUM_HLA_meta_data.parquet"
