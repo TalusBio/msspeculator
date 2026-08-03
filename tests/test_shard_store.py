@@ -95,6 +95,11 @@ def test_select_members_by_index(tmp_path):
     ]
 
 
+def test_select_members_all(tmp_path):
+    src = ProspectSource("prospect", cache=_seed_zip(tmp_path))
+    assert len(select_members(src, ZIP_NAME, "all")) == 2
+
+
 def test_select_members_rejects_out_of_range(tmp_path):
     src = ProspectSource("prospect", cache=_seed_zip(tmp_path))
     with pytest.raises(IndexError, match="shard index 5"):

@@ -45,9 +45,15 @@ def shard_raw_files(path: str) -> list[str]:
     return table.column("raw_file").unique().to_pylist()
 
 
-def select_members(src: ProspectSource, zip_filename: str, indices: list[int]) -> list[str]:
-    """Resolve shard indices to member names, reading only the zip's central directory."""
+def select_members(
+    src: ProspectSource, zip_filename: str, indices: list[int] | str
+) -> list[str]:
+    """Resolve shard indices to member names, or ``"all"`` to select every shard."""
     names = [s.name for s in src.annotation_shard_info(zip_filename)]
+    if indices == "all":
+        indices = list(range(len(names)))
+    elif isinstance(indices, str):
+        raise ValueError(f"unsupported shard selection {indices!r}; use a list or 'all'")
     out = []
     for i in indices:
         if not 0 <= i < len(names):

@@ -136,7 +136,7 @@ class TrainSource:
     record: str
     meta: str
     zip: str
-    shards: list[int]
+    shards: list[int] | str
     dataset: str | None = None  # ChromRunbook row key; required once there is >1 source
     instrument: str = "Lumos"
     val_only: bool = False
@@ -192,6 +192,9 @@ def _check_train_sources(cfg: TrainCfg) -> None:
             f"every [[train.sources]] is val_only ({[s.zip for s in cfg.sources]}); there is "
             "nothing to train on"
         )
+    invalid = [s.shards for s in cfg.sources if isinstance(s.shards, str) and s.shards != "all"]
+    if invalid:
+        raise ValueError(f"unsupported shard selection {invalid}; use a list of indices or 'all'")
 
 
 def _train_cfg(raw: dict) -> TrainCfg:
@@ -389,11 +392,12 @@ def _build_train_stage(
         src = ProspectSource(s.record, cache=cache)
         source_label = f"{s.record}/{s.zip}"
         started = time.perf_counter()
+        members = select_members(src, s.zip, s.shards)
+        selection = "all" if s.shards == "all" else f"{len(s.shards)}"
         log(
             f"[train] source {source_num}/{total_sources} {source_label}: "
-            f"resolving {len(s.shards)} shard index(es)"
+            f"resolving {selection} shard index(es) -> {len(members)} member(s)"
         )
-        members = select_members(src, s.zip, s.shards)
         log(
             f"[train] source {source_num}/{total_sources} {source_label}: "
             f"preparing {len(members)} shard file(s) (cached files are checked first)"

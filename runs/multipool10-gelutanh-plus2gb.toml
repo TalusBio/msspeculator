@@ -13,7 +13,7 @@ enabled = true
 teacher = "alphapeptdeep"
 nce_min = 20.0
 nce_max = 40.0
-passes = 1
+passes = 2
 chunk_size = 10000
 patience = 5
 
@@ -33,6 +33,7 @@ epochs = 60
 loss_weights = [1.0, 1.0, 1.0]
 early_stop_patience = 5
 early_stop_min_delta = 0.001
+lr = 0.0003
 
 # Existing training sources retained for a like-for-like comparison.
 [[train.sources]]

@@ -74,6 +74,19 @@ def test_cache_s3_prefix_parses(tmp_path):
     assert cfg.cache_s3_prefix == "s3://bucket/cache"
 
 
+def test_all_shards_selection_parses(tmp_path):
+    text = BASE.replace("enabled = true", "enabled = true", 1) + """
+[[train.sources]]
+record = "prospect"
+meta = "TUM_third_pool_meta_data.parquet"
+zip = "TUM_third_pool.zip"
+shards = "all"
+dataset = "third_pool"
+"""
+    cfg = RunConfig.from_toml(_write(tmp_path, text))
+    assert cfg.train.sources[0].shards == "all"
+
+
 def test_flat_pool_keys_raise(tmp_path):
     text = BASE + '\nrecord = "prospect"\nzip = "TUM_third_pool.zip"\n'
     with pytest.raises(ValueError, match=r"\[\[train.sources\]\]"):
