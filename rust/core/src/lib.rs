@@ -160,49 +160,125 @@ pub fn predict_peptide_charges_prepared(
     let charge_outputs =
         predictor.predict_charges(&encoded, charges, context.ms_shift.as_ref())?;
     for (&charge, (ms2, ccs)) in charges.iter().zip(charge_outputs) {
-
-        // Base peak over the whole spectrum (matches predict_library_fast).
-        let peak = ms2.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-        let peak = if peak <= 0.0 { 1.0 } else { peak };
-
-        let mut f = Fragments {
-            ion: vec![],
-            ord: vec![],
-            z: vec![],
-            mz: vec![],
-            rel: vec![],
-        };
-        // Position-major, then ION_TYPES column order — same flatten as the Python reference.
-        for i in 0..frag_pos {
-            for (col, &(is_b, z)) in chem::ION_TYPES.iter().enumerate() {
-                let rel = (ms2[[i, col]] / peak) as f64;
-                if rel < min_intensity {
-                    continue;
-                }
-                let ordinal = if is_b {
-                    (i + 1) as i64
-                } else {
-                    (frag_pos - i) as i64
-                };
-                f.ion.push(if is_b { "b" } else { "y" }.to_string());
-                f.ord.push(ordinal);
-                f.z.push(z as i64);
-                f.mz.push(mz[i][col]);
-                f.rel.push(rel);
-            }
-        }
-
-        predictions.push(Prediction {
-            // Report the re-rendered form, not the caller's string, so output shows how the
-            // input was actually read (e.g. a trailing `[mod]` resolved to the C-terminus).
-            peptide: modified_sequence.clone(),
+        predictions.push(assemble_prediction(
+            &modified_sequence,
+            frag_pos,
+            &rm,
+            &mz,
             charge,
-            precursor_mz: chem::precursor_mz(&rm, charge),
+            ms2,
             rt,
             ccs,
-            fragments: f,
-        });
+            min_intensity,
+        ));
     }
 
     Ok(predictions)
+}
+
+/// Predict a same-length peptide batch while sharing every dense transformer/head projection.
+pub fn predict_peptide_batch_charges_prepared(
+    art: &Artifact,
+    peptides: &[peptide::Peptide],
+    charges: &[i64],
+    context: &PreparedContext,
+    min_intensity: f64,
+) -> Result<Vec<Vec<Prediction>>> {
+    if peptides.is_empty() {
+        return Ok(Vec::new());
+    }
+    let seq_len = peptides[0].sequence.len();
+    if seq_len < 2 || peptides.iter().any(|pep| pep.sequence.len() != seq_len) {
+        anyhow::bail!("batch prediction requires peptides of one shared length >= 2");
+    }
+    let residue_masses = peptides
+        .iter()
+        .map(peptide::Peptide::residue_masses)
+        .collect::<Result<Vec<_>>>()?;
+    let fragment_mz = residue_masses
+        .iter()
+        .map(|rm| chem::fragment_mz_matrix(rm))
+        .collect::<Vec<_>>();
+    let modified_sequences = peptides
+        .iter()
+        .map(peptide::Peptide::modified_sequence)
+        .collect::<Vec<_>>();
+
+    let predictor = Predictor::new(art);
+    let encoded = predictor.encode_batch(peptides)?;
+    let rt = predictor.predict_rt_batch(
+        &encoded,
+        context.chrom_shift.as_ref(),
+        context.chrom_affine,
+    )?;
+    let charge_outputs =
+        predictor.predict_batch_charges(&encoded, charges, context.ms_shift.as_ref())?;
+    let frag_pos = seq_len - 1;
+    let mut result = Vec::with_capacity(peptides.len());
+    for peptide_i in 0..peptides.len() {
+        let mut predictions = Vec::with_capacity(charges.len());
+        for (&charge, (ms2, ccs)) in charges.iter().zip(charge_outputs[peptide_i].iter()) {
+            predictions.push(assemble_prediction(
+                &modified_sequences[peptide_i],
+                frag_pos,
+                &residue_masses[peptide_i],
+                &fragment_mz[peptide_i],
+                charge,
+                ms2.clone(),
+                rt[peptide_i],
+                *ccs,
+                min_intensity,
+            ));
+        }
+        result.push(predictions);
+    }
+    Ok(result)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn assemble_prediction(
+    modified_sequence: &str,
+    frag_pos: usize,
+    residue_masses: &[f64],
+    fragment_mz: &[Vec<f64>],
+    charge: i64,
+    ms2: ndarray::Array2<f32>,
+    rt: f32,
+    ccs: f32,
+    min_intensity: f64,
+) -> Prediction {
+    let peak = ms2.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+    let peak = if peak <= 0.0 { 1.0 } else { peak };
+    let mut f = Fragments {
+        ion: vec![],
+        ord: vec![],
+        z: vec![],
+        mz: vec![],
+        rel: vec![],
+    };
+    for i in 0..frag_pos {
+        for (col, &(is_b, z)) in chem::ION_TYPES.iter().enumerate() {
+            let rel = (ms2[[i, col]] / peak) as f64;
+            if rel < min_intensity {
+                continue;
+            }
+            f.ion.push(if is_b { "b" } else { "y" }.to_string());
+            f.ord.push(if is_b {
+                (i + 1) as i64
+            } else {
+                (frag_pos - i) as i64
+            });
+            f.z.push(z as i64);
+            f.mz.push(fragment_mz[i][col]);
+            f.rel.push(rel);
+        }
+    }
+    Prediction {
+        peptide: modified_sequence.to_string(),
+        charge,
+        precursor_mz: chem::precursor_mz(residue_masses, charge),
+        rt,
+        ccs,
+        fragments: f,
+    }
 }

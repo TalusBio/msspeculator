@@ -5,11 +5,14 @@ use std::path::Path;
 
 use anyhow::{bail, Context, Result};
 use pepdistill_core::peptide::{ModSpec, Peptide, Site};
-use pepdistill_core::{predict_peptide_charges_prepared, Artifact, MsContext, PreparedContext};
+use pepdistill_core::{
+    predict_peptide_batch_charges_prepared, Artifact, MsContext, Prediction, PreparedContext,
+};
 
 const VALID_AA: &str = "GASPVTCLINDQKEMHFRYW";
 const CCS_IM_COEF: f64 = 1059.62245;
 const IM_GAS_MASS: f64 = 28.0;
+const INFERENCE_BATCH_SIZE: usize = 64;
 
 pub struct LibraryOptions<'a> {
     pub model: &'a str,
@@ -181,6 +184,128 @@ fn ccs_to_bruker_mobility(ccs: f64, charge: i64, precursor_mz: f64) -> f64 {
     ccs * reduced_mass.sqrt() / charge as f64 / CCS_IM_COEF
 }
 
+struct PendingPeptide {
+    stripped: String,
+    protein_group: String,
+    peptide: Peptide,
+    diann_sequence: String,
+}
+
+fn write_prediction<W: Write>(
+    writer: &mut W,
+    stats: &mut LibraryStats,
+    stripped: &str,
+    protein_group: &str,
+    diann_sequence: &str,
+    prediction: Prediction,
+) -> Result<()> {
+    let charge = prediction.charge;
+    if !prediction.precursor_mz.is_finite()
+        || !prediction.rt.is_finite()
+        || !prediction.ccs.is_finite()
+        || prediction.precursor_mz <= 0.0
+        || prediction.ccs <= 0.0
+    {
+        bail!(
+            "non-physical precursor prediction for {} charge {}: mz={}, rt={}, ccs={}",
+            diann_sequence,
+            charge,
+            prediction.precursor_mz,
+            prediction.rt,
+            prediction.ccs
+        );
+    }
+    stats.precursors += 1;
+    let mobility =
+        ccs_to_bruker_mobility(prediction.ccs as f64, charge, prediction.precursor_mz);
+    if !mobility.is_finite() || mobility <= 0.0 {
+        bail!(
+            "non-physical mobility for {} charge {}: {}",
+            diann_sequence,
+            charge,
+            mobility
+        );
+    }
+    for i in 0..prediction.fragments.mz.len() {
+        let fragment_mz = prediction.fragments.mz[i];
+        let intensity = prediction.fragments.rel[i];
+        if !fragment_mz.is_finite()
+            || fragment_mz <= 0.0
+            || !intensity.is_finite()
+            || !(0.0..=1.0).contains(&intensity)
+        {
+            bail!(
+                "invalid fragment for {} charge {} at index {}: mz={}, intensity={}",
+                diann_sequence,
+                charge,
+                i,
+                fragment_mz,
+                intensity
+            );
+        }
+        writeln!(
+            writer,
+            "{}\t{}\t{:.8}\t{}\t{:.6}\t{:.8}\t{}\t0\t{:.8}\t{}\t{}\t{}\tnoloss\t{:.8}",
+            diann_sequence,
+            stripped,
+            prediction.precursor_mz,
+            charge,
+            prediction.rt,
+            mobility,
+            protein_group,
+            fragment_mz,
+            prediction.fragments.ion[i],
+            prediction.fragments.ord[i],
+            prediction.fragments.z[i],
+            intensity,
+        )?;
+        stats.fragments += 1;
+    }
+    Ok(())
+}
+
+fn write_batch<W: Write>(
+    writer: &mut W,
+    stats: &mut LibraryStats,
+    artifact: &Artifact,
+    context: &PreparedContext,
+    charges: &[i64],
+    min_intensity: f64,
+    batch: Vec<PendingPeptide>,
+) -> Result<()> {
+    let (metadata, peptides): (Vec<_>, Vec<_>) = batch
+        .into_iter()
+        .map(|item| {
+            (
+                (item.stripped, item.protein_group, item.diann_sequence),
+                item.peptide,
+            )
+        })
+        .unzip();
+    let predictions = predict_peptide_batch_charges_prepared(
+        artifact,
+        &peptides,
+        charges,
+        context,
+        min_intensity,
+    )?;
+    for ((stripped, protein_group, diann_sequence), peptide_predictions) in
+        metadata.into_iter().zip(predictions)
+    {
+        for prediction in peptide_predictions {
+            write_prediction(
+                writer,
+                stats,
+                &stripped,
+                &protein_group,
+                &diann_sequence,
+                prediction,
+            )?;
+        }
+    }
+    Ok(())
+}
+
 pub fn write_diann_tsv(opts: &LibraryOptions<'_>) -> Result<LibraryStats> {
     if !(0.0..=1.0).contains(&opts.min_intensity) {
         bail!(
@@ -226,83 +351,46 @@ pub fn write_diann_tsv(opts: &LibraryOptions<'_>) -> Result<LibraryStats> {
         peptides: peptides.len(),
         ..LibraryStats::default()
     };
+    let mut pending: BTreeMap<usize, Vec<PendingPeptide>> = BTreeMap::new();
     for (sequence, proteins) in peptides {
         let protein_group = proteins.into_iter().collect::<Vec<_>>().join(";");
         for oxidized in oxidation_forms(&sequence, opts.max_variable_oxidation) {
             let (peptide, diann_sequence) =
                 modified_peptide(&sequence, &oxidized, !opts.no_fixed_carbamidomethyl);
-            let predictions = predict_peptide_charges_prepared(
-                &artifact,
-                &peptide,
-                &charges,
-                &context,
-                opts.min_intensity,
-            )?;
-            for prediction in predictions {
-                let charge = prediction.charge;
-                if !prediction.precursor_mz.is_finite()
-                    || !prediction.rt.is_finite()
-                    || !prediction.ccs.is_finite()
-                    || prediction.precursor_mz <= 0.0
-                    || prediction.ccs <= 0.0
-                {
-                    bail!(
-                        "non-physical precursor prediction for {} charge {}: mz={}, rt={}, ccs={}",
-                        diann_sequence,
-                        charge,
-                        prediction.precursor_mz,
-                        prediction.rt,
-                        prediction.ccs
-                    );
-                }
-                stats.precursors += 1;
-                let mobility =
-                    ccs_to_bruker_mobility(prediction.ccs as f64, charge, prediction.precursor_mz);
-                if !mobility.is_finite() || mobility <= 0.0 {
-                    bail!(
-                        "non-physical mobility for {} charge {}: {}",
-                        diann_sequence,
-                        charge,
-                        mobility
-                    );
-                }
-                for i in 0..prediction.fragments.mz.len() {
-                    let fragment_mz = prediction.fragments.mz[i];
-                    let intensity = prediction.fragments.rel[i];
-                    if !fragment_mz.is_finite()
-                        || fragment_mz <= 0.0
-                        || !intensity.is_finite()
-                        || !(0.0..=1.0).contains(&intensity)
-                    {
-                        bail!(
-                            "invalid fragment for {} charge {} at index {}: mz={}, intensity={}",
-                            diann_sequence,
-                            charge,
-                            i,
-                            fragment_mz,
-                            intensity
-                        );
-                    }
-                    writeln!(
-                        writer,
-                        "{}\t{}\t{:.8}\t{}\t{:.6}\t{:.8}\t{}\t0\t{:.8}\t{}\t{}\t{}\tnoloss\t{:.8}",
-                        diann_sequence,
-                        sequence,
-                        prediction.precursor_mz,
-                        charge,
-                        prediction.rt,
-                        mobility,
-                        protein_group,
-                        fragment_mz,
-                        prediction.fragments.ion[i],
-                        prediction.fragments.ord[i],
-                        prediction.fragments.z[i],
-                        intensity,
-                    )?;
-                    stats.fragments += 1;
-                }
+            let length = peptide.sequence.len();
+            let ready = {
+                let bucket = pending.entry(length).or_default();
+                bucket.push(PendingPeptide {
+                    stripped: sequence.clone(),
+                    protein_group: protein_group.clone(),
+                    peptide,
+                    diann_sequence,
+                });
+                (bucket.len() >= INFERENCE_BATCH_SIZE).then(|| std::mem::take(bucket))
+            };
+            if let Some(batch) = ready {
+                write_batch(
+                    &mut writer,
+                    &mut stats,
+                    &artifact,
+                    &context,
+                    &charges,
+                    opts.min_intensity,
+                    batch,
+                )?;
             }
         }
+    }
+    for batch in pending.into_values().filter(|batch| !batch.is_empty()) {
+        write_batch(
+            &mut writer,
+            &mut stats,
+            &artifact,
+            &context,
+            &charges,
+            opts.min_intensity,
+            batch,
+        )?;
     }
     writer.flush()?;
     Ok(stats)

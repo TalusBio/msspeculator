@@ -1,12 +1,12 @@
 //! Hand-rolled forward for the transformer student — a 1:1 port of
-//! `StudentModel.forward_dense` (batch = 1, no padding, dropout off).
+//! `StudentModel.forward_dense` (same-length dense batches, no padding, dropout off).
 //!
 //! Charge is factored out of the trunk (RT stays charge-invariant) and re-enters at the heads:
 //! added per fragment site for MS2, concatenated for CCS. `ms_context` shifts the MS2 fragment
 //! features; `chrom_context` shifts the RT head; CCS takes no context.
 
 use anyhow::{anyhow, Result};
-use ndarray::{s, Array1, Array2, ArrayBase, Data, Ix1, Ix2};
+use ndarray::{s, Array1, Array2, Array3, ArrayBase, Data, Ix1, Ix2};
 
 use crate::artifact::Artifact;
 use crate::peptide::Peptide;
@@ -116,6 +116,14 @@ pub struct EncodedPeptide {
     frag: Array2<f32>,
 }
 
+/// Charge-independent transformer output for a same-length peptide batch.
+pub struct EncodedPeptideBatch {
+    pooled: Array2<f32>,
+    frag: Array3<f32>,
+}
+
+pub type ChargeOutputs = Vec<(Array2<f32>, f32)>;
+
 impl<'a> Predictor<'a> {
     pub fn new(art: &'a Artifact) -> Self {
         Self { art }
@@ -184,6 +192,100 @@ impl<'a> Predictor<'a> {
             &self.art.get1(&format!("{p}.norm2.weight"))?,
             &self.art.get1(&format!("{p}.norm2.bias"))?,
         ))
+    }
+
+    /// Batched projection/FFN path for same-length peptides. Attention remains isolated per
+    /// peptide, but all dense projections operate on `(batch * tokens)` rows in one GEMM.
+    fn mha_batch(&self, x: &Array3<f32>, l: usize) -> Result<Array3<f32>> {
+        let (batch, t, d) = x.dim();
+        let h = self.cfg().n_heads;
+        let dk = d / h;
+        let p = format!("model.backbone.net.layers.{l}");
+        let flat = x
+            .view()
+            .into_shape_with_order((batch * t, d))
+            .map_err(|e| anyhow!("flattening attention batch: {e}"))?;
+        let qkv = linear(
+            &flat,
+            &self.art.get2(&format!("{p}.self_attn.in_proj_weight"))?,
+            &self.art.get1(&format!("{p}.self_attn.in_proj_bias"))?,
+        )
+        .into_shape_with_order((batch, t, 3 * d))
+        .map_err(|e| anyhow!("reshaping batched qkv: {e}"))?;
+
+        let scale = 1.0 / (dk as f32).sqrt();
+        let mut ctx = Array3::<f32>::zeros((batch, t, d));
+        for batch_i in 0..batch {
+            for head in 0..h {
+                let c0 = head * dk;
+                let c1 = c0 + dk;
+                let qh = qkv.slice(s![batch_i, .., c0..c1]);
+                let kh = qkv.slice(s![batch_i, .., d + c0..d + c1]);
+                let vh = qkv.slice(s![batch_i, .., 2 * d + c0..2 * d + c1]);
+                let scores = softmax_rows(qh.dot(&kh.t()) * scale);
+                let ctx_h = scores.dot(&vh);
+                ctx.slice_mut(s![batch_i, .., c0..c1]).assign(&ctx_h);
+            }
+        }
+        let ctx_flat = ctx
+            .view()
+            .into_shape_with_order((batch * t, d))
+            .map_err(|e| anyhow!("flattening batched attention output: {e}"))?;
+        linear(
+            &ctx_flat,
+            &self.art.get2(&format!("{p}.self_attn.out_proj.weight"))?,
+            &self.art.get1(&format!("{p}.self_attn.out_proj.bias"))?,
+        )
+        .into_shape_with_order((batch, t, d))
+        .map_err(|e| anyhow!("reshaping batched attention output: {e}"))
+    }
+
+    fn layer_batch(&self, x: Array3<f32>, l: usize) -> Result<Array3<f32>> {
+        let (batch, t, d) = x.dim();
+        let p = format!("model.backbone.net.layers.{l}");
+        let act = self.cfg().activation.clone();
+        let attn = self.mha_batch(&x, l)?;
+        let residual = &x + &attn;
+        let residual_flat = residual
+            .view()
+            .into_shape_with_order((batch * t, d))
+            .map_err(|e| anyhow!("flattening norm1 batch: {e}"))?;
+        let x = layernorm(
+            &residual_flat,
+            &self.art.get1(&format!("{p}.norm1.weight"))?,
+            &self.art.get1(&format!("{p}.norm1.bias"))?,
+        )
+        .into_shape_with_order((batch, t, d))
+        .map_err(|e| anyhow!("reshaping norm1 batch: {e}"))?;
+        let x_flat = x
+            .view()
+            .into_shape_with_order((batch * t, d))
+            .map_err(|e| anyhow!("flattening FFN batch: {e}"))?;
+        let mut l1 = linear(
+            &x_flat,
+            &self.art.get2(&format!("{p}.linear1.weight"))?,
+            &self.art.get1(&format!("{p}.linear1.bias"))?,
+        );
+        l1.mapv_inplace(|v| act_scalar(v, &act));
+        let ff = linear(
+            &l1,
+            &self.art.get2(&format!("{p}.linear2.weight"))?,
+            &self.art.get1(&format!("{p}.linear2.bias"))?,
+        )
+        .into_shape_with_order((batch, t, d))
+        .map_err(|e| anyhow!("reshaping FFN batch: {e}"))?;
+        let residual = &x + &ff;
+        let residual_flat = residual
+            .view()
+            .into_shape_with_order((batch * t, d))
+            .map_err(|e| anyhow!("flattening norm2 batch: {e}"))?;
+        layernorm(
+            &residual_flat,
+            &self.art.get1(&format!("{p}.norm2.weight"))?,
+            &self.art.get1(&format!("{p}.norm2.bias"))?,
+        )
+        .into_shape_with_order((batch, t, d))
+        .map_err(|e| anyhow!("reshaping norm2 batch: {e}"))
     }
 
     fn head(&self, x: &Array2<f32>, prefix: &str) -> Result<Array2<f32>> {
@@ -434,6 +536,81 @@ impl<'a> Predictor<'a> {
         Ok(EncodedPeptide { pooled, frag })
     }
 
+    /// Encode a non-empty batch whose peptides all have the same residue length.
+    pub fn encode_batch(&self, peptides: &[Peptide]) -> Result<EncodedPeptideBatch> {
+        let first = peptides
+            .first()
+            .ok_or_else(|| anyhow!("cannot encode an empty peptide batch"))?;
+        let seq_len = first.sequence.len();
+        if seq_len < 2 {
+            return Err(anyhow!("peptide batch contains a sequence shorter than 2 residues"));
+        }
+        if peptides.iter().any(|pep| pep.sequence.len() != seq_len) {
+            return Err(anyhow!("encode_batch requires one shared peptide length"));
+        }
+        let cfg = self.cfg();
+        let batch = peptides.len();
+        let t = seq_len + 2;
+        let d = cfg.d_model;
+        if t > cfg.max_len {
+            return Err(anyhow!(
+                "peptide length {seq_len} needs {t} token columns, but max_len={}",
+                cfg.max_len
+            ));
+        }
+
+        let mods = tokenize::mod_arrays(peptides, t)?;
+        let token_emb = self.art.get2("model.token_emb.weight")?;
+        let pos_emb = self.art.get2("model.pos_emb.weight")?;
+        let mut x = Array3::<f32>::zeros((batch, t, d));
+        for (batch_i, pep) in peptides.iter().enumerate() {
+            let seq = pep.sequence.as_bytes();
+            for i in 0..t {
+                let tok = match i {
+                    0 => NTERM_IDX as usize,
+                    _ if i == t - 1 => CTERM_IDX as usize,
+                    _ => (seq[i - 1] - b'A') as usize,
+                };
+                for j in 0..d {
+                    x[[batch_i, i, j]] = token_emb[[tok, j]] + pos_emb[[i, j]];
+                }
+            }
+            for i in 0..t {
+                if !mods.mod_present[[batch_i, i]] {
+                    continue;
+                }
+                let v = if mods.mod_named[[batch_i, i]] {
+                    self.comp_vec(mods.mod_comp.slice(s![batch_i, i, ..]))?
+                } else {
+                    self.mass_vec(mods.mod_mass[[batch_i, i]])?
+                };
+                for j in 0..d {
+                    x[[batch_i, i, j]] += v[j];
+                }
+            }
+        }
+        for l in 0..cfg.n_layers {
+            x = self.layer_batch(x, l)?;
+        }
+
+        let mut pooled = Array2::<f32>::zeros((batch, d));
+        let frag_pos = seq_len - 1;
+        let mut frag = Array3::<f32>::zeros((batch, frag_pos, d));
+        for batch_i in 0..batch {
+            pooled
+                .row_mut(batch_i)
+                .assign(&x.slice(s![batch_i, .., ..]).mean_axis(ndarray::Axis(0)).unwrap());
+            for i in 0..frag_pos {
+                let p = FRAG_OFFSET + i;
+                for j in 0..d {
+                    frag[[batch_i, i, j]] =
+                        0.5 * (x[[batch_i, p, j]] + x[[batch_i, p + 1, j]]);
+                }
+            }
+        }
+        Ok(EncodedPeptideBatch { pooled, frag })
+    }
+
     /// Run the charge-dependent MS2 and CCS heads over an encoded peptide.
     pub fn predict_charge(
         &self,
@@ -511,6 +688,74 @@ impl<'a> Predictor<'a> {
         Ok(outputs)
     }
 
+    /// Run charge-specific heads over every peptide in an encoded batch. Output nesting is
+    /// `[peptide][charge]`, matching the input orders.
+    pub fn predict_batch_charges(
+        &self,
+        encoded: &EncodedPeptideBatch,
+        charges: &[i64],
+        ms_shift: Option<&Array1<f32>>,
+    ) -> Result<Vec<ChargeOutputs>> {
+        let (batch, frag_pos, d) = encoded.frag.dim();
+        if charges.is_empty() {
+            return Ok((0..batch).map(|_| Vec::new()).collect());
+        }
+        let cfg = self.cfg();
+        let charge_emb = self.art.get2("model.charge_emb.weight")?;
+        let mut ce = Array2::<f32>::zeros((charges.len(), d));
+        for (charge_i, &charge) in charges.iter().enumerate() {
+            if charge < 1 || charge as usize > cfg.max_charge {
+                return Err(anyhow!(
+                    "charge {charge} is out of range; this model's charge_emb covers 1..={}",
+                    cfg.max_charge
+                ));
+            }
+            ce.row_mut(charge_i)
+                .assign(&charge_emb.row(charge as usize));
+        }
+
+        let mut frag = Array2::<f32>::zeros((batch * charges.len() * frag_pos, d));
+        let mut ccs_in = Array2::<f32>::zeros((batch * charges.len(), 2 * d));
+        for batch_i in 0..batch {
+            for charge_i in 0..charges.len() {
+                let pair_i = batch_i * charges.len() + charge_i;
+                ccs_in
+                    .slice_mut(s![pair_i, 0..d])
+                    .assign(&encoded.pooled.row(batch_i));
+                ccs_in
+                    .slice_mut(s![pair_i, d..2 * d])
+                    .assign(&ce.row(charge_i));
+                for frag_i in 0..frag_pos {
+                    let mut row = frag.row_mut(pair_i * frag_pos + frag_i);
+                    row.assign(&encoded.frag.slice(s![batch_i, frag_i, ..]));
+                    if let Some(shift) = ms_shift {
+                        row += shift;
+                    }
+                    row += &ce.row(charge_i);
+                }
+            }
+        }
+        let mut ms2 = self.head(&frag, "model.ms2_head")?;
+        ms2.mapv_inplace(sigmoid);
+        let ccs_out = self.head(&ccs_in, "model.ccs_head")?;
+
+        let mut outputs = Vec::with_capacity(batch);
+        for batch_i in 0..batch {
+            let mut peptide_outputs = Vec::with_capacity(charges.len());
+            for charge_i in 0..charges.len() {
+                let pair_i = batch_i * charges.len() + charge_i;
+                let spectrum = ms2
+                    .slice(s![pair_i * frag_pos..(pair_i + 1) * frag_pos, ..])
+                    .to_owned();
+                let ccs = ccs_out[[pair_i, 0]] * self.art.meta.norm.ccs_std
+                    + self.art.meta.norm.ccs_mean;
+                peptide_outputs.push((spectrum, ccs));
+            }
+            outputs.push(peptide_outputs);
+        }
+        Ok(outputs)
+    }
+
     /// Run the charge-independent RT head over an encoded peptide.
     pub fn predict_rt(
         &self,
@@ -534,6 +779,30 @@ impl<'a> Predictor<'a> {
         };
         let rt = rt_std_space * self.art.meta.norm.rt_std + self.art.meta.norm.rt_mean;
 
+        Ok(rt)
+    }
+
+    pub fn predict_rt_batch(
+        &self,
+        encoded: &EncodedPeptideBatch,
+        chrom_shift: Option<&Array1<f32>>,
+        chrom_affine: Option<(f32, f32)>,
+    ) -> Result<Array1<f32>> {
+        let mut rt_feat = encoded.pooled.clone();
+        if let Some(shift) = chrom_shift {
+            for mut row in rt_feat.rows_mut() {
+                row += shift;
+            }
+        }
+        let rt_out = self.head(&rt_feat, "model.rt_head")?;
+        let mut rt = Array1::<f32>::zeros(rt_out.nrows());
+        for i in 0..rt.len() {
+            let standardized = match chrom_affine {
+                Some((scale, shift)) => scale * rt_out[[i, 0]] + shift,
+                None => rt_out[[i, 0]],
+            };
+            rt[i] = standardized * self.art.meta.norm.rt_std + self.art.meta.norm.rt_mean;
+        }
         Ok(rt)
     }
 
