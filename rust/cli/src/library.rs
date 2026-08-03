@@ -20,6 +20,7 @@ pub struct LibraryOptions<'a> {
     pub model: &'a str,
     pub fasta: &'a str,
     pub out: &'a str,
+    pub activation: Option<&'a str>,
     pub ms_context: Option<&'a MsContext>,
     pub chrom_context: Option<&'a str>,
     pub min_intensity: f64,
@@ -30,6 +31,22 @@ pub struct LibraryOptions<'a> {
     pub max_charge: i64,
     pub max_variable_oxidation: usize,
     pub no_fixed_carbamidomethyl: bool,
+}
+
+/// Apply a runtime activation override used for controlled inference benchmarks.
+/// The artifact remains unchanged on disk; only this loaded instance is modified.
+pub fn apply_activation_override(artifact: &mut Artifact, activation: Option<&str>) -> Result<()> {
+    if let Some(activation) = activation {
+        match activation {
+            "gelu" | "gelu_tanh" | "relu" | "leaky_relu" => {}
+            other => bail!(
+                "unsupported activation {:?}; expected gelu, gelu_tanh, relu, or leaky_relu",
+                other
+            ),
+        }
+        artifact.meta.config.activation = activation.to_string();
+    }
+    Ok(())
 }
 
 #[derive(Debug, Default)]
@@ -362,7 +379,8 @@ pub fn write_diann_tsv(opts: &LibraryOptions<'_>) -> Result<LibraryStats> {
         bail!("FASTA digest produced no peptides");
     }
 
-    let artifact = Artifact::load(opts.model)?;
+    let mut artifact = Artifact::load(opts.model)?;
+    apply_activation_override(&mut artifact, opts.activation)?;
     let context = PreparedContext::new(&artifact, opts.ms_context, opts.chrom_context)?;
     let charges = (opts.min_charge..=opts.max_charge).collect::<Vec<_>>();
     let stats = LibraryStats {

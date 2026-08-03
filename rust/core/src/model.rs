@@ -17,10 +17,17 @@ fn gelu(x: f32) -> f32 {
     (0.5 * xf * (1.0 + libm::erf(xf / std::f64::consts::SQRT_2))) as f32
 }
 
+/// The tanh approximation used by PyTorch's `GELU(approximate="tanh")`.
+fn gelu_tanh(x: f32) -> f32 {
+    const SQRT_2_OVER_PI: f32 = 0.797_884_6;
+    0.5 * x * (1.0 + (SQRT_2_OVER_PI * (x + 0.044_715 * x * x * x)).tanh())
+}
+
 fn act_scalar(v: f32, act: &str) -> f32 {
     match act {
         "relu" => v.max(0.0),
         "leaky_relu" => if v < 0.0 { 0.01 * v } else { v },
+        "gelu_tanh" => gelu_tanh(v),
         _ => gelu(v),
     }
 }

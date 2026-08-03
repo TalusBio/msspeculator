@@ -36,6 +36,9 @@ struct Args {
     /// Output path for --fasta library generation.
     #[arg(long)]
     out: Option<String>,
+    /// Override the artifact activation for a controlled inference benchmark.
+    #[arg(long, value_name = "ACTIVATION")]
+    activation: Option<String>,
     #[arg(long, default_value_t = 2)]
     missed_cleavages: usize,
     #[arg(long, default_value_t = 7)]
@@ -135,6 +138,7 @@ fn main() -> Result<()> {
             model: &args.model,
             fasta,
             out,
+            activation: args.activation.as_deref(),
             ms_context: ms_ctx.as_ref(),
             chrom_context: args.chrom_context.as_deref(),
             min_intensity: args.min_intensity,
@@ -162,7 +166,8 @@ fn main() -> Result<()> {
     if args.out.is_some() {
         return Err(anyhow!("--out is only valid with --fasta"));
     }
-    let art = Artifact::load(&args.model)?;
+    let mut art = Artifact::load(&args.model)?;
+    library::apply_activation_override(&mut art, args.activation.as_deref())?;
     let pred = predict(
         &art,
         peptide,
