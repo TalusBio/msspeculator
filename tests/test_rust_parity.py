@@ -133,6 +133,38 @@ def test_rust_fasta_generates_diann_tsv(artifact, tmp_path):
     assert {row["Decoy"] for row in rows} == {"0"}
     assert all(float(row["IonMobility"]) > 0 for row in rows)
 
+    # FASTA mode batches all charge heads into larger GEMMs. Its spectra must still match the
+    # independently evaluated single-charge path, not merely produce the expected row count.
+    for charge in (2, 3):
+        scalar = subprocess.run(
+            [
+                _binary(),
+                "--model",
+                str(artifact["path"]),
+                "--peptide",
+                "PEPTIDEM",
+                "--charge",
+                str(charge),
+            ],
+            capture_output=True,
+            text=True,
+        )
+        assert scalar.returncode == 0, scalar.stderr
+        scalar_map = _frag_map_rust(json.loads(scalar.stdout))
+        batch_map = {
+            (
+                row["FragmentType"],
+                int(row["FragmentNumber"]),
+                int(row["FragmentCharge"]),
+            ): (float(row["FragmentMz"]), float(row["RelativeIntensity"]))
+            for row in rows
+            if row["ModifiedPeptide"] == "PEPTIDEM"
+            and int(row["PrecursorCharge"]) == charge
+        }
+        assert batch_map.keys() == scalar_map.keys()
+        for key in batch_map:
+            assert batch_map[key] == pytest.approx(scalar_map[key], abs=1e-7)
+
 
 @pytest.mark.parametrize(
     "label,extra,ids",

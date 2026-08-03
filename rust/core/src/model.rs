@@ -441,47 +441,74 @@ impl<'a> Predictor<'a> {
         charge: i64,
         ms_shift: Option<&Array1<f32>>,
     ) -> Result<(Array2<f32>, f32)> {
+        let mut outputs = self.predict_charges(encoded, &[charge], ms_shift)?;
+        Ok(outputs.pop().expect("one requested charge yields one output"))
+    }
+
+    /// Run all requested charge heads in two larger matrix multiplications. Rows remain grouped
+    /// by charge, so callers can split the MS2 output without changing transition ordering.
+    pub fn predict_charges(
+        &self,
+        encoded: &EncodedPeptide,
+        charges: &[i64],
+        ms_shift: Option<&Array1<f32>>,
+    ) -> Result<Vec<(Array2<f32>, f32)>> {
+        if charges.is_empty() {
+            return Ok(Vec::new());
+        }
         let cfg = self.cfg();
         let d = cfg.d_model;
-        // charge_emb has max_charge + 1 rows. Without this the `.row(charge as usize)` below
-        // aborts on an ndarray bounds assertion (and a negative charge wraps first).
-        if charge < 1 || charge as usize > cfg.max_charge {
-            return Err(anyhow!(
-                "charge {charge} is out of range; this model's charge_emb covers 1..={}",
-                cfg.max_charge
-            ));
+        let frag_pos = encoded.frag.nrows();
+        let charge_emb = self.art.get2("model.charge_emb.weight")?;
+        let mut ce = Array2::<f32>::zeros((charges.len(), d));
+        for (i, &charge) in charges.iter().enumerate() {
+            // charge_emb has max_charge + 1 rows. Validate before converting to usize so a
+            // negative charge cannot wrap into an ndarray bounds assertion.
+            if charge < 1 || charge as usize > cfg.max_charge {
+                return Err(anyhow!(
+                    "charge {charge} is out of range; this model's charge_emb covers 1..={}",
+                    cfg.max_charge
+                ));
+            }
+            ce.row_mut(i).assign(&charge_emb.row(charge as usize));
         }
-        let ce = self
-            .art
-            .get2("model.charge_emb.weight")?
-            .row(charge as usize)
-            .to_owned();
 
-        let mut frag = encoded.frag.clone();
-        if let Some(shift) = ms_shift {
-            for mut row in frag.rows_mut() {
-                for (r, &sh) in row.iter_mut().zip(shift.iter()) {
-                    *r += sh;
+        let mut frag = Array2::<f32>::zeros((charges.len() * frag_pos, d));
+        for charge_i in 0..charges.len() {
+            for frag_i in 0..frag_pos {
+                let mut row = frag.row_mut(charge_i * frag_pos + frag_i);
+                row.assign(&encoded.frag.row(frag_i));
+                if let Some(shift) = ms_shift {
+                    row += shift;
                 }
+                row += &ce.row(charge_i);
             }
         }
-        for mut row in frag.rows_mut() {
-            for (r, &cc) in row.iter_mut().zip(ce.iter()) {
-                *r += cc;
-            }
-        }
-        let mut ms2 = self.head(&frag, "model.ms2_head")?; // [L-1, n_ion]
+        let mut ms2 = self.head(&frag, "model.ms2_head")?; // [charge * (L-1), n_ion]
         ms2.mapv_inplace(sigmoid);
 
         // --- CCS head: concat[pooled, charge] ---
-        let mut ccs_in = Array1::<f32>::zeros(2 * d);
-        ccs_in.slice_mut(s![0..d]).assign(&encoded.pooled);
-        ccs_in.slice_mut(s![d..2 * d]).assign(&ce);
-        let ccs_2d = ccs_in.insert_axis(ndarray::Axis(0)); // [1,2d]
-        let ccs_out = self.head(&ccs_2d, "model.ccs_head")?;
-        let ccs = ccs_out[[0, 0]] * self.art.meta.norm.ccs_std + self.art.meta.norm.ccs_mean;
+        let mut ccs_in = Array2::<f32>::zeros((charges.len(), 2 * d));
+        for charge_i in 0..charges.len() {
+            ccs_in
+                .slice_mut(s![charge_i, 0..d])
+                .assign(&encoded.pooled);
+            ccs_in
+                .slice_mut(s![charge_i, d..2 * d])
+                .assign(&ce.row(charge_i));
+        }
+        let ccs_out = self.head(&ccs_in, "model.ccs_head")?;
 
-        Ok((ms2, ccs))
+        let mut outputs = Vec::with_capacity(charges.len());
+        for charge_i in 0..charges.len() {
+            let spectrum = ms2
+                .slice(s![charge_i * frag_pos..(charge_i + 1) * frag_pos, ..])
+                .to_owned();
+            let ccs = ccs_out[[charge_i, 0]] * self.art.meta.norm.ccs_std
+                + self.art.meta.norm.ccs_mean;
+            outputs.push((spectrum, ccs));
+        }
+        Ok(outputs)
     }
 
     /// Run the charge-independent RT head over an encoded peptide.

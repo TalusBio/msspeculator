@@ -157,9 +157,9 @@ pub fn predict_peptide_charges_prepared(
     let modified_sequence = pep.modified_sequence();
     let mut predictions = Vec::with_capacity(charges.len());
 
-    for &charge in charges {
-        let (ms2, ccs) =
-            predictor.predict_charge(&encoded, charge, context.ms_shift.as_ref())?;
+    let charge_outputs =
+        predictor.predict_charges(&encoded, charges, context.ms_shift.as_ref())?;
+    for (&charge, (ms2, ccs)) in charges.iter().zip(charge_outputs) {
 
         // Base peak over the whole spectrum (matches predict_library_fast).
         let peak = ms2.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
