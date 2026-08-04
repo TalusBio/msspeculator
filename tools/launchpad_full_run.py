@@ -59,7 +59,28 @@ def main() -> None:
     ]
     print("[launchpad] running full non-test training against the S3 mirror", flush=True)
     print(f"[launchpad] data={S3_PREFIX}", flush=True)
-    subprocess.run(command, check=True, env=env)
+    # Launchpad uploads files from the working directory even when the command fails.  Keep
+    # the complete inner traceback there as well as streaming it to CloudWatch; the outer
+    # ``CalledProcessError`` otherwise leaves only an unhelpful wrapper traceback in the
+    # result tail.
+    log_path = Path("cloud-output/launchpad-inner.log")
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("w", buffering=1) as log:
+        process = subprocess.Popen(
+            command,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+        assert process.stdout is not None
+        for line in process.stdout:
+            print(line, end="", flush=True)
+            log.write(line)
+        return_code = process.wait()
+    if return_code:
+        raise subprocess.CalledProcessError(return_code, command)
 
 
 if __name__ == "__main__":

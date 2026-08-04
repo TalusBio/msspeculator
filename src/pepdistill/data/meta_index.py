@@ -160,48 +160,55 @@ def build_meta_index(
                 stacklevel=2,
             )
 
-    table = dataset.to_table(
-        columns=present, filter=pads.field(s.raw_file).isin(list(raw_files))
+    # Scan record batches instead of calling ``to_table``.  A large pool such as
+    # TUM_isoform has 9.5M metadata rows: materializing the full Arrow table and then a
+    # Python list for every column briefly held several copies of the same data and could
+    # exhaust a 30 GB cloud worker before the compact index was complete.
+    scanner = dataset.scanner(
+        columns=present,
+        filter=pads.field(s.raw_file).isin(list(raw_files)),
+        batch_size=65_536,
     )
-    if table.num_rows == 0:
+    irt_col = s.indexed_retention_time if s.indexed_retention_time in present else s.retention_time
+    raw_col = s.retention_time if s.retention_time in present else irt_col
+
+    # parse_modseq is the only per-peptide Python cost; memoise across batches, shards, and
+    # sources.  Only one batch's ``to_pylist`` representation is resident at a time.
+    parsed: dict[str, tuple[str, tuple]] = {}
+    index = MetaIndex()
+    for batch in scanner.to_batches():
+        cd = {name: batch.column(i).to_pylist() for i, name in enumerate(batch.schema.names)}
+        for i in range(batch.num_rows):
+            modseq = str(cd[s.modified_sequence][i])
+            if modseq not in parsed:
+                parsed[modseq] = parse_modseq(modseq)
+            stripped, mods = parsed[modseq]
+            rf = str(cd[s.raw_file][i])
+            scan = int(cd[s.scan_number][i])
+            key = (rf, scan)
+            if key in index.by_key:
+                continue  # first row wins, matching the previous drop_duplicates behaviour
+            ce = cd[s.collision_energy][i] if s.collision_energy in cd else None
+            index.by_key[key] = SpectrumMeta(
+                peptide=Peptide(stripped, mods),
+                charge=int(cd[s.charge][i]),
+                irt=float(cd[irt_col][i]),
+                raw_rt=float(cd[raw_col][i]),
+                split=assign_split(stripped, split_cfg),
+                mass_analyzer=str(cd[s.mass_analyzer][i]) if s.mass_analyzer in cd else "",
+                fragmentation=str(cd[s.fragmentation][i]) if s.fragmentation in cd else "",
+                # Never fabricated: absent energy stays NaN and the encoder masks the term.
+                energy=float(ce) if ce is not None else float("nan"),
+                andromeda=(
+                    float(cd[s.andromeda_score][i])
+                    if s.andromeda_score in cd and cd[s.andromeda_score][i] is not None
+                    else float("nan")
+                ),
+            )
+    if not index.by_key:
         raise ValueError(
             f"no meta rows in {meta_filename!r} for raw_files {sorted(raw_files)}; "
             "the shard selection and the meta file disagree"
-        )
-
-    irt_col = s.indexed_retention_time if s.indexed_retention_time in present else s.retention_time
-    raw_col = s.retention_time if s.retention_time in present else irt_col
-    cd = {name: table.column(name).to_pylist() for name in table.column_names}
-
-    # parse_modseq is the only per-peptide Python cost; memoise across shards AND sources.
-    parsed: dict[str, tuple[str, tuple]] = {}
-    index = MetaIndex()
-    for i in range(table.num_rows):
-        modseq = str(cd[s.modified_sequence][i])
-        if modseq not in parsed:
-            parsed[modseq] = parse_modseq(modseq)
-        stripped, mods = parsed[modseq]
-        rf = str(cd[s.raw_file][i])
-        scan = int(cd[s.scan_number][i])
-        key = (rf, scan)
-        if key in index.by_key:
-            continue  # first row wins, matching the previous drop_duplicates behaviour
-        ce = cd[s.collision_energy][i] if s.collision_energy in cd else None
-        index.by_key[key] = SpectrumMeta(
-            peptide=Peptide(stripped, mods),
-            charge=int(cd[s.charge][i]),
-            irt=float(cd[irt_col][i]),
-            raw_rt=float(cd[raw_col][i]),
-            split=assign_split(stripped, split_cfg),
-            mass_analyzer=str(cd[s.mass_analyzer][i]) if s.mass_analyzer in cd else "",
-            fragmentation=str(cd[s.fragmentation][i]) if s.fragmentation in cd else "",
-            # Never fabricated: absent energy stays NaN and the encoder masks the term.
-            energy=float(ce) if ce is not None else float("nan"),
-            andromeda=(
-                float(cd[s.andromeda_score][i])
-                if s.andromeda_score in cd and cd[s.andromeda_score][i] is not None
-                else float("nan")
-            ),
         )
     return index
 
