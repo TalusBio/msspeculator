@@ -47,8 +47,10 @@ launchpad run tools/launchpad_prospect_etl.py \
   --env PEPDISTILL_PREPARE_ARRAY_SIZE=10
 ```
 
-Each array task derives its global range from its array index; the prepared output is identical
-whether it runs on one worker or thousands.
+Each array task derives a contiguous global range from its array index, balancing boundaries by
+the vendored raw Parquet byte sizes rather than shard count. The prepared output is identical
+whether it runs on one worker or thousands. Explicit `--range` remains available for exact retry
+ranges; `pepdistill prepare ... --partition 1/10` exposes the same weighted planner directly.
 
 To retry one interrupted range without launching another array, pass it explicitly through the
 environment:

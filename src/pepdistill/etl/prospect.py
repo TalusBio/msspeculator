@@ -12,6 +12,7 @@ predicate pushdown, and streaming Parquet scan for each shard.
 
 from __future__ import annotations
 
+from bisect import bisect_left
 import fnmatch
 import hashlib
 import json
@@ -581,6 +582,50 @@ def prepare_range(
     if log is not None:
         log(f"[prepare] catalog has {len(tasks):,} shard task(s); processing [{start}:{stop})")
     return [prepare_task(config.output_prefix, task, force=force, log=log) for task in tasks[start:stop]]
+
+
+def balanced_partition_range(
+    catalog: dict[str, Any], index: int, partitions: int
+) -> tuple[int, int, int]:
+    """Return a contiguous range balanced by vendored raw shard bytes.
+
+    The output assets remain ordinal-addressed and worker-independent. This only chooses array
+    boundaries; explicit ``--range`` continues to address the exact same global catalog.
+    """
+    tasks = catalog["tasks"]
+    if not 0 < partitions <= len(tasks):
+        raise ValueError(f"partitions must be between 1 and {len(tasks)}")
+    if not 0 <= index < partitions:
+        raise ValueError(f"partition index {index} outside 0..{partitions - 1}")
+    shard_index = load_shard_index()["records"]
+    weights: list[int] = []
+    for task in tasks:
+        rows = shard_index.get(str(task.get("record")), {}).get(
+            f"{task.get('archive')}.zip", []
+        )
+        shard_ordinal = int(task.get("shard_index", -1))
+        row = (
+            rows[shard_ordinal]
+            if isinstance(rows, list) and 0 <= shard_ordinal < len(rows)
+            else None
+        )
+        # Raw Parquet bytes are a better proxy for decode work than task count. Local/custom
+        # sources lack a vendored central-directory row and retain equal-task weighting.
+        weights.append(max(1, int(row[2])) if isinstance(row, list) and len(row) >= 3 else 1)
+    prefix = [0]
+    for weight in weights:
+        prefix.append(prefix[-1] + weight)
+    boundaries = [0]
+    for part in range(1, partitions):
+        target = prefix[-1] * part / partitions
+        low = boundaries[-1] + 1
+        high = len(tasks) - (partitions - part)
+        after = bisect_left(prefix, target, low, high + 1)
+        candidates = [candidate for candidate in (after - 1, after) if low <= candidate <= high]
+        boundaries.append(min(candidates, key=lambda candidate: abs(prefix[candidate] - target)))
+    boundaries.append(len(tasks))
+    start, stop = boundaries[index : index + 2]
+    return start, stop, prefix[stop] - prefix[start]
 
 
 def finalize_catalog(config: PrepareConfig, log: Callable[[str], None] | None = print) -> dict[str, Any]:

@@ -44,22 +44,49 @@ def _parse_range(value: str | None, total: int) -> tuple[int, int]:
     return start, stop
 
 
+def _parse_partition(value: str) -> tuple[int, int]:
+    parts = value.split("/")
+    if len(parts) != 2 or not all(part.strip().isdigit() for part in parts):
+        raise typer.BadParameter("partition must be zero-based INDEX/TOTAL, such as 1/10")
+    return int(parts[0]), int(parts[1])
+
+
 @app.command()
 def prepare(
     config: Path = typer.Argument(..., exists=True, readable=True, help="Prepare config (TOML)."),
     range_spec: Optional[str] = typer.Option(
         None, "--range", help="Half-open global shard range START:STOP (default: all)."
     ),
+    partition_spec: Optional[str] = typer.Option(
+        None,
+        "--partition",
+        help="Byte-balanced zero-based array partition INDEX/TOTAL, such as 1/10.",
+    ),
     force: bool = typer.Option(False, "--force", help="Rebuild completed shard assets."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Discover and report tasks without processing."),
 ) -> None:
     """Discover the global shard catalog and prepare one optional range of shards."""
     from .etl.config import PrepareConfig
-    from .etl.prospect import ensure_catalog, prepare_range
+    from .etl.prospect import balanced_partition_range, ensure_catalog, prepare_range
 
     cfg = PrepareConfig.load(config)
     catalog = ensure_catalog(cfg, force=force)
-    start, stop = _parse_range(range_spec, len(catalog["tasks"]))
+    if range_spec is not None and partition_spec is not None:
+        raise typer.BadParameter("--range and --partition are mutually exclusive")
+    if partition_spec is not None:
+        partition_index, partitions = _parse_partition(partition_spec)
+        try:
+            start, stop, estimated_bytes = balanced_partition_range(
+                catalog, partition_index, partitions
+            )
+        except ValueError as exc:
+            raise typer.BadParameter(str(exc)) from exc
+        typer.echo(
+            f"partition {partition_index}/{partitions}: estimated raw input "
+            f"{estimated_bytes / 1e9:.2f} GB"
+        )
+    else:
+        start, stop = _parse_range(range_spec, len(catalog["tasks"]))
     typer.echo(f"catalog: {len(catalog['tasks']):,} shard task(s); selected [{start}:{stop})")
     if dry_run:
         for task in catalog["tasks"][start:stop]:

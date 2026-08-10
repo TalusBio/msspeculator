@@ -14,6 +14,7 @@ from pepdistill.data.prepared import PreparedManifest, PreparedStreamingDataset
 from pepdistill.distill.context_regime import MSContextEncoder
 from pepdistill.etl.config import PrepareConfig, PrepareGroup, PrepareSource
 from pepdistill.etl.prospect import (
+    balanced_partition_range,
     catalog_status,
     discover_catalog,
     ensure_catalog,
@@ -180,3 +181,22 @@ def test_group_catalog_v1_is_rebuilt_for_shared_metadata_fix(tmp_path):
     assert catalog["version"] == 2
     assert catalog["tasks"][0]["meta_uri"].endswith("TUM_isoform_meta_data.parquet")
     assert catalog["tasks"][0]["meta_url"].endswith("TUM_isoform_meta_data.parquet/content")
+
+
+def test_balanced_partition_uses_vendored_raw_bytes(monkeypatch):
+    catalog = {
+        "tasks": [
+            {"record": "r", "archive": "a", "shard_index": index}
+            for index in range(4)
+        ]
+    }
+    monkeypatch.setattr(
+        "pepdistill.etl.prospect.load_shard_index",
+        lambda: {
+            "records": {
+                "r": {"a.zip": [["0", 1, 10], ["1", 1, 10], ["2", 1, 70], ["3", 1, 10]]}
+            }
+        },
+    )
+    assert balanced_partition_range(catalog, 0, 2) == (0, 2, 20)
+    assert balanced_partition_range(catalog, 1, 2) == (2, 4, 80)

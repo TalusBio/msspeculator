@@ -60,6 +60,10 @@ deferred until it solves a measured deployment need.
    `Delta` modification variant before testing chemically equivalent residue/delta encodings.
 7. **Regenerate vendored UNIMOD assets reproducibly.** Refresh the generation logic from the
    upstream source and verify the checked-in result.
+8. **Evaluate prepared-data curation.** Materialize chromatographic/identification QC and
+   replicate-support statistics, then compare raw observations, apex/FWHM filtering, capped
+   replicate weighting, and replicate-consensus targets without sacrificing singleton coverage
+   by default.
 
 ## Parked
 
