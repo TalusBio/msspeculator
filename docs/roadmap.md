@@ -31,7 +31,9 @@ deferred until it solves a measured deployment need.
 - Real-data validation is deduplicated and logged per dataset. Early stopping follows mean
   per-dataset spectral agreement and errors if an expected metric is missing.
 - Real training logs progress and per-epoch metrics, and saves `latest.ckpt` and `best.ckpt`.
-  Pretraining uses OneCycle by default, logs learning rate, and saves `pretrain.ckpt`.
+  Pretraining uses OneCycle by default, logs learning rate, and saves `pretrain.ckpt` plus
+  periodic warm-start snapshots. All durable artifacts can be mirrored incrementally to a
+  per-run object-store prefix; checkpoints can be loaded directly from that prefix.
 - Real-data preparation is a separate range-addressable Polars ETL. A vendored Zenodo catalog
   and compressed shard index define the inputs; S3 is only an optional read-through cache.
 - Every source shard produces one immutable prepared asset. Finalization verifies all shards and
@@ -43,8 +45,9 @@ deferred until it solves a measured deployment need.
 
 1. **Complete and validate the full prepared catalog.** Run the global shard ranges, verify
    restart/skip behavior, finalize the manifest, and record row counts and dataset coverage.
-2. **Train on the full non-test corpus.** Use the prepared manifest, retain per-dataset metrics,
-   and compare both `small` and `base` by validation strata and the real search fixture.
+2. **Train on the full non-test corpus.** Use the prepared manifest and run the five-preset sweep
+   (`flash`, `small-2h`, `small`, `base-4h`, `base`), retaining per-dataset metrics and comparing
+   the useful candidates on the real search fixture.
 3. **Make library generation reproducible.** Write a manifest beside each generated library
    containing model identity, FASTA digest, digestion/modification settings, acquisition context,
    adapter version, and precursor/transition counts.

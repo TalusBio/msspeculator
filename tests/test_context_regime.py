@@ -235,6 +235,7 @@ def test_fit_from_prebuilt_datasets_trains_and_reports_metrics(tmp_path):
     model.set_norm(rt_mean=0.0, rt_std=1.0)
     cdim = model.cfg.context_dim
     examples = _make_examples(8)  # existing helper in this test module
+    mirrored: list[str] = []
     module = fit_realspeclib_datasets(
         model,
         RealSpeclibDataset(examples),
@@ -245,6 +246,9 @@ def test_fit_from_prebuilt_datasets_trains_and_reports_metrics(tmp_path):
         epochs=1,
         batch_size=4,
         enable_progress_bar=False,
+        progress_metrics_path=tmp_path / "train_metrics.jsonl",
+        checkpoint_dir=tmp_path,
+        artifact_mirror=lambda path: mirrored.append(path.name),
     )
     assert module.dataset_index == {"pool": 1}
     metrics = module.trainer.callback_metrics
@@ -253,6 +257,9 @@ def test_fit_from_prebuilt_datasets_trains_and_reports_metrics(tmp_path):
     assert "val/pool/rawrt_mae" in metrics
     assert metrics["val/pool/n"] == 2
     assert "val_spectral_angle" not in metrics
+    assert "latest.ckpt" in mirrored
+    assert "best.ckpt" in mirrored
+    assert "train_metrics.jsonl" in mirrored
 
 
 def test_validation_early_stop_fails_on_missing_metric_key():

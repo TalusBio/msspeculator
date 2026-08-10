@@ -18,6 +18,8 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUT = ROOT / ".launchpad" / "full-run-stage"
 S3_PREFIX = "s3://terraform-workstations-bucket/jspaezp/20241022_prospect"
 PREPARED_PREFIX = "s3://terraform-workstations-bucket/jspaezp/pepdistill-prepared/v1"
+TRAIN_OUTPUT_PREFIX = "s3://terraform-workstations-bucket/jspaezp/pepdistill-training/full-v1"
+TRAIN_PRESETS = ("flash", "small-2h", "small", "base-4h", "base")
 PRETRAIN_FASTA = ROOT / "fasta_ignore" / "ecoli_k12.fasta"
 UNIPROT_FASTA_URL = (
     "https://rest.uniprot.org/uniprotkb/stream?format=fasta&query=proteome%3AUP000000625"
@@ -61,9 +63,11 @@ def main() -> None:
     runs = out / "runs"
     runs.mkdir()
     shutil.copy2(ROOT / "runs" / "prepare-full.toml", runs / "prepare-full.toml")
-    (runs / "prepared-cloud.toml").write_text(
-        f'''out = "cloud-output-prepared"
-preset = "small"
+    for preset in TRAIN_PRESETS:
+        (runs / f"prepared-cloud-{preset}.toml").write_text(
+            f'''out = "cloud-output-{preset}"
+remote_output_prefix = "{TRAIN_OUTPUT_PREFIX}/{preset}"
+preset = "{preset}"
 activation = "gelu_tanh"
 device = "cpu"
 seed = 0
@@ -74,6 +78,7 @@ teacher = "alphapeptdeep"
 passes = 2
 chunk_size = 10000
 patience = 5
+checkpoint_every_steps = 500
 
 [[pretrain.sources]]
 fasta = "pretrain.fasta"
@@ -94,12 +99,15 @@ lr = 0.0003
 early_stop_patience = 5
 early_stop_min_delta = 0.001
 '''
-    )
+        )
     fasta = ensure_pretrain_fasta()
     shutil.copy2(fasta, out / "pretrain.fasta")
 
     print(f"prepared {out}")
-    print("staged files: source, Rust extension, lockfile, prepare catalog, train config, E. coli pretrain FASTA")
+    print(
+        "staged files: source, Rust extension, lockfile, prepare catalog, "
+        f"{len(TRAIN_PRESETS)} train configs, E. coli pretrain FASTA"
+    )
     print(f"data source (read-only): {S3_PREFIX}")
 
 

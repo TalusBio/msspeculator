@@ -62,3 +62,19 @@ enabled = false
     )
     summary = run_pipeline(RunConfig.from_toml(config), log=lambda *_: None)
     assert "train" not in summary
+
+
+def test_pipeline_mirrors_durable_outputs(tmp_path: Path):
+    local = tmp_path / "out"
+    remote = tmp_path / "remote"
+    cfg = RunConfig(
+        out=str(local),
+        remote_output_prefix=remote.as_uri(),
+        preset="flash",
+    )
+    cfg.pretrain.enabled = False
+    cfg.train.enabled = False
+    summary = run_pipeline(cfg, log=lambda *_: None)
+    assert summary["remote_output_prefix"] == remote.as_uri()
+    assert (remote / "model.ckpt").exists()
+    assert (remote / "summary.json").exists()

@@ -1,6 +1,7 @@
 """Context conditioning: ms_context/chrom_context head routing, MSContextEncoder, ChromRunbook."""
 
 import torch
+import fsspec
 
 from pepdistill.chem import Peptide
 from pepdistill.data.encode import collate
@@ -14,6 +15,7 @@ from pepdistill.models.context import (
 from pepdistill.models.registry import (
     ContextBundle,
     build_student,
+    load_checkpoint,
     load_context,
     save_checkpoint,
 )
@@ -65,6 +67,20 @@ def test_checkpoint_without_context_is_none(tmp_path):
     path = tmp_path / "m.ckpt"
     save_checkpoint(build_student("flash"), path)
     assert load_context(path) is None
+
+
+def test_checkpoint_loads_from_fsspec_uri(tmp_path):
+    local = tmp_path / "m.ckpt"
+    model = build_student("flash")
+    encoder = MSContextEncoder(context_dim=model.cfg.context_dim)
+    save_checkpoint(model, local, encoder=encoder)
+    uri = "memory://pepdistill-tests/m.ckpt"
+    with local.open("rb") as src, fsspec.open(uri, "wb") as dst:
+        dst.write(src.read())
+    loaded = load_checkpoint(uri)
+    context = load_context(uri)
+    assert loaded.cfg == model.cfg
+    assert context is not None and context.encoder is not None
 
 
 def test_context_aware_predict_changes_ms2_not_rt():

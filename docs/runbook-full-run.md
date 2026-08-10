@@ -68,6 +68,7 @@ launchpad run tools/launchpad_prepare_finalize.py --stage .launchpad/full-run-st
 
 ```toml
 out = "runs/full"
+remote_output_prefix = "s3://bucket/pepdistill-training/full-v1/small"
 preset = "small"                 # flash | small-2h | small | base-4h | base
 device = "auto"                  # auto -> mps/cpu; "cuda" -> gpu
 seed = 0
@@ -79,6 +80,7 @@ nce_min = 20.0                   # per-peptide collision-energy sweep -> learned
 nce_max = 40.0
 passes  = 1                      # full enumerations of the digests
 chunk_size = 10000               # peptides per teacher call
+checkpoint_every_steps = 500     # periodically mirror an inference-ready warm start
 # instrument/detector/fragmentation default to Lumos/FTMS/HCD (peptdeep's acquisition)
 [[pretrain.sources]]             # one block PER fasta; per-source digestion + charge knobs
 fasta = "proteome.fasta"
@@ -127,6 +129,38 @@ spectral agreement improves. Its early-stop line labels this aggregate as spectr
 higher is better. Historical controlled 60-epoch references reached weighted spectral angles
 0.7075 (exact GELU) and 0.7084 (tanh-GELU); use per-dataset metrics and downstream search results
 for acceptance, not either pooled number alone.
+
+When `remote_output_prefix` is set, `pretrain-latest.ckpt` is mirrored every configured number of
+steps; `pretrain.ckpt`, `train_metrics.jsonl`, `latest.ckpt`, `best.ckpt`, `model.ckpt`, and
+`summary.json` are mirrored whenever they change. An object-store write failure stops the job
+instead of silently leaving it without a durable recovery artifact.
+
+These checkpoints are **warm starts**, not exact training resumes: they contain model and context
+weights, but not optimizer, scheduler, early-stop, epoch, or streaming-cursor state. Starting from
+one therefore begins the configured stage again with the saved weights.
+
+### Launch the five-preset cloud sweep
+
+The staging helper generates one config and one S3 output prefix for each of `flash`, `small-2h`,
+`small`, `base-4h`, and `base`. Launch all five by array index:
+
+```bash
+.venv/bin/python tools/prepare_launchpad_full_run.py
+launchpad run tools/launchpad_prepared_train.py \
+  --stage .launchpad/full-run-stage --array-size 5 \
+  --env PEPDISTILL_TRAIN_PRESETS=flash,small-2h,small,base-4h,base
+```
+
+A standalone invocation defaults to `small`; select one explicitly with
+`--env PEPDISTILL_TRAIN_PRESET=base`. To recover a terminated real-training job from its durable
+warm start, skip pretraining and load that preset's latest checkpoint:
+
+```bash
+launchpad run tools/launchpad_prepared_train.py --stage .launchpad/full-run-stage \
+  --env PEPDISTILL_TRAIN_PRESET=base \
+  --env PEPDISTILL_MODEL_IN=s3://terraform-workstations-bucket/jspaezp/pepdistill-training/full-v1/base/latest.ckpt \
+  --env PEPDISTILL_NO_PRETRAIN=1
+```
 
 ## 4. Generate a library and search it
 
@@ -178,6 +212,7 @@ pepdistill predict --model runs/full/model.ckpt --fasta one.fasta -o one.parquet
 - `runs/full/model.ckpt` — trained student + context (encoder/runbook/dataset_index).
 - `runs/full/pretrain.ckpt` — snapshot after teacher distillation.
 - `runs/full/latest.ckpt`, `runs/full/best.ckpt` — rolling real-data checkpoints.
+- `runs/full/pretrain-latest.ckpt` — periodic pretrain warm start, when the interval is reached.
 - `runs/full/summary.json` — per-stage metrics.
 - `runs/full/model.safetensors` — Rust-loadable artifact (from `export-rust`).
 - Prediction: JSON on stdout (Rust CLI) or `one.parquet` (torch predict).

@@ -106,12 +106,10 @@ def run(
     config: Path = typer.Argument(..., exists=True, readable=True, help="Run config (TOML)."),
     out: Optional[Path] = typer.Option(None, "--out", "-o", help="Override config `out`."),
     device: Optional[str] = typer.Option(None, help="Override device: auto | cpu | mps | cuda."),
-    model_in: Optional[Path] = typer.Option(
+    model_in: Optional[str] = typer.Option(
         None,
         "--model-in",
-        exists=True,
-        readable=True,
-        help="Initialize pretrain/train/export/bench from a checkpoint.",
+        help="Initialize from a local checkpoint path or object-store URI.",
     ),
     no_pretrain: bool = typer.Option(False, help="Disable the teacher-distill pretrain stage."),
     no_train: bool = typer.Option(False, help="Disable the real-speclib train stage."),
@@ -123,7 +121,7 @@ def run(
     if device is not None:
         cfg = replace(cfg, device=device)
     if model_in is not None:
-        cfg = replace(cfg, model_in=str(model_in))
+        cfg = replace(cfg, model_in=model_in)
     if no_pretrain:
         cfg = replace(cfg, pretrain=replace(cfg.pretrain, enabled=False))
     if no_train:

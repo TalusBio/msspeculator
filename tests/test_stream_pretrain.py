@@ -10,6 +10,7 @@ from pepdistill.distill.stream_pretrain import (
     StreamPretrainCfg,
     _peptides,
     _StreamingDataset,
+    _StreamCheckpoint,
     default_mixes,
     fit_stream_pretrain,
 )
@@ -102,6 +103,24 @@ def test_stream_pretrain_cfg_defaults_teacher_acquisition():
     cfg = StreamPretrainCfg()
     assert (cfg.instrument, cfg.detector, cfg.fragmentation) == ("Lumos", "FTMS", "HCD")
     assert (cfg.onecycle_max_lr, cfg.onecycle_total_steps) == (1e-3, 2500)
+
+
+def test_periodic_pretrain_checkpoint_is_inference_ready(tmp_path):
+    model = build_student("flash")
+    encoder = MSContextEncoder(context_dim=model.cfg.context_dim)
+
+    class Module:
+        context_encoder = encoder
+
+        def __init__(self):
+            self.model = model
+
+    path = tmp_path / "pretrain-latest.ckpt"
+    mirrored = []
+    callback = _StreamCheckpoint(1, path, lambda item: mirrored.append(item.name), lambda _: None)
+    callback.on_train_batch_end(None, Module(), None, None, 0)
+    assert path.exists()
+    assert mirrored == ["pretrain-latest.ckpt"]
 
 
 def test_onecycle_holds_final_lr_after_configured_steps():

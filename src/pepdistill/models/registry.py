@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+import fsspec
 import torch
 
 from .context import (
@@ -90,8 +91,15 @@ def save_checkpoint(
     torch.save(blob, path)
 
 
+def _load_checkpoint_blob(path: str | Path, map_location: str = "cpu") -> dict:
+    if "://" in str(path):
+        with fsspec.open(str(path), "rb") as stream:
+            return torch.load(stream, map_location=map_location, weights_only=False)
+    return torch.load(path, map_location=map_location, weights_only=False)
+
+
 def load_checkpoint(path: str | Path, map_location: str = "cpu") -> StudentModel:
-    ckpt = torch.load(path, map_location=map_location, weights_only=False)
+    ckpt = _load_checkpoint_blob(path, map_location)
     model = StudentModel(StudentConfig(**ckpt["config"]))
     model.load_state_dict(ckpt["state_dict"])
     model.eval()
@@ -100,7 +108,7 @@ def load_checkpoint(path: str | Path, map_location: str = "cpu") -> StudentModel
 
 def load_context(path: str | Path, map_location: str = "cpu") -> ContextBundle | None:
     """Load the acquisition context saved with a checkpoint, or ``None`` if it had none."""
-    ckpt = torch.load(path, map_location=map_location, weights_only=False)
+    ckpt = _load_checkpoint_blob(path, map_location)
     ctx = ckpt.get("context")
     if not ctx:
         return None

@@ -275,10 +275,16 @@ class _RealTrainProgress(L.Callback):
     elapsed time instead; the batch index is still useful for spotting a stalled shard or loader.
     """
 
-    def __init__(self, every: int = 100, metrics_path: str | Path | None = None) -> None:
+    def __init__(
+        self,
+        every: int = 100,
+        metrics_path: str | Path | None = None,
+        artifact_mirror=None,
+    ) -> None:
         super().__init__()
         self.every = every
         self.metrics_path = Path(metrics_path) if metrics_path is not None else None
+        self.artifact_mirror = artifact_mirror
         self._started = 0.0
 
     def _write_epoch_metrics(self, trainer: L.Trainer) -> None:
@@ -294,6 +300,8 @@ class _RealTrainProgress(L.Callback):
         self.metrics_path.parent.mkdir(parents=True, exist_ok=True)
         with self.metrics_path.open("a") as fh:
             fh.write(json.dumps(record, sort_keys=True) + "\n")
+        if self.artifact_mirror is not None:
+            self.artifact_mirror(self.metrics_path)
 
     def on_train_epoch_start(self, trainer: L.Trainer, pl_module: L.LightningModule) -> None:
         self._started = time.perf_counter()
@@ -398,10 +406,11 @@ class _RealValidationEarlyStop(L.Callback):
 class _RealCheckpoint(L.Callback):
     """Persist inference-ready latest/best snapshots during real-data training."""
 
-    def __init__(self, directory: str | Path, expected_keys: set[str]) -> None:
+    def __init__(self, directory: str | Path, expected_keys: set[str], artifact_mirror=None) -> None:
         super().__init__()
         self.directory = Path(directory)
         self.expected_keys = expected_keys
+        self.artifact_mirror = artifact_mirror
         # spectral_angle is normalized agreement: 1.0 = identical, so higher is better.
         self.best = float("-inf")
 
@@ -414,6 +423,8 @@ class _RealCheckpoint(L.Callback):
             runbook=pl_module.runbook,
             dataset_index=pl_module.dataset_index,
         )
+        if self.artifact_mirror is not None:
+            self.artifact_mirror(self.directory / name)
 
     def on_train_epoch_end(self, trainer: L.Trainer, pl_module: RealSpeclibModule) -> None:
         # This snapshot is available even when validation is disabled or crashes afterwards.
@@ -531,6 +542,7 @@ def fit_realspeclib_datasets(
     progress_log_every: int = 100,
     progress_metrics_path: str | Path | None = None,
     checkpoint_dir: str | Path | None = None,
+    artifact_mirror=None,
     early_stop_patience: int = 0,
     early_stop_min_delta: float = 1e-3,
     **trainer_kwargs,
@@ -573,7 +585,9 @@ def fit_realspeclib_datasets(
         else set(np.unique(val_ds.dataset_id)) if val_ds is not None and len(val_ds) else set()
     )
     if progress_log_every > 0:
-        callbacks.append(_RealTrainProgress(progress_log_every, progress_metrics_path))
+        callbacks.append(
+            _RealTrainProgress(progress_log_every, progress_metrics_path, artifact_mirror)
+        )
     if early_stop_patience < 0:
         raise ValueError("early_stop_patience must be non-negative")
     if early_stop_min_delta < 0:
@@ -593,7 +607,7 @@ def fit_realspeclib_datasets(
                 for dataset_id in val_dataset_ids
             }
         )
-        callbacks.insert(0, _RealCheckpoint(checkpoint_dir, checkpoint_keys))
+        callbacks.insert(0, _RealCheckpoint(checkpoint_dir, checkpoint_keys, artifact_mirror))
     trainer = build_trainer(epochs, accelerator, grad_clip, callbacks=callbacks, **trainer_kwargs)
     trainer.fit(module, loader(train_ds, True), loader(val_ds, False))
     return module

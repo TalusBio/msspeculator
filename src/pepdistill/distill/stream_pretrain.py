@@ -15,7 +15,9 @@ finite ``IterableDataset`` over ``passes`` enumerations feeds ``DistillModule``.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import lightning as L
 import numpy as np
@@ -30,6 +32,7 @@ from ..data.sources import (
     precursors_from_sequences,
 )
 from ..models.context import MSContextEncoder
+from ..models.registry import save_checkpoint
 from ..models.student import StudentModel
 from .dataset import DistillDataset, MSFactors, collate_with_labels
 from .lightning import DistillModule
@@ -260,6 +263,36 @@ class _LossPlateauStop(L.Callback):
                 trainer.should_stop = True
 
 
+class _StreamCheckpoint(L.Callback):
+    """Persist an inference-ready warm-start snapshot during the one-epoch stream."""
+
+    def __init__(
+        self,
+        every: int,
+        path: str | Path,
+        mirror: Callable[[Path], str] | None,
+        emit: Callable[[str], None],
+    ) -> None:
+        super().__init__()
+        self.every = every
+        self.path = Path(path)
+        self.mirror = mirror
+        self.emit = emit
+
+    def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx) -> None:
+        step = batch_idx + 1
+        if step % self.every:
+            return
+        save_checkpoint(
+            pl_module.model,
+            self.path,
+            encoder=pl_module.context_encoder,
+        )
+        if self.mirror is not None:
+            self.mirror(self.path)
+        self.emit(f"[pretrain] checkpointed step {step} -> {self.path}")
+
+
 def fit_stream_pretrain(
     model: StudentModel,
     encoder: MSContextEncoder,
@@ -269,9 +302,16 @@ def fit_stream_pretrain(
     accelerator: str = "cpu",
     log=print,
     log_every: int = 100,
+    checkpoint_every: int = 0,
+    checkpoint_path=None,
+    artifact_mirror=None,
 ) -> DistillModule:
     """Enumerate-and-chunk online teacher-distill warmup on the shared backbone + MS context
     encoder."""
+    if checkpoint_every < 0:
+        raise ValueError("checkpoint_every must be non-negative")
+    if checkpoint_every > 0 and checkpoint_path is None:
+        raise ValueError("checkpoint_path is required when checkpoint_every is positive")
     L.seed_everything(cfg.seed, verbose=False)
     # CCS only. The teacher is the ONLY source of CCS, so its scale must be established here
     # (teacher CCS is ~543+-122; under an identity norm that target would dominate the loss).
@@ -299,6 +339,10 @@ def fit_stream_pretrain(
     )
     loader = DataLoader(_StreamingDataset(teacher, encoder, cfg), batch_size=None)
     callbacks: list[L.Callback] = [_StepLogger(log_every, log)]
+    if checkpoint_every > 0:
+        callbacks.append(
+            _StreamCheckpoint(checkpoint_every, checkpoint_path, artifact_mirror, log)
+        )
     if cfg.patience > 0:
         callbacks.append(
             _LossPlateauStop(cfg.patience, cfg.min_delta, cfg.check_every, cfg.warmup_steps, log)
