@@ -137,6 +137,27 @@ steps; `pretrain.ckpt`, `train_metrics.jsonl`, `latest.ckpt`, `best.ckpt`, `mode
 `summary.json` are mirrored whenever they change. An object-store write failure stops the job
 instead of silently leaving it without a durable recovery artifact.
 
+W&B is the experiment index, not the artifact store: it receives configuration, namespaced
+pretrain/train metrics, learning rate, system/console logs, grouping, and each mirrored S3 URI in
+the run summary. Checkpoint/model bytes remain only in S3 (`log_model = false`). Enable it with:
+
+```toml
+[tracking]
+enabled = true
+project = "pepdistill"
+group = "full-v1"
+name = "small"
+tags = ["full-nontest", "small"]
+```
+
+Install with `uv sync --extra tracking`. For Launchpad, store the key in AWS Secrets Manager,
+grant the Batch job role `secretsmanager:GetSecretValue`, and pass only the non-secret identifier
+as `--env PEPDISTILL_WANDB_SECRET_ID=pepdistill/wandb-api-key`. The wrapper fetches the value into
+the training subprocess without logging or writing it. Do **not** use `--env WANDB_API_KEY=...`:
+Launchpad environment values are plaintext in AWS job metadata and CloudTrail. Locally, use the
+normal `WANDB_API_KEY` environment variable. Use `mode = "offline"` for a local run that should be
+synchronized later.
+
 These checkpoints are **warm starts**, not exact training resumes: they contain model and context
 weights, but not optimizer, scheduler, early-stop, epoch, or streaming-cursor state. Starting from
 one therefore begins the configured stage again with the saved weights.
@@ -150,7 +171,8 @@ The staging helper generates one config and one S3 output prefix for each of `fl
 .venv/bin/python tools/prepare_launchpad_full_run.py
 launchpad run tools/launchpad_prepared_train.py \
   --stage .launchpad/full-run-stage --array-size 5 \
-  --env PEPDISTILL_TRAIN_PRESETS=flash,small-2h,small,base-4h,base
+  --env PEPDISTILL_TRAIN_PRESETS=flash,small-2h,small,base-4h,base \
+  --env PEPDISTILL_WANDB_SECRET_ID=pepdistill/wandb-api-key
 ```
 
 A standalone invocation defaults to `small`; select one explicitly with

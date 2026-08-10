@@ -36,6 +36,10 @@ etl = [
     "polars>=1.0",
     "s3fs>=2024.0",
 ]
+# Optional experiment tracking. Authentication is supplied through WANDB_API_KEY.
+tracking = [
+    "wandb>=0.18",
+]
 
 [project.scripts]
 pepdistill = "pepdistill.cli:app"

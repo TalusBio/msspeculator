@@ -22,6 +22,7 @@ from pathlib import Path
 import lightning as L
 import numpy as np
 import torch
+from lightning.pytorch.callbacks import LearningRateMonitor
 from torch.utils.data import DataLoader, IterableDataset
 
 from ..data.config import DigestConfig
@@ -305,6 +306,7 @@ def fit_stream_pretrain(
     checkpoint_every: int = 0,
     checkpoint_path=None,
     artifact_mirror=None,
+    logger=False,
 ) -> DistillModule:
     """Enumerate-and-chunk online teacher-distill warmup on the shared backbone + MS context
     encoder."""
@@ -339,6 +341,8 @@ def fit_stream_pretrain(
     )
     loader = DataLoader(_StreamingDataset(teacher, encoder, cfg), batch_size=None)
     callbacks: list[L.Callback] = [_StepLogger(log_every, log)]
+    if logger:
+        callbacks.append(LearningRateMonitor(logging_interval="step"))
     if checkpoint_every > 0:
         callbacks.append(
             _StreamCheckpoint(checkpoint_every, checkpoint_path, artifact_mirror, log)
@@ -351,7 +355,7 @@ def fit_stream_pretrain(
         max_epochs=1,  # the dataset is finite (passes enumerations); it drives the length
         accelerator=accelerator,
         enable_checkpointing=False,
-        logger=False,
+        logger=logger,
         enable_progress_bar=False,
         limit_val_batches=0,
         callbacks=callbacks,

@@ -70,3 +70,20 @@ def test_remote_output_and_pretrain_checkpoint_interval_parse(tmp_path):
     cfg = RunConfig.from_toml(_write(tmp_path, text))
     assert cfg.remote_output_prefix == "s3://bucket/training/small"
     assert cfg.pretrain.checkpoint_every_steps == 123
+
+
+def test_wandb_tracking_config_parses(tmp_path):
+    text = BASE + '''
+[tracking]
+enabled = true
+project = "spectra"
+group = "full-v1"
+tags = ["base", "non-test"]
+mode = "offline"
+'''
+    cfg = RunConfig.from_toml(_write(tmp_path, text))
+    assert cfg.tracking.enabled
+    assert cfg.tracking.project == "spectra"
+    assert cfg.tracking.group == "full-v1"
+    assert cfg.tracking.tags == ["base", "non-test"]
+    assert cfg.tracking.mode == "offline"

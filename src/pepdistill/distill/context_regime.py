@@ -36,6 +36,7 @@ from typing import TYPE_CHECKING
 import lightning as L
 import numpy as np
 import torch
+from lightning.pytorch.callbacks import LearningRateMonitor
 from torch.utils.data import DataLoader
 
 from ..data.precursors import Precursor
@@ -579,6 +580,8 @@ def fit_realspeclib_datasets(
         return DataLoader(BatchIterable(ds, batch_size, shuffle, seed), batch_size=None)
 
     callbacks = list(trainer_kwargs.pop("callbacks", []))
+    if trainer_kwargs.get("logger"):
+        callbacks.append(LearningRateMonitor(logging_interval="step"))
     val_dataset_ids = (
         val_ds.dataset_ids_present
         if hasattr(val_ds, "dataset_ids_present")

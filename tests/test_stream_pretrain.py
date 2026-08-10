@@ -2,6 +2,7 @@
 
 import numpy as np
 import torch
+from lightning.pytorch.loggers import CSVLogger
 
 from pepdistill.data.config import DigestConfig
 from pepdistill.distill.lightning import DistillModule
@@ -55,12 +56,21 @@ def test_stream_pretrain_runs_and_moves_encoder(tmp_path):
     before = enc.energy_mlp[-1].weight.detach().clone()
     lines: list[str] = []
     module = fit_stream_pretrain(
-        model, enc, FakeTeacher(), cfg, accelerator="cpu", log=lines.append, log_every=2
+        model,
+        enc,
+        FakeTeacher(),
+        cfg,
+        accelerator="cpu",
+        log=lines.append,
+        log_every=2,
+        logger=CSVLogger(tmp_path, name="tracking-test"),
     )
 
     assert isinstance(module, DistillModule)
     assert any("step" in ln for ln in lines)  # _StepLogger fired (guards the .log shadow bug)
     assert any("lr=" in ln for ln in lines)
+    metrics_csv = tmp_path / "tracking-test" / "version_0" / "metrics.csv"
+    assert "lr-AdamW" in metrics_csv.read_text()
     # energy was fed through the MLP -> encoder weights received gradient and moved.
     assert not torch.allclose(before, enc.energy_mlp[-1].weight.detach())
     # rt/ccs norm was estimated from a teacher sample (not left at the 0/1 identity).

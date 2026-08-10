@@ -24,7 +24,7 @@ prepared experimental spectral libraries.
 
 ```bash
 uv sync                                  # inference + the pepdistill_rs Rust extension
-uv sync --extra teacher --extra etl      # full preparation/training environment
+uv sync --extra teacher --extra etl --extra tracking  # full cloud training + W&B tracking
 uv sync --extra onnx                     # optional/deferred ONNX environment
 ```
 

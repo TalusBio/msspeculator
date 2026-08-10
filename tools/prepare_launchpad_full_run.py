@@ -72,6 +72,13 @@ activation = "gelu_tanh"
 device = "cpu"
 seed = 0
 
+[tracking]
+enabled = true
+project = "pepdistill"
+name = "{preset}"
+group = "full-v1"
+tags = ["full-nontest", "{preset}"]
+
 [pretrain]
 enabled = true
 teacher = "alphapeptdeep"

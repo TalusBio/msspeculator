@@ -1,11 +1,13 @@
 """End-to-end teacher warmup and inference tests."""
 
 from pathlib import Path
+import sys
+from types import SimpleNamespace
 
 from typer.testing import CliRunner
 
 from pepdistill.cli import app
-from pepdistill.distill.pipeline import RunConfig, run_pipeline
+from pepdistill.distill.pipeline import RunConfig, TrackingCfg, _wandb_loggers, run_pipeline
 from pepdistill.models.registry import load_checkpoint
 
 FASTA = """>sp|TEST1|
@@ -76,5 +78,42 @@ def test_pipeline_mirrors_durable_outputs(tmp_path: Path):
     cfg.train.enabled = False
     summary = run_pipeline(cfg, log=lambda *_: None)
     assert summary["remote_output_prefix"] == remote.as_uri()
+    assert summary["artifacts"]["model.ckpt"] == f"{remote.as_uri()}/model.ckpt"
     assert (remote / "model.ckpt").exists()
     assert (remote / "summary.json").exists()
+
+
+def test_wandb_stage_loggers_share_one_run(tmp_path: Path, monkeypatch):
+    class Experiment:
+        pass
+
+    class Logger:
+        LOGGER_JOIN_CHAR = "-"
+
+        def __init__(self, experiment=None, **kwargs):
+            self.experiment = experiment or Experiment()
+            self.kwargs = kwargs
+
+    initialized = {}
+    experiment = Experiment()
+    monkeypatch.setitem(
+        sys.modules,
+        "wandb",
+        SimpleNamespace(
+            init=lambda **kwargs: initialized.update(kwargs) or experiment,
+        ),
+    )
+    monkeypatch.setattr("lightning.pytorch.loggers.WandbLogger", Logger)
+    cfg = RunConfig(
+        out=str(tmp_path),
+        preset="flash",
+        tracking=TrackingCfg(enabled=True, project="pepdistill-tests", mode="offline"),
+    )
+    root, pretrain, train = _wandb_loggers(cfg, tmp_path)
+    assert pretrain.experiment is root.experiment
+    assert train.experiment is root.experiment
+    assert pretrain.LOGGER_JOIN_CHAR == "/"
+    assert train.LOGGER_JOIN_CHAR == "/"
+    assert root.kwargs["log_model"] is False
+    assert initialized["config"]["preset"] == "flash"
+    assert initialized["mode"] == "offline"

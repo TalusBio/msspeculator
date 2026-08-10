@@ -26,7 +26,7 @@ import shutil
 import time
 import tomllib
 import warnings
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 
 import fsspec
@@ -180,6 +180,20 @@ class BenchCfg:
 
 
 @dataclass
+class TrackingCfg:
+    """Optional Weights & Biases experiment tracking for both training stages."""
+
+    enabled: bool = False
+    project: str = "pepdistill"
+    entity: str | None = None
+    name: str | None = None
+    group: str | None = None
+    tags: list[str] = field(default_factory=list)
+    notes: str | None = None
+    mode: str = "online"  # online | offline
+
+
+@dataclass
 class RunConfig:
     out: str = "runs/exp"
     # Mirror durable artifacts as they are produced while retaining the local output directory.
@@ -193,6 +207,7 @@ class RunConfig:
     train: TrainCfg = field(default_factory=TrainCfg)
     export: ExportCfg = field(default_factory=ExportCfg)
     bench: BenchCfg = field(default_factory=BenchCfg)
+    tracking: TrackingCfg = field(default_factory=TrackingCfg)
 
     @classmethod
     def from_toml(cls, path: str | Path) -> "RunConfig":
@@ -218,6 +233,7 @@ class RunConfig:
             train=_train_cfg(raw.get("train", {})),
             export=ExportCfg(**raw.get("export", {})),
             bench=BenchCfg(**raw.get("bench", {})),
+            tracking=TrackingCfg(**raw.get("tracking", {})),
         )
 
 
@@ -267,7 +283,7 @@ def _release_accelerator_cache(acc: str) -> None:
         torch.cuda.empty_cache()
 
 
-def _artifact_mirror(prefix: str, log=print):
+def _artifact_mirror(prefix: str, log=print, on_mirrored=None):
     """Build a synchronous, fail-loud artifact mirror rooted at an fsspec URI."""
     fs, root = fsspec.core.url_to_fs(prefix)
     root = root.rstrip("/")
@@ -282,9 +298,52 @@ def _artifact_mirror(prefix: str, log=print):
             shutil.copyfileobj(src, dst, length=8 * 1024 * 1024)
         uri = f"{prefix.rstrip('/')}/{source.name}"
         log(f"[artifact] mirrored {source.name} -> {uri}")
+        if on_mirrored is not None:
+            on_mirrored(source, uri)
         return uri
 
     return mirror
+
+
+def _wandb_loggers(cfg: RunConfig, out: Path):
+    """Create one W&B run with stage-specific Lightning metric namespaces."""
+    if not cfg.tracking.enabled:
+        return None, None, None
+    if cfg.tracking.mode not in {"online", "offline"}:
+        raise ValueError("[tracking] mode must be 'online' or 'offline'")
+    try:
+        import wandb
+        from lightning.pytorch.loggers import WandbLogger
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "W&B tracking is enabled but wandb is unavailable; install the 'tracking' extra"
+        ) from exc
+
+    try:
+        experiment = wandb.init(
+            project=cfg.tracking.project,
+            entity=cfg.tracking.entity,
+            name=cfg.tracking.name or f"{cfg.preset}-seed{cfg.seed}",
+            group=cfg.tracking.group,
+            tags=cfg.tracking.tags,
+            notes=cfg.tracking.notes,
+            dir=str(out),
+            mode=cfg.tracking.mode,
+            job_type="training",
+            config=asdict(cfg),
+        )
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "W&B tracking is enabled but wandb is unavailable; install the 'tracking' extra"
+        ) from exc
+    if experiment is None:
+        raise RuntimeError("wandb.init() did not return a run")
+    root = WandbLogger(experiment=experiment, log_model=False)
+    pretrain = WandbLogger(experiment=experiment, prefix="pretrain")
+    train = WandbLogger(experiment=experiment, prefix="train")
+    pretrain.LOGGER_JOIN_CHAR = "/"
+    train.LOGGER_JOIN_CHAR = "/"
+    return root, pretrain, train
 
 
 def _runbook_for_index(
@@ -309,7 +368,7 @@ def _runbook_for_index(
     return expanded
 
 
-def _run_pretrain(cfg: RunConfig, model, encoder, acc, out: Path, mirror, log):
+def _run_pretrain(cfg: RunConfig, model, encoder, acc, out: Path, mirror, trainer_logger, log):
     p = cfg.pretrain
     assert encoder is not None  # guaranteed by need_encoder in run_pipeline
     kw = {} if p.teacher == "fake" else {"device": p.device, "instrument": p.instrument}
@@ -352,6 +411,7 @@ def _run_pretrain(cfg: RunConfig, model, encoder, acc, out: Path, mirror, log):
         checkpoint_every=p.checkpoint_every_steps,
         checkpoint_path=out / "pretrain-latest.ckpt",
         artifact_mirror=mirror,
+        logger=trainer_logger or False,
     )
 
 
@@ -362,7 +422,18 @@ def run_pipeline(cfg: RunConfig, log=print) -> dict:
     out.mkdir(parents=True, exist_ok=True)
     acc = _accelerator(cfg.device)
     summary: dict = {}
-    mirror = _artifact_mirror(cfg.remote_output_prefix, log) if cfg.remote_output_prefix else None
+    tracking, pretrain_logger, train_logger = _wandb_loggers(cfg, out)
+
+    def record_artifact(path: Path, uri: str) -> None:
+        summary.setdefault("artifacts", {})[path.name] = uri
+        if tracking is not None:
+            tracking.experiment.summary[f"artifacts/{path.name}"] = uri
+
+    mirror = (
+        _artifact_mirror(cfg.remote_output_prefix, log, record_artifact)
+        if cfg.remote_output_prefix
+        else None
+    )
     if cfg.remote_output_prefix:
         summary["remote_output_prefix"] = cfg.remote_output_prefix
         log(f"artifacts will be mirrored to {cfg.remote_output_prefix.rstrip('/')}/")
@@ -396,7 +467,7 @@ def run_pipeline(cfg: RunConfig, log=print) -> dict:
     log(f"student '{cfg.preset}' — {model.num_parameters():,} params (device={cfg.device})")
 
     if cfg.pretrain.enabled:
-        mod = _run_pretrain(cfg, model, encoder, acc, out, mirror, log)
+        mod = _run_pretrain(cfg, model, encoder, acc, out, mirror, pretrain_logger, log)
         summary["pretrain"] = {k: float(v) for k, v in mod.trainer.callback_metrics.items()}
         log(f"[pretrain] {summary['pretrain']}")
         pretrain_ckpt = out / "pretrain.ckpt"
@@ -480,6 +551,7 @@ def run_pipeline(cfg: RunConfig, log=print) -> dict:
             progress_metrics_path=out / "train_metrics.jsonl",
             checkpoint_dir=out,
             artifact_mirror=mirror,
+            logger=train_logger or False,
         )
         summary["train"] = {k: float(v) for k, v in module.trainer.callback_metrics.items()}
         summary["dataset_index"] = dataset_index
@@ -512,6 +584,9 @@ def run_pipeline(cfg: RunConfig, log=print) -> dict:
     summary_path.write_text(json.dumps(summary, indent=2, default=str))
     if mirror is not None:
         mirror(summary_path)
+    if tracking is not None:
+        tracking.experiment.summary.update(summary)
+        tracking.experiment.finish(exit_code=0)
     return summary
 
 
@@ -549,5 +624,6 @@ __all__ = [
     "TrainCfg",
     "ExportCfg",
     "BenchCfg",
+    "TrackingCfg",
     "run_pipeline",
 ]

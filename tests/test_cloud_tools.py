@@ -1,7 +1,9 @@
 """Cloud wrapper selection stays deterministic across standalone and array jobs."""
 
 import importlib.util
+import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 
 def _module():
@@ -23,3 +25,17 @@ def test_array_training_selects_preset_by_index(monkeypatch):
     monkeypatch.setenv("AWS_BATCH_JOB_ARRAY_INDEX", "3")
     monkeypatch.setenv("PEPDISTILL_TRAIN_PRESETS", "flash,small-2h,small,base-4h,base")
     assert _module()._selected_preset() == "base-4h"
+
+
+def test_training_environment_reads_wandb_key_from_secrets_manager(monkeypatch):
+    monkeypatch.delenv("WANDB_API_KEY", raising=False)
+    monkeypatch.setenv("PEPDISTILL_WANDB_SECRET_ID", "pepdistill/wandb")
+
+    class Client:
+        def get_secret_value(self, **kwargs):
+            assert kwargs == {"SecretId": "pepdistill/wandb"}
+            return {"SecretString": '{"WANDB_API_KEY":"secret-value"}'}
+
+    monkeypatch.setitem(sys.modules, "boto3", SimpleNamespace(client=lambda _: Client()))
+    env = _module()._training_environment()
+    assert env["WANDB_API_KEY"] == "secret-value"
