@@ -15,8 +15,12 @@ from __future__ import annotations
 import fnmatch
 import hashlib
 import json
+import os
 import re
+import shutil
+import tempfile
 import time
+import zipfile
 from pathlib import Path
 from collections.abc import Callable
 from typing import Any
@@ -28,6 +32,7 @@ import pyarrow.parquet as pq
 
 from ..data.meta_index import build_meta_index_from_frame
 from ..data.prospect import ProspectSchema, decode_fragments
+from ..data.prospect_catalog import load_catalog, load_shard_index
 from .config import PrepareConfig, PrepareGroup, PrepareSource
 
 
@@ -257,8 +262,8 @@ def _write_json(uri: str, value: dict[str, Any]) -> None:
         json.dump(value, stream, indent=2, sort_keys=True)
 
 
-def _source_prefix(config: PrepareConfig, source: PrepareSource) -> str:
-    return source.source_prefix or config.source_prefix
+def _source_prefix(config: PrepareConfig, source: PrepareSource) -> str | None:
+    return source.source_prefix or config.cache_prefix or config.source_prefix
 
 
 def _list_archive_stems(prefix: str | Path) -> list[str]:
@@ -296,10 +301,17 @@ def _group_dataset(group: PrepareGroup, archive: str) -> str:
 
 
 def _sources_from_groups(config: PrepareConfig) -> tuple[PrepareSource, ...]:
+    catalog = load_catalog()["records"]
     sources: list[PrepareSource] = []
     for group in config.groups:
-        prefix = group.source_prefix or _uri_join(config.source_prefix, group.record)
-        for archive in _list_archive_stems(prefix):
+        if group.record not in catalog:
+            raise ValueError(f"unknown PROSPECT record {group.record!r}; known: {sorted(catalog)}")
+        record = catalog[group.record]
+        prefix = group.cache_prefix or group.source_prefix or config.cache_prefix or config.source_prefix
+        for archive_filename, entry in sorted(record["files"].items()):
+            if not archive_filename.endswith(".zip"):
+                continue
+            archive = archive_filename.removesuffix(".zip")
             if not any(fnmatch.fnmatchcase(archive, pattern) for pattern in group.include):
                 continue
             if any(fnmatch.fnmatchcase(archive, pattern) for pattern in group.exclude):
@@ -312,9 +324,82 @@ def _sources_from_groups(config: PrepareConfig) -> tuple[PrepareSource, ...]:
                     archive=archive,
                     instrument=group.instrument,
                     source_prefix=prefix,
+                    record=group.record,
+                    record_id=str(record["record_id"]),
+                    archive_url=str(entry["url"]),
+                    meta_url=str(record["files"].get(f"{archive}{group.meta_suffix}", {}).get("url", "")),
                 )
             )
     return tuple(sources)
+
+
+def _cached_shard_uri(prefix: str | None, source: PrepareSource, member: str) -> str:
+    if not prefix or source.record is None:
+        return ""
+    return _uri_join(
+        prefix,
+        f"shards/{source.record or 'local'}/{source.archive}/{Path(member).name}",
+    )
+
+
+def _upload_cache(local: str, uri: str) -> None:
+    if not uri or "://" not in uri:
+        return
+    fs, _, paths = fsspec.get_fs_token_paths(uri)
+    try:
+        fs.makedirs(paths[0].rsplit("/", 1)[0], exist_ok=True)
+        fs.put_file(local, paths[0])
+    except Exception:
+        # The cache is an optimization. A read-through failure must not make Zenodo unusable.
+        return
+
+
+def _download_origin(url: str, local: str) -> None:
+    Path(local).parent.mkdir(parents=True, exist_ok=True)
+    temporary = f"{local}.part"
+    with fsspec.open(url, "rb") as source, open(temporary, "wb") as target:
+        shutil.copyfileobj(source, target, length=8 * 1024 * 1024)
+    os.replace(temporary, local)
+
+
+def _resolve_meta(task: dict[str, Any]) -> str:
+    cached = str(task.get("meta_uri", ""))
+    if cached and _uri_exists(cached):
+        return cached
+    url = str(task.get("meta_url", ""))
+    if not url:
+        raise FileNotFoundError(f"metadata unavailable for {task['source_id']}")
+    record = str(task.get("record") or "local")
+    local = str(Path(tempfile.gettempdir()) / "pepdistill-origin" / record / Path(cached or url).name)
+    if not Path(local).exists():
+        _download_origin(url, local)
+    if cached:
+        _upload_cache(local, cached)
+    return local
+
+
+def _resolve_shard(task: dict[str, Any]) -> tuple[str, str | None]:
+    """Return a readable shard path and an optional temporary directory to remove."""
+    cached = str(task.get("shard_uri", ""))
+    if cached and _uri_exists(cached):
+        return cached, None
+    prefix = str(task.get("cache_prefix", ""))
+    if prefix and task.get("record"):
+        legacy = _uri_join(prefix, f"{task['archive']}/{task['archive']}/{Path(task['shard_name']).name}")
+        if _uri_exists(legacy):
+            return legacy, None
+    url = str(task.get("archive_url", ""))
+    member = str(task.get("shard_name", ""))
+    if not url or not member:
+        raise FileNotFoundError(f"shard unavailable for {task['source_id']}/{task['shard_index']}")
+    temporary_dir = tempfile.mkdtemp(prefix="pepdistill-shard-")
+    local = str(Path(temporary_dir) / Path(member).name)
+    with fsspec.open(url, "rb") as stream, zipfile.ZipFile(stream) as archive:
+        with archive.open(member) as source, open(local, "wb") as target:
+            shutil.copyfileobj(source, target, length=8 * 1024 * 1024)
+    if cached:
+        _upload_cache(local, cached)
+    return local, temporary_dir
 
 
 def discover_catalog(config: PrepareConfig) -> dict[str, Any]:
@@ -326,7 +411,18 @@ def discover_catalog(config: PrepareConfig) -> dict[str, Any]:
         raise ValueError(f"prepare source ids must be unique after group expansion; got {ids}")
     for source in sources:
         prefix = _source_prefix(config, source)
-        shards = _list_shards(prefix, source.archive)
+        if source.record is not None:
+            indexed = load_shard_index()["records"].get(source.record, {}).get(f"{source.archive}.zip")
+            if not isinstance(indexed, list):
+                raise ValueError(
+                    f"no vendored shard index for {source.record}/{source.archive}.zip; "
+                    "regenerate prospect_shards.json"
+                )
+            shards = [str(row[0]) for row in indexed]
+        else:
+            if prefix is None:
+                raise ValueError(f"source {source.id!r} needs source_prefix for local discovery")
+            shards = _list_shards(prefix, source.archive)
         if source.shards != "all":
             invalid = [index for index in source.shards if index < 0 or index >= len(shards)]
             if invalid:
@@ -342,11 +438,17 @@ def discover_catalog(config: PrepareConfig) -> dict[str, Any]:
                     "ordinal": len(tasks),
                     "source_id": source.id,
                     "dataset": source.dataset,
-                    "meta_uri": _uri_join(prefix, source.meta),
-                    "shard_uri": shard_uri,
+                    "meta_uri": _uri_join(prefix, source.meta) if prefix else "",
+                    "shard_uri": _cached_shard_uri(prefix, source, shard_uri) or shard_uri,
+                    "cache_prefix": prefix or "",
+                    "shard_name": shard_uri,
                     "shard_index": shard_index,
                     "archive": source.archive,
                     "instrument": source.instrument,
+                    "record": source.record,
+                    "record_id": source.record_id,
+                    "archive_url": source.archive_url,
+                    "meta_url": source.meta_url,
                     "config_fingerprint": config.fingerprint,
                 }
             )
@@ -407,16 +509,22 @@ def prepare_task(
 
     started = time.perf_counter()
     emit("discovering raw files")
-    raw_files = _shard_raw_files(task["shard_uri"])
-    emit(f"{len(raw_files)} raw file(s); filtering and decoding")
-    rows = _rows_for_shard(
-        task["meta_uri"],
-        task["shard_uri"],
-        raw_files,
-        task["dataset"],
-        task["instrument"],
-        ProspectSchema(),
-    )
+    shard_uri, temporary_dir = _resolve_shard(task)
+    try:
+        meta_uri = _resolve_meta(task)
+        raw_files = _shard_raw_files(shard_uri)
+        emit(f"{len(raw_files)} raw file(s); filtering and decoding")
+        rows = _rows_for_shard(
+            meta_uri,
+            shard_uri,
+            raw_files,
+            task["dataset"],
+            task["instrument"],
+            ProspectSchema(),
+        )
+    finally:
+        if temporary_dir is not None:
+            shutil.rmtree(temporary_dir, ignore_errors=True)
     if not rows:
         raise ValueError(f"task {task['source_id']}/{task['shard_index']} produced no usable spectra")
     frame = pl.DataFrame(rows).with_columns(pl.col("ms2").cast(pl.List(pl.Float32)))
@@ -498,8 +606,10 @@ def finalize_catalog(config: PrepareConfig, log: Callable[[str], None] | None = 
     return manifest
 
 
-def catalog_status(config: PrepareConfig) -> dict[str, int]:
+def catalog_status(config: PrepareConfig, count_only: bool = False) -> dict[str, int]:
     catalog = ensure_catalog(config)
+    if count_only:
+        return {"complete": 0, "missing": len(catalog["tasks"]), "total": len(catalog["tasks"])}
     complete = 0
     for task in catalog["tasks"]:
         uri = _uri_join(_task_output_prefix(config.output_prefix, task), "manifest.json")

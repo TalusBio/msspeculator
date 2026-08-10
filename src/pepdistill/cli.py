@@ -86,12 +86,15 @@ def prepare_finalize(
 @app.command(name="prepare-status")
 def prepare_status(
     config: Path = typer.Argument(..., exists=True, readable=True, help="Prepare config (TOML)."),
+    count_only: bool = typer.Option(
+        False, "--count-only", help="Only discover the catalog size; do not check shard outputs."
+    ),
 ) -> None:
     """Report how many catalog shard assets are complete."""
     from .etl.config import PrepareConfig
     from .etl.prospect import catalog_status
 
-    status = catalog_status(PrepareConfig.load(config))
+    status = catalog_status(PrepareConfig.load(config), count_only=count_only)
     typer.echo(
         f"prepared shards: {status['complete']:,}/{status['total']:,} complete "
         f"({status['missing']:,} missing)"

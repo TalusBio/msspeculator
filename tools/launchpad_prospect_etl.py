@@ -52,9 +52,9 @@ def main() -> None:
         if array_index is not None and array_size is not None:
             status_command = [
                 "uv", "run", "--project", ".", "--extra", "etl",
-                "pepdistill", "prepare-status", str(args.config),
+                "pepdistill", "prepare-status", str(args.config), "--count-only",
             ]
-            status = subprocess.run(status_command, check=True, capture_output=True, text=True)
+            status = subprocess.run(status_command, check=True, stdout=subprocess.PIPE, text=True)
             match = re.search(r"/([0-9,]+) complete", status.stdout)
             if match is None:
                 raise SystemExit(f"could not determine catalog size from prepare-status: {status.stdout!r}")

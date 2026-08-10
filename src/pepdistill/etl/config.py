@@ -19,6 +19,10 @@ class PrepareSource:
     instrument: str = "Lumos"
     shards: tuple[int, ...] | str = "all"
     source_prefix: str | None = None
+    record: str | None = None
+    record_id: str | None = None
+    archive_url: str | None = None
+    meta_url: str | None = None
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "PrepareSource":
@@ -58,6 +62,7 @@ class PrepareGroup:
     strip_number_suffix: bool = True
     meta_suffix: str = "_meta_data.parquet"
     instrument: str = "Lumos"
+    cache_prefix: str | None = None
     source_prefix: str | None = None
 
     @classmethod
@@ -83,8 +88,9 @@ class PrepareGroup:
 
 @dataclass(frozen=True, slots=True)
 class PrepareConfig:
-    source_prefix: str
     output_prefix: str
+    source_prefix: str | None = None
+    cache_prefix: str | None = None
     sources: tuple[PrepareSource, ...] = ()
     groups: tuple[PrepareGroup, ...] = ()
 
@@ -103,8 +109,13 @@ class PrepareConfig:
         if len(set(ids)) != len(ids):
             raise ValueError(f"prepare source ids must be unique; got {ids}")
         return cls(
-            source_prefix=str(section["source_prefix"]),
             output_prefix=str(section["output_prefix"]),
+            source_prefix=(str(section["source_prefix"]) if section.get("source_prefix") else None),
+            cache_prefix=(
+                str(section["cache_prefix"])
+                if section.get("cache_prefix")
+                else (str(section["source_prefix"]) if section.get("source_prefix") else None)
+            ),
             sources=sources,
             groups=groups,
         )
@@ -112,6 +123,7 @@ class PrepareConfig:
     def canonical(self) -> dict[str, Any]:
         return {
             "source_prefix": self.source_prefix,
+            "cache_prefix": self.cache_prefix,
             "output_prefix": self.output_prefix,
             "sources": [source.canonical() for source in self.sources],
             "groups": [group.canonical() for group in self.groups],

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import shutil
-
 import pandas as pd
 import pytest
 import torch
@@ -123,21 +121,21 @@ def test_shard_catalog_range_and_finalize(tmp_path):
 
 
 def test_group_config_discovers_matching_archives(tmp_path):
-    root, stem = _source(tmp_path)
-    mirror = tmp_path / "mirror"
-    (mirror / "prospect").mkdir(parents=True)
-    shutil.copytree(root / stem, mirror / "prospect" / stem)
     config = PrepareConfig(
-        source_prefix=str(mirror),
+        source_prefix=None,
         output_prefix=str(tmp_path / "prepared"),
         groups=(
             PrepareGroup(
                 record="prospect",
-                include=("TUM_*",),
+                include=("TUM_isoform_*",),
                 dataset_prefix="prospect",
             ),
         ),
     )
     catalog = discover_catalog(config)
-    assert len(catalog["tasks"]) == 1
+    assert len(catalog["tasks"]) > 1
+    assert {task["source_id"] for task in catalog["tasks"]} == {
+        "prospect_TUM_isoform_1",
+        "prospect_TUM_isoform_2",
+    }
     assert catalog["tasks"][0]["dataset"] == "prospect_tum_isoform"

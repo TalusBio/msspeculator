@@ -1,29 +1,47 @@
-# Full non-holdout prepared catalog. Archive directories are discovered from the source
-# mirror; test_ptm is excluded by omission. Add an archive glob to include/exclude subsets.
+# Full non-holdout prepared catalog. The archive globs select the four vendored non-test
+# Zenodo records (prospect, tmt, multi_ptm, tmt_ptm). The test_ptm record is not selected.
+# `cache_prefix` is only an intermediate read-through cache; missing objects fall back to the
+# URLs and shard names in prospect_catalog.json/prospect_shards.json.
 
 [prepare]
-source_prefix = "s3://terraform-workstations-bucket/jspaezp/20241022_prospect"
+cache_prefix = "s3://terraform-workstations-bucket/jspaezp/20241022_prospect"
 output_prefix = "s3://terraform-workstations-bucket/jspaezp/pepdistill-prepared/v1"
 
 [[prepare.groups]]
 record = "prospect"
-include = ["*"]
+cache_prefix = "s3://terraform-workstations-bucket/jspaezp/20241022_prospect"
+include = [
+  "TUM_HLA", "TUM_HLA2_*", "TUM_aspn", "TUM_first_pool_*", "TUM_isoform_*",
+  "TUM_lysn", "TUM_missing_first", "TUM_proteo_TMT", "TUM_second_addon",
+  "TUM_second_pool_*", "TUM_third_pool", "Thermo_SRM_Pool",
+]
 dataset_prefix = "prospect"
 
 [[prepare.groups]]
 record = "tmt"
-include = ["*"]
+cache_prefix = "s3://terraform-workstations-bucket/jspaezp/20241022_prospect"
+include = [
+  "TMT_TUM_HLA", "TMT_TUM_aspn", "TMT_TUM_first_pool", "TMT_TUM_isoform",
+  "TMT_TUM_lysn", "TMT_TUM_missing_first", "TMT_TUM_proteo_TMT",
+  "TMT_TUM_second_addon", "TMT_TUM_second_pool", "TMT_TUM_third_pool",
+  "TMT_Thermo_SRM_Pool",
+]
 dataset_prefix = "tmt"
 strip_prefix = "TMT_"
 
 [[prepare.groups]]
 record = "multi_ptm"
-include = ["*"]
+cache_prefix = "s3://terraform-workstations-bucket/jspaezp/20241022_prospect"
+include = ["TUM_mod_*", "TUM_nterm_ac"]
 dataset_prefix = "multi_ptm"
 strip_prefix = "TUM_mod_"
 
 [[prepare.groups]]
 record = "tmt_ptm"
-include = ["*"]
+cache_prefix = "s3://terraform-workstations-bucket/jspaezp/20241022_prospect"
+include = [
+  "TMT_TUM_mod_acetylated", "TMT_TUM_mod_imp_pSTY", "TMT_TUM_mod_monomethyl",
+  "TMT_TUM_mod_pS", "TMT_TUM_mod_pT", "TMT_TUM_mod_pY",
+]
 dataset_prefix = "tmt_ptm"
 strip_prefix = "TMT_TUM_mod_"
