@@ -31,12 +31,7 @@ onnx = [
     "onnx>=1.16,<1.18",
     "onnxruntime>=1.18",
 ]
-# PROSPECT (real experimental spectra) loading with an S3-backed cache. fsspec is core;
-# s3fs is only needed to use an s3:// cache tier at runtime (lazily loaded by fsspec).
-prospect = [
-    "s3fs>=2024.0",
-]
-# Polars-based preparation of immutable, chunked training assets.
+# Polars-based preparation and S3 streaming of immutable, chunked training assets.
 etl = [
     "polars>=1.0",
     "s3fs>=2024.0",

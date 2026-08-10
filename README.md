@@ -62,11 +62,9 @@ passes  = 1                   # full enumerations of the digests
 [[pretrain.sources]]
 fasta = "proteome.fasta"
 
-[train]                       # fine-tune on real spectra (PROSPECT pool, streamed)
+[train]                       # fine-tune on the prepared Parquet manifest
 enabled = true
-meta   = "TUM_third_pool_meta_data.parquet"
-zip    = "TUM_third_pool.zip"
-shards = [0]
+prepared_prefix = "s3://bucket/pepdistill-prepared/v1"
 epochs = 60
 
 [export]                      # ONNX
@@ -81,6 +79,10 @@ fasta   = "proteome.fasta"
 pepdistill run run.toml                 # -> work/model.ckpt, work/model.onnx, work/summary.json
 pepdistill run run.toml --no-train      # pretrain only (disable any stage inline)
 ```
+
+Real-spectrum training consumes immutable prepared Parquet chunks. Run the Polars preparation
+stage once, publish its manifest to object storage, then point `[train].prepared_prefix` at that
+prefix. The trainer never downloads or extracts annotation archives.
 
 Distillation-only (no real spectra): drop the `[train]` block or `enabled = false`. Any stage
 can be turned off in the config or with `--no-pretrain` / `--no-train`.

@@ -21,10 +21,10 @@ from typing import Any
 import fsspec
 import numpy as np
 import polars as pl
+import pyarrow.parquet as pq
 
 from ..data.meta_index import build_meta_index_from_frame
 from ..data.prospect import ProspectSchema, decode_fragments
-from ..data.shard_store import shard_raw_files
 
 
 def _uri_join(prefix: str | Path, name: str) -> str:
@@ -68,6 +68,16 @@ def _write_parquet(frame: pl.DataFrame, uri: str) -> None:
         return
     with fsspec.open(uri, "wb") as stream:
         frame.write_parquet(stream, compression="zstd", row_group_size=65_536)
+
+
+def _shard_raw_files(uri: str) -> list[str]:
+    """Read the distinct raw-file keys without materializing annotation fragments."""
+    if "://" in uri:
+        with fsspec.open(uri, "rb") as stream:
+            table = pq.read_table(stream, columns=["raw_file"], read_dictionary=["raw_file"])
+    else:
+        table = pq.read_table(uri, columns=["raw_file"], read_dictionary=["raw_file"])
+    return [str(value) for value in table.column("raw_file").unique().to_pylist()]
 
 
 def _meta_columns(meta_uri: str, schema: ProspectSchema) -> list[str]:
@@ -244,7 +254,7 @@ def prepare_source(
     chunk_rows: list[dict[str, Any]] = []
     chunk_uris: list[str] = []
     for index, shard_uri in enumerate(shards):
-        raw_files = shard_raw_files(shard_uri)
+        raw_files = _shard_raw_files(shard_uri)
         rows = _rows_for_shard(meta_uri, shard_uri, raw_files, dataset, instrument, schema)
         if not rows:
             continue

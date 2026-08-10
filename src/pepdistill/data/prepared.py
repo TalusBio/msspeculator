@@ -149,7 +149,7 @@ def _row_examples(frame: pd.DataFrame, dataset_id: int, encoder) -> list[RealExa
 
 
 class PreparedStreamingDataset:
-    """Manifest-backed replacement for :class:`StreamingRealDataset`."""
+    """Manifest-backed streaming dataset for the real-spectrum training stage."""
 
     def __init__(
         self,

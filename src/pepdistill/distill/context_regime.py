@@ -537,9 +537,9 @@ def fit_realspeclib_datasets(
 ) -> RealSpeclibModule:
     """Fit on datasets the caller already built.
 
-    Split out of :func:`fit_realspeclib` so the streaming path can pass a
-    ``StreamingRealDataset`` for train and a materialised one for val. Both only have to
-    expose ``batches(batch_size, shuffle, generator)``. Normalisation is NOT touched here:
+    Split out of :func:`fit_realspeclib` so the prepared path can pass a
+    ``PreparedStreamingDataset`` for both train and validation. Both only have to expose
+    ``batches(batch_size, shuffle, generator)``. Normalisation is NOT touched here:
     the caller establishes the RT affine before training (see :func:`establish_rt_norm`).
 
     Global RNG seeding is the CALLER's responsibility (e.g. via ``L.seed_everything``) — this

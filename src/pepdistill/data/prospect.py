@@ -1,59 +1,34 @@
-"""PROSPECT (ProteomeTools spectrum compendium) as a real-spectra source.
-
-PROSPECT is experimental data (not a teacher): real MS2/RT with acquisition metadata
-(collision energy, mass analyzer, fragmentation) — the multi-source signal the context
-conditioning consumes. Files are parquet on Zenodo, fetched through :class:`FileCache` so an
-S3 mirror shields Zenodo.
-
-Schema is NOT hardcoded blindly: column names live in :class:`ProspectSchema` (defaults are
-the documented PROSPECT names) and are validated against the actual file, failing loudly
-with the available columns if they differ. Decoding rows into student targets (mod-string
-parsing + the Prosit-style intensity vector -> our per-fragment matrix) is deliberately
-deferred behind :meth:`to_labels` until a real file pins the exact layout — the cache,
-listing, read, and acquisition-factor extraction below need no such assumption.
-"""
+"""PROSPECT schema and fragment decoding used by the prepared-data ETL."""
 
 from __future__ import annotations
 
-import io
-import os
 import re
-import threading
-import time
-import zipfile
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-import fsspec
 import numpy as np
 import pandas as pd
 import pepdistill_rs as _rs
 
-from ..chem import ION_TYPES, Peptide
+from ..chem import ION_TYPES
 from ..teacher.base import PrecursorLabels
-from .cache import FileCache, default_cache_dir, http_origin
-from .config import SplitConfig
 from .precursors import Precursor
-from .prospect_catalog import load_catalog, load_shard_index
-from .split import assign_split
-from .zenodo import ZenodoRecord
 
 if TYPE_CHECKING:
     from .meta_index import MetaIndex
+
 
 _UNIMOD_TOKEN = re.compile(r"([A-Z])|\[UNIMOD:(\d+)\]")
 
 
 def parse_modseq(modseq: str) -> tuple[str, tuple[tuple, ...]]:
     """Parse a ProForma UNIMOD string -> (stripped_sequence, mods) in OUR mod names.
-
     ``[UNIMOD:737]ET[UNIMOD:21]TLHLVLR`` -> ("ETTLHLVLR", (("n","TMT6plex"),(1,"Phospho"))).
     A mod token attaches to the residue it follows; a leading token (before any residue) is
     routed to the N-terminal site. Every accession resolves against the vendored UNIMOD table
     (``pepdistill_rs.unimod_name``: our alias if one exists, else the UNIMOD title) — an
     accession absent from that table raises ``ValueError`` rather than silently dropping the
     peptide later.
-
     Resolving is not enough: the name must also be *encodable*, i.e. project onto the model's
     six-element basis. Iodo (UNIMOD:129) and the Se-containing mods resolve to a perfectly good
     name and then fail inside ``collate``. Checking here turns a multi-hour training run that
@@ -84,125 +59,10 @@ def parse_modseq(modseq: str) -> tuple[str, tuple[tuple, ...]]:
             site = "n" if pos < 0 else pos
             mods.append((site, name))
     return "".join(residues), tuple(mods)
-
-
-# record name -> Zenodo record id (from the PROSPECT repo).
-RECORDS: dict[str, str] = {
-    "prospect": "6602020",
-    "tmt": "8221499",
-    "multi_ptm": "11472525",
-    "tmt_ptm": "11474099",
-    "test_ptm": "11477731",
-}
-
-# 2s spacing measured (see prospect_catalog.build_shard_index / commit 867d2fb) to avoid
-# Zenodo's rate limiter entirely on a full-collection indexing pass. Exponential backoff from
-# here, capped at a few attempts: enough to ride out a burst, not enough to hang forever.
-_RATE_LIMIT_DELAY_S = 2.0
-_RATE_LIMIT_MAX_ATTEMPTS = 5
-_REMOTE_OPEN_MIN_INTERVAL_S = 2.0
-_REMOTE_OPEN_LOCK = threading.Lock()
-_LAST_REMOTE_OPEN: tuple[str, float] | None = None
-
-
-def _pace_remote_zip_open(url: str) -> None:
-    """Keep cold opens of different Zenodo archives from arriving as a burst.
-
-    A single archive is opened once per extraction batch; retries of that same URL already
-    have exponential backoff. The process-wide ticker matters across the distinct source
-    archives in one training run, and the lock also prevents concurrent callers from opening
-    different archives simultaneously. Range requests made internally by fsspec are outside
-    this small guard, but this removes the avoidable burst at the archive boundary.
-    """
-    global _LAST_REMOTE_OPEN
-    with _REMOTE_OPEN_LOCK:
-        now = time.monotonic()
-        if _LAST_REMOTE_OPEN is not None and _LAST_REMOTE_OPEN[0] != url:
-            wait = _REMOTE_OPEN_MIN_INTERVAL_S - (now - _LAST_REMOTE_OPEN[1])
-            if wait > 0:
-                time.sleep(wait)
-        _LAST_REMOTE_OPEN = (url, time.monotonic())
-
-
-def _rate_limit_verdict(exc: Exception) -> bool | None:
-    """Whether ``exc`` is a retryable Zenodo response: ``True``/``False`` if we can tell, else
-    ``None`` for genuinely ambiguous.
-
-    ``aiohttp.ClientResponseError`` with ``status == 429`` or a transient 5xx status is
-    unambiguous. fsspec's HTTP
-    backend, though, has been observed turning a throttled response into a bare
-    ``FileNotFoundError`` (see ``prospect_catalog.build_shard_index``'s docstring) —
-    indistinguishable, from this call site alone, from the file genuinely being gone from
-    Zenodo. ``None`` means exactly that: the caller must not assert either possibility as fact.
-    """
-    try:
-        from aiohttp import ClientResponseError
-    except ImportError:  # aiohttp is only pulled in via fsspec's http/s3 extras
-        ClientResponseError = None  # type: ignore[assignment]
-
-    if ClientResponseError is not None and isinstance(exc, ClientResponseError):
-        return exc.status == 429 or 500 <= exc.status < 600
-    if isinstance(exc, FileNotFoundError):
-        return None
-    return False
-
-
-def _describe_exception(exc: BaseException) -> str:
-    """Render an exception and any wrapped HTTP cause without discarding diagnostics."""
-    parts: list[str] = []
-    seen: set[int] = set()
-    current: BaseException | None = exc
-    while current is not None and id(current) not in seen:
-        seen.add(id(current))
-        detail = f"{type(current).__name__}: {current}"
-        status = getattr(current, "status", None)
-        if status is not None:
-            detail += f" (status={status})"
-        request_info = getattr(current, "request_info", None)
-        real_url = getattr(request_info, "real_url", None)
-        if real_url:
-            detail += f" url={real_url}"
-        parts.append(detail)
-        current = current.__cause__ or current.__context__
-    return " <- ".join(parts)
-
-
-def _retry_delay(exc: Exception, attempt: int) -> float:
-    """Choose backoff, respecting a server-provided ``Retry-After`` when available."""
-    delay = _RATE_LIMIT_DELAY_S * 2**attempt
-    headers = getattr(exc, "headers", None)
-    raw = headers.get("Retry-After") if headers is not None else None
-    if raw is not None:
-        try:
-            delay = max(delay, float(raw))
-        except (TypeError, ValueError):
-            pass
-    return delay
-
-
-@dataclass(frozen=True, slots=True)
-class ShardInfo:
-    """One parquet shard inside an annotation zip, as read from the central directory.
-
-    ``raw_bytes`` is what decoding has to hold; ``packed_bytes`` is only what crosses the wire.
-    For these pools the two are often equal — parquet is already compressed, so the zip adds
-    little — which means download size is a fair proxy for memory pressure here.
-    """
-
-    name: str
-    packed_bytes: int
-    raw_bytes: int
-
-    @property
-    def short_name(self) -> str:
-        return self.name.split("/")[-1]
-
-
 @dataclass(frozen=True, slots=True)
 class ProspectSchema:
     """Column-name mapping. Defaults follow the documented PROSPECT columns; override per
     file if a variant differs (validated at read time)."""
-
     # Defaults verified against a real test_ptm meta file (columns: modified_sequence,
     # precursor_charge, aligned/orig_collision_energy, mass_analyzer, fragmentation,
     # retention_time, indexed_retention_time, ...). Meta files carry NO stripped `sequence`
@@ -224,52 +84,27 @@ class ProspectSchema:
     ann_intensity: str = "intensity"
     ann_neutral_loss: str = "neutral_loss"
     andromeda_score: str = "andromeda_score"  # val dedup quality
-
     # Columns required to even treat a file as PROSPECT (identity + acquisition context).
     def required(self) -> list[str]:
         return [self.modified_sequence, self.charge, self.collision_energy]
-
     # Columns that define an acquisition "source" for context conditioning.
     def acquisition_factors(self) -> list[str]:
         return [self.mass_analyzer, self.fragmentation]
-
-
-def make_cache(
-    local_dir: str | None = None, s3_prefix: str | None = None, write_through: bool = True
-) -> FileCache:
-    """Build the tiered cache: local first, optional S3 mirror second.
-
-    ``s3_prefix`` like ``s3://my-bucket/prospect``. If omitted, ``PEPDISTILL_S3_PREFIX``
-    enables the shared intermediate tier for normal pipeline-created sources. S3 creds come
-    from the standard AWS chain (env / profile); this never embeds them.
-    """
-    s3_prefix = s3_prefix or os.environ.get("PEPDISTILL_S3_PREFIX")
-    source_prefix = os.environ.get("PEPDISTILL_SOURCE_S3_PREFIX")
-    tiers = [local_dir or default_cache_dir()]
-    if s3_prefix:
-        tiers.append(s3_prefix)
-    return FileCache(tiers, write_through=write_through, source_prefix=source_prefix)
-
-
 def decode_fragments(
     index: "MetaIndex", frag: pd.DataFrame, schema: ProspectSchema
 ) -> tuple["RealLabels", list[tuple[str, int]]]:
     """Scatter one already-filtered fragment chunk into per-spectrum MS2 matrices.
-
     ``frag`` must already be restricted to b/y ions at fragment charge 1-2 with no neutral
     loss, and to the keys the caller wants; it carries its own ``raw_file`` column, so one call
     handles a shard holding several raw files. This function does the (site, col) arithmetic,
     the max-collapse of duplicate cells, and the per-spectrum scatter — nothing else. It is the
     single scatter implementation: both the streaming reader and the in-memory ``to_labels``
     path go through here.
-
     Returns the labels plus each emitted example's ``(raw_file, scan_number)`` key, in order,
     so the caller can attach that spectrum's own acquisition factors — which vary within a raw
     file and must not be collapsed to one value per run.
-
     Spectra whose key is absent from ``index`` are skipped: the meta join is what says a
     spectrum is usable, and a fragment row without one has no peptide to attach to.
-
     Raises ``ValueError`` if ``frag`` was not actually pre-filtered to b/y ions at fragment
     charge 1-2, or if its ``scan_number`` column is not cleanly integral (a NaN or fractional
     scan number would otherwise miss the index silently rather than fail loudly).
@@ -279,7 +114,6 @@ def decode_fragments(
     empty = RealLabels([], [], [], [], {})
     if frag.empty:
         return empty, []
-
     # Both preconditions run on ~0.7-1M filtered rows per shard per epoch, and each is checked
     # the way that is actually fastest for its dtype -- not uniformly "with numpy".
     #
@@ -306,7 +140,6 @@ def decode_fragments(
             "Pre-filter with fragment_filter_mask before calling."
         )
     z = z_raw.astype(np.int64)
-
     scan_raw = frag[s.scan_number].to_numpy()
     if not np.issubdtype(scan_raw.dtype, np.integer):
         scan_f = scan_raw.astype(np.float64)
@@ -318,7 +151,6 @@ def decode_fragments(
             )
     scans = scan_raw.astype(np.int64)
     raws = frag[s.raw_file].astype(str).to_numpy()
-
     # Per-spectrum (not per-row) index lookup: a filtered real shard is 1-3M fragment rows over
     # far fewer distinct spectra, so factorizing first turns this into one dict lookup per
     # spectrum instead of one per row.
@@ -328,7 +160,6 @@ def decode_fragments(
         dtype=np.int64,
     )
     lengths = uniq_len[codes]
-
     is_b = ion_types == "b"
     ordinal = frag[s.ann_ordinal].to_numpy().astype(np.int64)
     # ION_TYPES order is b1,y1,b2,y2 -> col = (b?0:1) + 2*(z-1); b site = ord-1, y site = n-1-ord.
@@ -337,7 +168,6 @@ def decode_fragments(
     keep = (lengths > 1) & (site >= 0) & (site < lengths - 1)
     if not keep.any():
         return empty, []
-
     work = frag.assign(
         _raw=raws, _scan=scans, _site=site, _col=col,
         _inten=frag[s.ann_intensity].to_numpy(dtype=np.float32),
@@ -347,7 +177,6 @@ def decode_fragments(
         .max()
         .reset_index()
     )
-
     precursors: list[Precursor] = []
     labels: list[PrecursorLabels] = []
     raw_rt: list[float] = []
@@ -377,11 +206,8 @@ def decode_fragments(
             },
         )
     return RealLabels(precursors, labels, raw_rt, source_ids, acquisition), out_keys
-
-
 def fragment_filter_mask(ann: pd.DataFrame, schema: ProspectSchema) -> np.ndarray:
     """b/y ions, fragment charge 1-2, no neutral loss. Measured to keep 10-35% by pool.
-
     ``neutral_loss`` may arrive as ``category`` dtype (the streaming reader reads it
     dictionary-encoded to avoid materializing a Python string per row). ``.fillna("")`` raises
     on a categorical whose categories do not already include ``""`` -- true of any shard whose
@@ -395,276 +221,16 @@ def fragment_filter_mask(ann: pd.DataFrame, schema: ProspectSchema) -> np.ndarra
         & ann[schema.ann_frag_charge].isin((1, 2)).to_numpy()
         & (no_loss.isna() | (no_loss == "")).to_numpy()
     )
-
-
-class ProspectSource:
-    def __init__(
-        self,
-        record: str = "prospect",
-        cache: FileCache | None = None,
-        schema: ProspectSchema | None = None,
-    ) -> None:
-        if record not in RECORDS:
-            raise ValueError(f"unknown PROSPECT record {record!r}; known: {sorted(RECORDS)}")
-        self.record = record
-        self.schema = schema or ProspectSchema()
-        self.cache = cache or make_cache()
-        self.record_id = RECORDS[record]
-        # Checked-in catalog is the offline listing; ZenodoRecord is the live fallback.
-        self._catalog = load_catalog()["records"].get(record, {}).get("files", {})
-        self.zenodo = ZenodoRecord(self.record_id, self.cache)
-
-    def files(self) -> list[str]:
-        """Parquet files in the record, from the checked-in catalog (no network)."""
-        if self._catalog:
-            return sorted(k for k in self._catalog if k.endswith(".parquet"))
-        return sorted(k for k in self.zenodo.list_files() if k.endswith(".parquet"))
-
-    def resolve_file(self, filename: str) -> str:
-        """Local path for one file: catalog URL through the cache, else live Zenodo."""
-        entry = self._catalog.get(filename)
-        if entry:
-            key = f"zenodo/{self.record_id}/{filename}"
-            return self.cache.resolve_uri(key, http_origin(entry["url"]))
-        return self.zenodo.resolve_file(filename)
-
-    def read(self, filename: str, columns: list[str] | None = None) -> pd.DataFrame:
-        """Fetch one parquet through the cache and read it, validating the schema."""
-        path = self.resolve_file(filename)
-        df = pd.read_parquet(path, columns=columns)
-        self._validate(df)
-        return df
-
-    def _validate(self, df: pd.DataFrame) -> None:
-        missing = [c for c in self.schema.required() if c not in df.columns]
-        if missing:
-            raise ValueError(
-                f"PROSPECT file missing required columns {missing}; "
-                f"available: {list(df.columns)}. Adjust ProspectSchema to match."
-            )
-
-    def acquisition_key(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Per-row acquisition factors for context conditioning: analyzer, fragmentation, NCE.
-
-        Categoricals feed the acq context embedding; NCE is the continuous factor. Missing
-        categorical columns are dropped (not fatal) so partial files still yield NCE.
-        """
-        s = self.schema
-        cols = {c: df[c] for c in s.acquisition_factors() if c in df.columns}
-        cols["collision_energy"] = df[s.collision_energy]
-        return pd.DataFrame(cols)
-
-    def read_annotation(self, zip_filename: str, max_members: int | None = None) -> pd.DataFrame:
-        """Fetch an annotation .zip through the cache and read its parquet member(s).
-
-        Each PROSPECT pool ships annotations as a zip of per-raw-file parquet shards;
-        ``max_members`` caps how many shards to read (handy for a quick look).
-        """
-        zpath = self.resolve_file(zip_filename)
-        frames = []
-        stream = fsspec.open(zpath, "rb").open() if "://" in zpath else zpath
-        with zipfile.ZipFile(stream) as z:
-            members = [n for n in z.namelist() if n.endswith(".parquet")]
-            for name in members[:max_members] if max_members else members:
-                frames.append(pd.read_parquet(io.BytesIO(z.read(name))))
-        if not frames:
-            raise ValueError(f"no parquet members in {zip_filename}")
-        return pd.concat(frames, ignore_index=True)
-
-    def annotation_shard_info(self, zip_filename: str) -> list[ShardInfo]:
-        """Name and size of every parquet shard in an annotation zip, WITHOUT downloading it.
-
-        A zip's central directory sits at the end of the file, so a couple of range requests
-        list the whole archive — names, packed and unpacked sizes — for a few KB regardless of
-        the zip's size. Verified against a 6.7 GB pool: 662 shards enumerated with no download.
-
-        The sizes are the point. Shard count alone does not tell you what a run will cost:
-        every selected shard is extracted to local parquet and re-read each epoch, so disk and
-        per-epoch read time, not download time, are what bound how many shards a run can take.
-        Check here before committing to a pool.
-        """
-        # A complete local source ZIP is authoritative (tests and users may provide one), so
-        # preserve its exact member order before consulting the checked-in index.
-        local = self.cache._local_path(f"zenodo/{self.record_id}/{zip_filename}")
-        if os.path.exists(local):
-            with zipfile.ZipFile(local) as z:
-                return [
-                    ShardInfo(i.filename, i.compress_size, i.file_size)
-                    for i in z.infolist()
-                    if i.filename.endswith(".parquet")
-                ]
-
-        # The checked-in index was built from the ZIP central directories and is deliberately
-        # available offline.  Prefer it here: extracted shard members are cached independently
-        # of the multi-GB source ZIP, so probing Zenodo just to recover their names defeats the
-        # cache and can trigger rate limiting on an otherwise fully local run.
-        indexed = load_shard_index().get("records", {}).get(self.record, {}).get(zip_filename)
-        if indexed is not None:
-            return [
-                ShardInfo(name=name, packed_bytes=int(packed), raw_bytes=int(raw))
-                for name, packed, raw in indexed
-            ]
-        with self._open_remote_zip(zip_filename) as z:
-            return [
-                ShardInfo(i.filename, i.compress_size, i.file_size)
-                for i in z.infolist()
-                if i.filename.endswith(".parquet")
-            ]
-
-    def annotation_shards(self, zip_filename: str) -> list[str]:
-        """Parquet shard names inside an annotation zip, without downloading it.
-
-        See :meth:`annotation_shard_info` for the sizes, which is usually what you want when
-        deciding how many shards to take.
-        """
-        return [s.name for s in self.annotation_shard_info(zip_filename)]
-
-    def read_annotation_streaming(
-        self, zip_filename: str, members: list[str] | None = None, max_members: int | None = None
-    ) -> pd.DataFrame:
-        """Read chosen annotation shards by RANGE-streaming the remote zip.
-
-        Unlike :meth:`read_annotation`, this never materializes the whole zip locally: the
-        central directory plus only the requested members' bytes are fetched. Use it to train
-        on a slice of a huge pool (e.g. one 90 MB shard of a 1.5 GB zip) without the full pull.
-        ``members`` selects shards by name; else the first ``max_members`` (or all) are read.
-        """
-        frames = []
-        with self._open_remote_zip(zip_filename) as z:
-            names = [n for n in z.namelist() if n.endswith(".parquet")]
-            chosen = (
-                members if members is not None else (names[:max_members] if max_members else names)
-            )
-            for name in chosen:
-                frames.append(pd.read_parquet(io.BytesIO(z.read(name))))
-        if not frames:
-            raise ValueError(f"no parquet members read from {zip_filename}")
-        return pd.concat(frames, ignore_index=True)
-
-    def _open_remote_zip(self, zip_filename: str) -> zipfile.ZipFile:
-        """Open the record's zip as a seekable remote file (range requests), or local if cached.
-
-        Constructing ``zipfile.ZipFile`` over the remote stream reads the central directory,
-        itself a burst of range requests, and a run that opens many zips back to back can trip
-        Zenodo's rate limiter well before any single zip finishes reading — a real 19-shard,
-        5-pool run died here with an explicit ``429 TOO MANY REQUESTS``. So this retries with
-        exponential backoff (see ``_RATE_LIMIT_DELAY_S`` / ``_RATE_LIMIT_MAX_ATTEMPTS``) on
-        explicit 429s, transient 5xx responses, and the
-        ``FileNotFoundError`` fsspec sometimes substitutes for it — capped at a few attempts.
-        It never retries an unrelated failure (a genuine 404, a bad zip, ...) and never retries
-        forever: once attempts are exhausted it raises a named error stating plainly that this
-        may be Zenodo throttling and that the local cache tier is likely already partially
-        populated, so re-running the same job resumes rather than repeats the cost that failed.
-        """
-        local = self.cache._local_path(f"zenodo/{self.record_id}/{zip_filename}")
-        if os.path.exists(local):
-            return zipfile.ZipFile(local)
-        entry = self._catalog.get(zip_filename)
-        url = entry["url"] if entry else self.zenodo.file_url(zip_filename)
-
-        # A raw S3 mirror may contain the complete archive at its root.  Use it before
-        # contacting Zenodo; this also makes a cold shard miss recoverable in cloud jobs.
-        mirrored = self.cache.remote_uri(f"zenodo/{self.record_id}/{zip_filename}")
-        if mirrored is not None:
-            return zipfile.ZipFile(fsspec.open(mirrored, "rb").open())
-
-        last_exc: Exception | None = None
-        attempt_errors: list[str] = []
-        ambiguous = False
-        _pace_remote_zip_open(url)
-        for attempt in range(1, _RATE_LIMIT_MAX_ATTEMPTS + 1):
-            try:
-                return zipfile.ZipFile(fsspec.open(url, "rb").open())
-            except Exception as exc:  # noqa: BLE001 - narrowed by _rate_limit_verdict below
-                verdict = _rate_limit_verdict(exc)
-                if verdict is False:
-                    raise  # not a rate-limit shape at all: don't mask a different failure
-                attempt_errors.append(f"attempt {attempt}: {_describe_exception(exc)}")
-                last_exc, ambiguous = exc, verdict is None
-                if attempt == _RATE_LIMIT_MAX_ATTEMPTS:
-                    break
-                time.sleep(_retry_delay(exc, attempt))
-
-        status = getattr(last_exc, "status", None)
-        if ambiguous:
-            hedge = (
-                "fsspec surfaced this as FileNotFoundError, a shape Zenodo throttling is known "
-                "to produce -- but a genuinely missing file looks identical, so this cannot be "
-                "told apart from a real 404 from here"
-            )
-        elif status == 429:
-            hedge = "Zenodo returned 429 TOO MANY REQUESTS"
-        elif isinstance(status, int) and 500 <= status < 600:
-            hedge = f"Zenodo returned transient HTTP {status}"
-        else:
-            hedge = "Zenodo returned a retryable HTTP error"
-        raise RuntimeError(
-            f"could not open {zip_filename!r} (record {self.record_id}) after "
-            f"{_RATE_LIMIT_MAX_ATTEMPTS} attempts: {hedge}. The local cache tier is likely "
-            "partially populated from shards that already succeeded before this failure; "
-            "re-running this job resumes from there instead of repeating the cost that failed. "
-            f"Attempt errors: {'; '.join(attempt_errors)}"
-        ) from last_exc
-
-    def to_labels(
-        self, meta_df: pd.DataFrame, ann_df: pd.DataFrame, split: SplitConfig | None = None
-    ) -> "RealLabels":
-        """Decode meta + long-format annotation into real student examples.
-
-        Kept for the in-memory path (tests, small one-shot decodes). The streaming path builds
-        its MetaIndex once per run instead of once per call and goes straight to
-        ``decode_fragments``; both share that one scatter implementation.
-        """
-        from .meta_index import MetaIndex, SpectrumMeta  # local: avoids a circular import
-
-        split = split or SplitConfig()
-        s = self.schema
-        for col in (s.modified_sequence, s.charge, s.raw_file, s.scan_number):
-            if col not in meta_df.columns:
-                raise ValueError(f"meta missing {col!r}")
-        irt_col = (
-            s.indexed_retention_time
-            if s.indexed_retention_time in meta_df.columns
-            else s.retention_time
-        )
-        raw_col = s.retention_time if s.retention_time in meta_df.columns else irt_col
-
-        meta_u = meta_df.drop_duplicates([s.raw_file, s.scan_number], keep="first")
-        index = MetaIndex()
-        parsed: dict[str, tuple[str, tuple]] = {}
-        for row in meta_u.itertuples(index=False):
-            modseq = str(getattr(row, s.modified_sequence))
-            if modseq not in parsed:
-                parsed[modseq] = parse_modseq(modseq)
-            stripped, mods = parsed[modseq]
-            rf = str(getattr(row, s.raw_file))
-            andromeda_v = getattr(row, s.andromeda_score, None)
-            index.by_key[(rf, int(getattr(row, s.scan_number)))] = SpectrumMeta(
-                peptide=Peptide(stripped, mods),
-                charge=int(getattr(row, s.charge)),
-                irt=float(getattr(row, irt_col)),
-                raw_rt=float(getattr(row, raw_col)),
-                split=assign_split(stripped, split),
-                mass_analyzer=str(getattr(row, s.mass_analyzer, "")),
-                fragmentation=str(getattr(row, s.fragmentation, "")),
-                energy=float(getattr(row, s.collision_energy, float("nan"))),
-                andromeda=float(andromeda_v) if andromeda_v is not None else float("nan"),
-            )
-
-        kept = ann_df.loc[fragment_filter_mask(ann_df, s)]
-        real, _keys = decode_fragments(index, kept, s)
-        return real
-
-
 @dataclass
 class RealLabels:
     """Decoded real examples. ``labels[i].rt`` is iRT (context-free base target); ``raw_rt``
     is the run-dependent retention time (the ``chrom_context`` target). ``source_ids`` (raw_file) is the
     context stratification key; ``acquisition`` maps raw_file -> analyzer/fragmentation/NCE,
     so per-raw_file context vectors can later be regressed onto those factors."""
-
     precursors: list
     labels: list
     raw_rt: list
     source_ids: list
     acquisition: dict
+
+__all__ = ["ProspectSchema", "parse_modseq", "decode_fragments", "fragment_filter_mask", "RealLabels"]

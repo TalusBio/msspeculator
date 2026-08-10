@@ -29,7 +29,6 @@ def main() -> None:
         "--out-prefix", OUT_PREFIX,
         "--dataset", "prospect_tum_isoform",
         "--instrument", "Lumos",
-        "--max-shards", "3",
     ]
     if not Path("pyproject.toml").exists():
         raise SystemExit("stage is incomplete; run tools/prepare_launchpad_full_run.py first")

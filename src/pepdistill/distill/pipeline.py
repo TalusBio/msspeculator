@@ -10,9 +10,8 @@ Stages:
   enzyme -> immunopeptidome windows, else tryptic) with the teacher labeling over an NCE sweep,
   so collision energy comes from the data (never fabricated) and the encoder learns a real CE
   axis. (A fixed-energy corpus would just be a dataset that carries its own CE — no special mode.)
-- **train** — real-speclib sink over one or more PROSPECT pools (each ``[[train.sources]]``
-  entry is one pool with its own ChromRunbook row; shards are extracted once and then streamed
-  per epoch, never materialised), per-run ``chrom_context`` and factor-driven ``ms_context``.
+- **train** — real-speclib sink over a prepared Parquet manifest, streamed from local storage or
+  object storage, with per-dataset ``chrom_context`` and factor-driven ``ms_context``.
 - **export** — ONNX. **bench** — library-generation throughput on a FASTA digest.
 
 Inference (predict a library from a finished model) is deliberately NOT here — it is the
@@ -34,17 +33,13 @@ import torch
 
 from ..data.config import DigestConfig, SplitConfig
 from ..data.digest import digest_fasta
-from ..data.meta_index import MetaIndex, build_meta_index
 from ..data.prepared import PreparedManifest, PreparedStreamingDataset
 from ..data.precursors import enumerate_precursors
-from ..data.prospect import ProspectSource, make_cache
-from ..data.shard_store import extract_shards, select_members, shard_raw_files
 from ..models.context import ChromRunbook, MSContextEncoder
 from ..models.registry import PRESETS, build_student, load_checkpoint, load_context, save_checkpoint
 from ..predict.fast import TorchRunner, predict_library_fast
 from ..teacher import get_teacher
-from .context_regime import RealSpeclibDataset, establish_rt_norm, fit_realspeclib_datasets
-from .real_stream import ShardSpec, StreamingRealDataset, collect_val_examples
+from .context_regime import establish_rt_norm, fit_realspeclib_datasets
 from .stream_pretrain import StreamMix, StreamPretrainCfg, fit_stream_pretrain
 
 
@@ -124,29 +119,8 @@ class PretrainCfg:
 
 
 @dataclass
-class TrainSource:
-    """One PROSPECT pool contributing to the real-data stage.
-
-    ``instrument`` is per-source, not pool-level: two pools can differ, and acquisition
-    factors are never fabricated. ``val_only`` keeps only the examples whose sequence already
-    hashes to val and vacuums the rest — leak-free, because ``assign_split`` hashes the
-    stripped sequence globally, so a val-hashed sequence is val in every source. This filters
-    TO the existing split; it never overrides it.
-    """
-
-    record: str
-    meta: str
-    zip: str
-    shards: list[int] | str
-    dataset: str | None = None  # ChromRunbook row key; required once there is >1 source
-    instrument: str = "Lumos"
-    val_only: bool = False
-
-
-@dataclass
 class TrainCfg:
     enabled: bool = True
-    sources: list[TrainSource] = field(default_factory=list)
     prepared_prefix: str | None = None
     epochs: int = 60
     batch_size: int = 256
@@ -170,108 +144,22 @@ class TrainCfg:
 # and test is untouched by this pipeline end to end — it is not trained on and it is not
 # normalised from. This is a deliberate departure from the pre-streaming `fit_realspeclib`,
 # which trained on `split != "val"` and so consumed test as well.
-_TRAIN_SPLITS = frozenset({"train"})
-
-# Pool identity used to live directly under [train]; it is per-source now.
-_FLAT_POOL_KEYS = ("record", "meta", "zip", "shards", "dataset", "instrument")
-
-
-def _check_train_sources(cfg: TrainCfg) -> None:
-    """Reject an enabled train stage that cannot train, naming which of the two causes it is.
-
-    Both are decidable from the config alone, so they are checked at parse time — otherwise
-    they surface only after every shard has been downloaded and extracted, which on a real pool
-    is multiple GB spent to discover a typo. Called again from :func:`_build_train_stage`
-    because a :class:`RunConfig` assembled in Python never passes through :func:`_train_cfg`.
-    """
-    if cfg.prepared_prefix:
-        if cfg.sources:
-            raise ValueError(
-                "[train] prepared_prefix cannot be combined with [[train.sources]]; "
-                "choose raw-source or prepared-prefix training"
-            )
-        return
-    if not cfg.sources:
-        raise ValueError(
-            "[train] is enabled but declares no [[train.sources]]; add one entry per pool "
-            "with record/meta/zip/shards (+ dataset, instrument, val_only)"
-        )
-    if all(s.val_only for s in cfg.sources):
-        raise ValueError(
-            f"every [[train.sources]] is val_only ({[s.zip for s in cfg.sources]}); there is "
-            "nothing to train on"
-        )
-    invalid = [s.shards for s in cfg.sources if isinstance(s.shards, str) and s.shards != "all"]
-    if invalid:
-        raise ValueError(f"unsupported shard selection {invalid}; use a list of indices or 'all'")
-
-
 def _train_cfg(raw: dict) -> TrainCfg:
     d = dict(raw)
-    stale = [k for k in _FLAT_POOL_KEYS if k in d]
-    if stale:
+    if "sources" in d or any(key in d for key in ("record", "meta", "zip", "shards")):
         raise ValueError(
-            f"[train] no longer takes pool keys {stale}; declare each pool as a "
-            "[[train.sources]] entry with record/meta/zip/shards (+ dataset, instrument, "
-            "val_only)"
+            "[train.sources] was removed; run the prepared ETL first and set "
+            "[train] prepared_prefix = \"...\""
         )
     prepared_prefix = d.pop("prepared_prefix", None)
-    sources = [TrainSource(**s) for s in d.pop("sources", [])]
-    if len(sources) > 1:
-        unnamed = [s.zip for s in sources if not s.dataset]
-        if unnamed:
-            raise ValueError(
-                f"every [[train.sources]] needs an explicit dataset name once there is more "
-                f"than one source; missing for {unnamed}. The name fixes the ChromRunbook row, "
-                "and deriving it from the zip name would let rows drift between runs."
-            )
     if "loss_weights" in d:
         d["loss_weights"] = tuple(d["loss_weights"])
-    cfg = TrainCfg(sources=sources, prepared_prefix=prepared_prefix, **d)
-    if cfg.enabled:
-        _check_train_sources(cfg)
+    cfg = TrainCfg(prepared_prefix=prepared_prefix, **d)
+    if cfg.enabled and not cfg.prepared_prefix:
+        raise ValueError(
+            "[train] requires prepared_prefix; run the prepared ETL before training"
+        )
     return cfg
-
-
-def resolve_dataset_index(
-    sources: list[TrainSource], existing: dict[str, int] | None = None
-) -> dict[str, int]:
-    """Map dataset name -> ChromRunbook row, in config declaration order, from row 1.
-
-    Row 0 is the neutral/iRT row and is never assigned. Sources sharing a name share a row.
-    An ``existing`` index (continuing a curriculum) keeps every row it already has — by
-    construction, not by check — and new names append after the highest. The index is baked
-    into the exported artifact, so a shifted row would make an old artifact address the wrong
-    dataset.
-
-    ``existing`` is validated rather than trusted: a row 0 entry would collide with the
-    neutral row, and duplicate rows would make two datasets share one ChromRunbook entry.
-    Both are silent corruptions of an artifact, so both raise.
-    """
-    index = dict(existing or {})
-    if 0 in index.values():
-        bad = sorted(n for n, r in index.items() if r == 0)
-        raise ValueError(
-            f"existing dataset_index assigns row 0 to {bad}; row 0 is reserved for the "
-            "neutral/iRT row and must not name a dataset"
-        )
-    if len(set(index.values())) != len(index):
-        seen: dict[int, list[str]] = {}
-        for n, r in sorted(index.items()):
-            seen.setdefault(r, []).append(n)
-        clashes = {r: ns for r, ns in seen.items() if len(ns) > 1}
-        raise ValueError(
-            f"existing dataset_index has duplicate rows {clashes}; each dataset needs its "
-            "own ChromRunbook row"
-        )
-    next_row = max(index.values(), default=0) + 1
-    for s in sources:
-        name = s.dataset or "default"
-        if name in index:
-            continue
-        index[name] = next_row
-        next_row += 1
-    return index
 
 
 @dataclass
@@ -295,8 +183,6 @@ class RunConfig:
     device: str = "auto"
     seed: int = 0
     model_in: str | None = None  # optional checkpoint to initialize pretrain/train/export/bench
-    cache_dir: str | None = None
-    cache_s3_prefix: str | None = None
     pretrain: PretrainCfg = field(default_factory=PretrainCfg)
     train: TrainCfg = field(default_factory=TrainCfg)
     export: ExportCfg = field(default_factory=ExportCfg)
@@ -318,8 +204,6 @@ class RunConfig:
                     "device",
                     "seed",
                     "model_in",
-                    "cache_dir",
-                    "cache_s3_prefix",
                 )
                 if k in raw
             },
@@ -374,141 +258,6 @@ def _release_accelerator_cache(acc: str) -> None:
         torch.mps.empty_cache()
     elif acc == "cuda" and torch.cuda.is_available():
         torch.cuda.empty_cache()
-
-
-def _build_train_stage(
-    cfg: RunConfig,
-    log,
-    existing_dataset_index: dict[str, int] | None = None,
-):
-    """Extract every source's shards, build its meta index, and assemble what the real-data
-    stage needs: the train and val shard lists, one merged meta index, the dataset index (plus
-    its inverse), and the iRT sufficient statistics the RT affine is established from.
-
-    Nothing here decodes a fragment. Shards are extracted to local parquet and read per epoch
-    by :class:`~pepdistill.distill.real_stream.StreamingRealDataset`, so the resident cost is
-    the meta index, not the spectra.
-    """
-    _check_train_sources(cfg.train)
-    cache = make_cache(cfg.cache_dir, cfg.cache_s3_prefix)
-    dataset_index = resolve_dataset_index(cfg.train.sources, existing=existing_dataset_index)
-    names_by_row = {row: name for name, row in dataset_index.items()}
-    train_shards: list[ShardSpec] = []
-    val_shards: list[ShardSpec] = []
-    indices: list[MetaIndex] = []
-    stats: list[tuple[int, float, float]] = []
-    total_sources = len(cfg.train.sources)
-    for source_num, s in enumerate(cfg.train.sources, start=1):
-        src = ProspectSource(s.record, cache=cache)
-        source_label = f"{s.record}/{s.zip}"
-        started = time.perf_counter()
-        members = select_members(src, s.zip, s.shards)
-        selection = "all" if s.shards == "all" else f"{len(s.shards)}"
-        log(
-            f"[train] source {source_num}/{total_sources} {source_label}: "
-            f"resolving {selection} shard index(es) -> {len(members)} member(s)"
-        )
-        log(
-            f"[train] source {source_num}/{total_sources} {source_label}: "
-            f"preparing {len(members)} shard file(s) (cached files are checked first)"
-        )
-
-        def extraction_progress(done: int, total: int, member: str) -> None:
-            log(
-                f"[train] source {source_num}/{total_sources} {source_label}: "
-                f"extracted missing shard {done}/{total} — {Path(member).name}"
-            )
-
-        last_byte_log = 0.0
-        last_member = ""
-        member_started = 0.0
-
-        def extraction_byte_progress(member: str, done: int, total: int) -> None:
-            nonlocal last_byte_log, last_member, member_started
-            now = time.perf_counter()
-            # Emit immediately for a new shard, then at most every five seconds, plus its end.
-            if member != last_member or now - last_byte_log >= 5.0 or done >= total:
-                if member != last_member:
-                    member_started = now
-                elapsed = max(now - member_started, 1e-9)
-                rate = done / elapsed / 1e6
-                log(
-                    f"[train] source {source_num}/{total_sources} {source_label}: "
-                    f"extracting {Path(member).name}: {done / 1e6:.0f}/{total / 1e6:.0f} MB "
-                    f"({rate:.1f} MB/s)"
-                )
-                last_byte_log, last_member = now, member
-
-        # Extract first: raw_files come from each shard's own column, never from its filename
-        # (a third-pool shard holds three, none matching the member stem). One extract_shards
-        # call per source, not one extract_shard call per member: each remote-zip open re-reads
-        # the central directory and, cold, re-opens the whole HTTP stream, and a source can
-        # have ~10 shards — enough opens in a row to trip Zenodo's rate limiter on its own.
-        paths = extract_shards(
-            src,
-            s.zip,
-            members,
-            progress=extraction_progress,
-            byte_progress=extraction_byte_progress,
-        )
-        log(
-            f"[train] source {source_num}/{total_sources} {source_label}: "
-            f"shard files ready ({time.perf_counter() - started:.1f}s); discovering raw files"
-        )
-        per_shard = [tuple(shard_raw_files(p)) for p in paths]
-        raw_files = sorted({r for rs in per_shard for r in rs})
-        log(
-            f"[train] source {source_num}/{total_sources} {source_label}: "
-            f"found {len(raw_files)} raw file(s); indexing metadata"
-        )
-        index = build_meta_index(src, s.meta, raw_files)
-        log(
-            f"[train] source {source_num}/{total_sources} {source_label}: "
-            f"metadata indexed ({len(index.by_key):,} spectra, "
-            f"{time.perf_counter() - started:.1f}s elapsed)"
-        )
-        indices.append(index)
-        row = dataset_index[s.dataset or "default"]
-        specs = [
-            ShardSpec(path=p, raw_files=rs, dataset_id=row, instrument=s.instrument)
-            for p, rs in zip(paths, per_shard)
-        ]
-        val_shards.extend(specs)
-        if s.val_only:
-            # A val_only source with nothing in val is a no-op that does not look like one: it
-            # is still downloaded, extracted, indexed, and still burns a ChromRunbook row that
-            # gets baked into the exported artifact — while contributing to neither train nor
-            # val. The check is meta-only, so it costs nothing.
-            if not index.allowed_keys(raw_files, frozenset({"val"})):
-                raise ValueError(
-                    f"val_only source {s.zip} shards {s.shards} has no val-hashed sequences; "
-                    "it would contribute to neither train nor val"
-                )
-            log(f"[train] {s.zip}: val_only, {len(specs)} shard(s) held out")
-        else:
-            train_shards.extend(specs)
-            # val_only sources contribute nothing to the RT affine: it is established from the
-            # population training actually sees, which is _TRAIN_SPLITS by construction.
-            stats.append(index.irt_stats(_TRAIN_SPLITS))
-        log(f"[train] {s.zip}: {len(specs)} shard(s), dataset row {row}")
-
-    if not train_shards:
-        # Unreachable by construction: _check_train_sources rejects both config-level causes
-        # (no sources, all val_only), and a non-val_only source with an empty `shards` list
-        # dies earlier still in build_meta_index ("no meta rows ... for raw_files []"). Kept
-        # as a cheap invariant so a future change that reintroduces the state is not silent.
-        raise ValueError(
-            f"no train shards from {[(s.zip, s.shards) for s in cfg.train.sources]}, which "
-            "should be unreachable; the source validation above no longer covers some case"
-        )
-
-    # One index across sources: keys are (raw_file, scan_number), which is globally unique,
-    # so the union cannot collide.
-    merged = MetaIndex()
-    for ix in indices:
-        merged.by_key.update(ix.by_key)
-    log(f"[train] meta index: {len(merged.by_key):,} spectra resident")
-    return train_shards, val_shards, merged, dataset_index, names_by_row, stats
 
 
 def _runbook_for_index(
@@ -627,48 +376,30 @@ def run_pipeline(cfg: RunConfig, log=print) -> dict:
     dataset_index = None
     if cfg.train.enabled:
         assert encoder is not None, "need_encoder covers cfg.train.enabled"
+        if not cfg.train.prepared_prefix:
+            raise ValueError("[train] requires prepared_prefix; run the prepared ETL first")
         # Seed before the runbook is built: fit_realspeclib_datasets deliberately does NOT seed
         # globally, so a second call there would reset the stream after the context modules had
         # already drawn from it.
         L.seed_everything(cfg.seed, verbose=False)
-        prepared_manifest = None
-        if cfg.train.prepared_prefix:
-            prepared_manifest = PreparedManifest.load(cfg.train.prepared_prefix)
-            dataset_index = prepared_manifest.datasets
-            names_by_row = {row: name for name, row in dataset_index.items()}
-            stats = [prepared_manifest.irt_stats]
-            train_ds = PreparedStreamingDataset(
-                prepared_manifest, encoder, frozenset({"train"}), seed=cfg.seed,
-                shuffle_buffer=cfg.train.shuffle_buffer,
-            )
-            val_ds = PreparedStreamingDataset(
-                prepared_manifest, encoder, frozenset({"val"}), seed=cfg.seed,
-                shuffle_buffer=0,
-            )
-            log(
-                f"[train] prepared prefix: {cfg.train.prepared_prefix}; "
-                f"{len(prepared_manifest.chunks)} chunk(s), "
-                f"{len(prepared_manifest.datasets)} dataset(s)"
-            )
-        else:
-            train_shards, val_shards, index, dataset_index, names_by_row, stats = _build_train_stage(
-                cfg,
-                log,
-                existing_dataset_index=loaded_context.dataset_index if loaded_context else None,
-            )
-            train_ds = StreamingRealDataset(
-                train_shards,
-                index,
-                encoder,
-                _TRAIN_SPLITS,
-                seed=cfg.seed,
-                shuffle_buffer=cfg.train.shuffle_buffer,
-            )
-            val_examples = collect_val_examples(val_shards, index, encoder, names_by_row, log=log)
-            val_ds = RealSpeclibDataset(val_examples) if val_examples else None
+        prepared_manifest = PreparedManifest.load(cfg.train.prepared_prefix)
+        dataset_index = prepared_manifest.datasets
+        train_ds = PreparedStreamingDataset(
+            prepared_manifest, encoder, frozenset({"train"}), seed=cfg.seed,
+            shuffle_buffer=cfg.train.shuffle_buffer,
+        )
+        val_ds = PreparedStreamingDataset(
+            prepared_manifest, encoder, frozenset({"val"}), seed=cfg.seed,
+            shuffle_buffer=0,
+        )
+        log(
+            f"[train] prepared prefix: {cfg.train.prepared_prefix}; "
+            f"{len(prepared_manifest.chunks)} chunk(s), "
+            f"{len(prepared_manifest.datasets)} dataset(s)"
+        )
         # Whether the affine was set here or inherited is the difference between a cold start
         # and a continued curriculum, for a value that is permanent once set — so say which.
-        if establish_rt_norm(model, stats):
+        if establish_rt_norm(model, [prepared_manifest.irt_stats]):
             log(f"[train] RT affine set: mean {float(model.rt_mean):.4g}, "
                 f"std {float(model.rt_std):.4g}")
         else:
@@ -682,13 +413,10 @@ def run_pipeline(cfg: RunConfig, log=print) -> dict:
             dataset_index,
             model.cfg.context_dim,
         )
-        if prepared_manifest is None:
-            log(f"[train] streaming {len(train_shards)} shard(s); val {len(val_examples)} examples")
-        else:
-            log(
-                f"[train] streaming prepared chunks directly; "
-                f"train rows={len(train_ds):,}, val rows={len(val_ds):,}"
-            )
+        log(
+            f"[train] streaming prepared chunks directly; "
+            f"train rows={len(train_ds):,}, val rows={len(val_ds):,}"
+        )
         module = fit_realspeclib_datasets(
             model,
             train_ds,
@@ -768,9 +496,7 @@ __all__ = [
     "DigestSource",
     "PretrainCfg",
     "TrainCfg",
-    "TrainSource",
     "ExportCfg",
     "BenchCfg",
     "run_pipeline",
-    "resolve_dataset_index",
 ]
