@@ -12,9 +12,10 @@ predicate pushdown, and streaming Parquet scan for each shard.
 
 from __future__ import annotations
 
-import argparse
+import fnmatch
 import hashlib
 import json
+import re
 import time
 from pathlib import Path
 from collections.abc import Callable
@@ -27,6 +28,7 @@ import pyarrow.parquet as pq
 
 from ..data.meta_index import build_meta_index_from_frame
 from ..data.prospect import ProspectSchema, decode_fragments
+from .config import PrepareConfig, PrepareGroup, PrepareSource
 
 
 def _uri_join(prefix: str | Path, name: str) -> str:
@@ -45,37 +47,6 @@ def _load_json(uri: str) -> dict[str, Any] | None:
     except (FileNotFoundError, OSError, ValueError):
         return None
     return value if isinstance(value, dict) else None
-
-
-def _existing_manifest(
-    manifest_uri: str,
-    source_prefix: str | Path,
-    meta_filename: str,
-    archive_stem: str,
-    dataset: str,
-    instrument: str,
-    max_shards: int | None,
-) -> dict[str, Any] | None:
-    """Return a complete matching manifest, if the output prefix is already prepared."""
-    manifest = _load_json(manifest_uri)
-    if manifest is None or manifest.get("version") != 1:
-        return None
-    source = manifest.get("source", {})
-    expected = {
-        "prefix": str(source_prefix),
-        "meta": meta_filename,
-        "archive": f"{archive_stem}.zip",
-        "dataset": dataset,
-        "instrument": instrument,
-        "max_shards": max_shards,
-    }
-    if any(source.get(key) != value for key, value in expected.items()):
-        return None
-    required = [row.get("uri") for row in manifest.get("chunks", [])]
-    required.append(manifest.get("val_winners_uri"))
-    if not required or any(not isinstance(uri, str) or not _uri_exists(uri) for uri in required):
-        return None
-    return manifest
 
 
 def _list_shards(source_prefix: str | Path, archive_stem: str) -> list[str]:
@@ -279,144 +250,260 @@ def _split_datasets(chunks: list[str]) -> dict[str, list[str]]:
     return {name: sorted(splits) for name, splits in result.items()}
 
 
-def prepare_source(
-    source_prefix: str | Path,
-    meta_filename: str,
-    archive_stem: str,
-    out_prefix: str | Path,
-    dataset: str,
-    instrument: str = "Lumos",
-    max_shards: int | None = None,
-    schema: ProspectSchema | None = None,
+def _write_json(uri: str, value: dict[str, Any]) -> None:
+    if "://" not in uri:
+        Path(uri).parent.mkdir(parents=True, exist_ok=True)
+    with fsspec.open(uri, "wt") as stream:
+        json.dump(value, stream, indent=2, sort_keys=True)
+
+
+def _source_prefix(config: PrepareConfig, source: PrepareSource) -> str:
+    return source.source_prefix or config.source_prefix
+
+
+def _list_archive_stems(prefix: str | Path) -> list[str]:
+    """Discover extracted archive directories below a record prefix."""
+    if "://" not in str(prefix):
+        root = Path(prefix)
+        return sorted(
+            child.name
+            for child in root.iterdir()
+            if child.is_dir() and list((child / child.name).glob("*.parquet"))
+        )
+    fs, _, paths = fsspec.get_fs_token_paths(str(prefix))
+    stems: list[str] = []
+    for entry in fs.ls(paths[0], detail=True):
+        raw_path = entry.get("name") if isinstance(entry, dict) else entry
+        if raw_path is None or not fs.isdir(raw_path):
+            continue
+        name = str(raw_path).rstrip("/").rsplit("/", 1)[-1]
+        try:
+            if fs.glob(f"{str(raw_path).rstrip('/')}/{name}/*.parquet"):
+                stems.append(name)
+        except OSError:
+            continue
+    return sorted(stems)
+
+
+def _group_dataset(group: PrepareGroup, archive: str) -> str:
+    name = archive
+    if group.strip_prefix and name.startswith(group.strip_prefix):
+        name = name[len(group.strip_prefix) :]
+    if group.strip_number_suffix:
+        name = re.sub(r"_[1-9][0-9]*$", "", name)
+    prefix = group.dataset_prefix or group.record
+    return f"{prefix}_{name}".lower()
+
+
+def _sources_from_groups(config: PrepareConfig) -> tuple[PrepareSource, ...]:
+    sources: list[PrepareSource] = []
+    for group in config.groups:
+        prefix = group.source_prefix or _uri_join(config.source_prefix, group.record)
+        for archive in _list_archive_stems(prefix):
+            if not any(fnmatch.fnmatchcase(archive, pattern) for pattern in group.include):
+                continue
+            if any(fnmatch.fnmatchcase(archive, pattern) for pattern in group.exclude):
+                continue
+            sources.append(
+                PrepareSource(
+                    id=f"{group.record}_{archive}",
+                    dataset=_group_dataset(group, archive),
+                    meta=f"{archive}{group.meta_suffix}",
+                    archive=archive,
+                    instrument=group.instrument,
+                    source_prefix=prefix,
+                )
+            )
+    return tuple(sources)
+
+
+def discover_catalog(config: PrepareConfig) -> dict[str, Any]:
+    """Expand configured sources into a deterministic, globally numbered shard catalog."""
+    tasks: list[dict[str, Any]] = []
+    sources = (*config.sources, *_sources_from_groups(config))
+    ids = [source.id for source in sources]
+    if len(set(ids)) != len(ids):
+        raise ValueError(f"prepare source ids must be unique after group expansion; got {ids}")
+    for source in sources:
+        prefix = _source_prefix(config, source)
+        shards = _list_shards(prefix, source.archive)
+        if source.shards != "all":
+            invalid = [index for index in source.shards if index < 0 or index >= len(shards)]
+            if invalid:
+                raise ValueError(
+                    f"source {source.id!r}: shard index(es) {invalid} outside 0..{len(shards) - 1}"
+                )
+            selected = [(index, shards[index]) for index in source.shards]
+        else:
+            selected = list(enumerate(shards))
+        for shard_index, shard_uri in selected:
+            tasks.append(
+                {
+                    "ordinal": len(tasks),
+                    "source_id": source.id,
+                    "dataset": source.dataset,
+                    "meta_uri": _uri_join(prefix, source.meta),
+                    "shard_uri": shard_uri,
+                    "shard_index": shard_index,
+                    "archive": source.archive,
+                    "instrument": source.instrument,
+                    "config_fingerprint": config.fingerprint,
+                }
+            )
+    return {
+        "version": 1,
+        "config_fingerprint": config.fingerprint,
+        "output_prefix": config.output_prefix,
+        "tasks": tasks,
+    }
+
+
+def ensure_catalog(config: PrepareConfig, force: bool = False) -> dict[str, Any]:
+    uri = _uri_join(config.output_prefix, "catalog.json")
+    if not force:
+        existing = _load_json(uri)
+        if existing and existing.get("version") == 1 and existing.get("config_fingerprint") == config.fingerprint:
+            return existing
+    catalog = discover_catalog(config)
+    _write_json(uri, catalog)
+    return catalog
+
+
+def _task_output_prefix(output_prefix: str, task: dict[str, Any]) -> str:
+    return _uri_join(
+        output_prefix,
+        f"shards/{task['source_id']}/{int(task['shard_index']):06d}",
+    )
+
+
+def prepare_task(
+    output_prefix: str,
+    task: dict[str, Any],
     force: bool = False,
     log: Callable[[str], None] | None = print,
-    context_prefix: str = "",
 ) -> dict[str, Any]:
-    """Prepare one extracted PROSPECT archive and write a version-1 manifest."""
-    schema = schema or ProspectSchema()
+    """Prepare one catalog task; completion is committed by writing its manifest last."""
+    prefix = _task_output_prefix(output_prefix, task)
+    manifest_uri = _uri_join(prefix, "manifest.json")
+    data_uri = _uri_join(prefix, "data.parquet")
 
     def emit(message: str) -> None:
         if log is not None:
-            label = f"[etl][{context_prefix}]" if context_prefix else "[etl]"
-            log(f"{label}{message.removeprefix('[etl]')}")
+            log(
+                f"[prepare source={task['source_id']} shard={int(task['shard_index']):06d}]"
+                f" {message}"
+            )
 
-    manifest_uri = _uri_join(out_prefix, "manifest.json")
     if not force:
-        existing = _existing_manifest(
-            manifest_uri,
-            source_prefix,
-            meta_filename,
-            archive_stem,
-            dataset,
-            instrument,
-            max_shards,
-        )
-        if existing is not None:
-            emit(f"[etl] complete manifest exists at {manifest_uri}; skipping shard work")
+        existing = _load_json(manifest_uri)
+        if (
+            existing
+            and existing.get("version") == 1
+            and existing.get("task", {}).get("config_fingerprint") == task["config_fingerprint"]
+            and _uri_exists(str(existing.get("data_uri", "")))
+        ):
+            emit("complete manifest exists; skipping")
             return {**existing, "_skipped": True}
-    meta_uri = _uri_join(source_prefix, meta_filename)
-    shards = _list_shards(source_prefix, archive_stem)
-    if max_shards is not None:
-        shards = shards[:max_shards]
-    if not shards:
-        raise ValueError(f"no extracted parquet shards found for {archive_stem!r}")
-    emit(f"[etl] {archive_stem}: preparing {len(shards)} shard(s)")
 
-    chunk_rows: list[dict[str, Any]] = []
-    chunk_uris: list[str] = []
-    for index, shard_uri in enumerate(shards):
-        started = time.perf_counter()
-        label = f"[etl] shard {index + 1}/{len(shards)} {Path(shard_uri).name}"
-        emit(f"{label}: discovering raw files")
-        raw_files = _shard_raw_files(shard_uri)
-        emit(f"{label}: {len(raw_files)} raw file(s); filtering and decoding")
-        rows = _rows_for_shard(meta_uri, shard_uri, raw_files, dataset, instrument, schema)
-        if not rows:
-            emit(f"{label}: no usable spectra ({time.perf_counter() - started:.1f}s)")
-            continue
-        frame = pl.DataFrame(rows).with_columns(pl.col("ms2").cast(pl.List(pl.Float32)))
-        chunk_uri = _uri_join(out_prefix, f"chunks/{dataset}/{index:06d}.parquet")
-        _write_parquet(frame, chunk_uri)
-        emit(
-            f"{label}: wrote {frame.height:,} spectra in "
-            f"{time.perf_counter() - started:.1f}s"
-        )
-        chunk_uris.append(chunk_uri)
-        chunk_rows.append(
-            {
-                "uri": chunk_uri,
-                "dataset": dataset,
-                "rows": frame.height,
-                "source_shard": Path(shard_uri).name,
-            }
-        )
-
-    if not chunk_rows:
-        raise ValueError(f"no usable spectra found while preparing {archive_stem!r}")
-    emit(f"[etl] selecting validation winners across {len(chunk_rows)} chunk(s)")
-    winners_uri = _uri_join(out_prefix, "val_winners.parquet")
-    winners = _val_winners(chunk_uris, winners_uri)
-    emit(f"[etl] selected {len(winners):,} validation winner(s)")
-    stats = _irt_stats(chunk_uris)
-    split_rows = _split_rows(chunk_uris)
-    split_datasets = _split_datasets(chunk_uris)
+    started = time.perf_counter()
+    emit("discovering raw files")
+    raw_files = _shard_raw_files(task["shard_uri"])
+    emit(f"{len(raw_files)} raw file(s); filtering and decoding")
+    rows = _rows_for_shard(
+        task["meta_uri"],
+        task["shard_uri"],
+        raw_files,
+        task["dataset"],
+        task["instrument"],
+        ProspectSchema(),
+    )
+    if not rows:
+        raise ValueError(f"task {task['source_id']}/{task['shard_index']} produced no usable spectra")
+    frame = pl.DataFrame(rows).with_columns(pl.col("ms2").cast(pl.List(pl.Float32)))
+    _write_parquet(frame, data_uri)
+    emit(f"wrote {frame.height:,} spectra in {time.perf_counter() - started:.1f}s")
     manifest = {
         "version": 1,
-        "datasets": {dataset: 1},
-        "chunks": chunk_rows,
-        "val_winners": [],
-        "val_winners_uri": winners_uri,
-        "irt_stats": list(stats),
-        "split_rows": split_rows,
-        "split_datasets": split_datasets,
-        "source": {
-            "prefix": str(source_prefix),
-            "meta": meta_filename,
-            "archive": f"{archive_stem}.zip",
-            "dataset": dataset,
-            "instrument": instrument,
-            "max_shards": max_shards,
-        },
+        "task": task,
+        "data_uri": data_uri,
+        "rows": frame.height,
+        "source_shard": Path(task["shard_uri"]).name,
     }
-    with fsspec.open(manifest_uri, "wt") as stream:
-        json.dump(manifest, stream, indent=2)
-    emit(
-        f"[etl] manifest ready: {sum(row['rows'] for row in chunk_rows):,} spectra "
-        f"across {len(chunk_rows)} chunk(s) -> {manifest_uri}"
-    )
+    _write_json(manifest_uri, manifest)
     return manifest
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--source-prefix", required=True)
-    parser.add_argument("--meta", required=True, help="metadata filename at source prefix root")
-    parser.add_argument("--archive-stem", required=True, help="extracted archive directory stem")
-    parser.add_argument("--out-prefix", required=True)
-    parser.add_argument("--dataset", required=True)
-    parser.add_argument("--instrument", default="Lumos")
-    parser.add_argument("--max-shards", type=int)
-    parser.add_argument("--force", action="store_true", help="rebuild even if a matching manifest exists")
-    parser.add_argument("--context-prefix", default="", help="label prepended to progress lines")
-    args = parser.parse_args()
-    manifest = prepare_source(
-        source_prefix=args.source_prefix,
-        meta_filename=args.meta,
-        archive_stem=args.archive_stem,
-        out_prefix=args.out_prefix,
-        dataset=args.dataset,
-        instrument=args.instrument,
-        max_shards=args.max_shards,
-        force=args.force,
-        context_prefix=args.context_prefix,
-    )
-    skipped = bool(manifest.pop("_skipped", False))
-    print(
-        f"{'skipped existing' if skipped else 'prepared'} {len(manifest['chunks'])} chunk(s), "
-        f"{sum(row['rows'] for row in manifest['chunks']):,} spectra -> "
-        f"{_uri_join(args.out_prefix, 'manifest.json')}"
-    )
+def prepare_range(
+    config: PrepareConfig,
+    start: int | None = None,
+    stop: int | None = None,
+    force: bool = False,
+    log: Callable[[str], None] | None = print,
+) -> list[dict[str, Any]]:
+    catalog = ensure_catalog(config)
+    tasks = catalog["tasks"]
+    start = 0 if start is None else start
+    stop = len(tasks) if stop is None else stop
+    if not 0 <= start <= stop <= len(tasks):
+        raise ValueError(f"range {start}:{stop} outside catalog of {len(tasks)} shard task(s)")
+    if log is not None:
+        log(f"[prepare] catalog has {len(tasks):,} shard task(s); processing [{start}:{stop})")
+    return [prepare_task(config.output_prefix, task, force=force, log=log) for task in tasks[start:stop]]
 
 
-if __name__ == "__main__":
-    main()
+def finalize_catalog(config: PrepareConfig, log: Callable[[str], None] | None = print) -> dict[str, Any]:
+    """Validate all shard manifests and write the worker-independent training manifest."""
+    catalog = ensure_catalog(config)
+    manifests: list[dict[str, Any]] = []
+    missing: list[str] = []
+    for task in catalog["tasks"]:
+        uri = _uri_join(_task_output_prefix(config.output_prefix, task), "manifest.json")
+        manifest = _load_json(uri)
+        if manifest is None or not _uri_exists(str(manifest.get("data_uri", ""))):
+            missing.append(f"{task['source_id']}/{int(task['shard_index']):06d}")
+        else:
+            manifests.append(manifest)
+    if missing:
+        preview = ", ".join(missing[:8])
+        raise ValueError(f"cannot finalize: {len(missing)} shard task(s) missing ({preview})")
+
+    chunks = [
+        {
+            "uri": manifest["data_uri"],
+            "dataset": manifest["task"]["dataset"],
+            "rows": int(manifest["rows"]),
+            "source_shard": manifest["source_shard"],
+        }
+        for manifest in manifests
+    ]
+    chunk_uris = [chunk["uri"] for chunk in chunks]
+    validation_uri = _uri_join(config.output_prefix, "validation/val_winners.parquet")
+    winners = _val_winners(chunk_uris, validation_uri)
+    datasets = sorted({chunk["dataset"] for chunk in chunks})
+    manifest = {
+        "version": 1,
+        "catalog_uri": _uri_join(config.output_prefix, "catalog.json"),
+        "datasets": {name: index for index, name in enumerate(datasets, start=1)},
+        "chunks": chunks,
+        "val_winners": [],
+        "val_winners_uri": validation_uri,
+        "irt_stats": list(_irt_stats(chunk_uris)),
+        "split_rows": _split_rows(chunk_uris),
+        "split_datasets": _split_datasets(chunk_uris),
+        "source": {"config_fingerprint": config.fingerprint, "shards": len(chunks)},
+    }
+    _write_json(_uri_join(config.output_prefix, "manifest.json"), manifest)
+    if log is not None:
+        log(f"[prepare] finalized {len(chunks):,} shard(s), {len(winners):,} validation winners")
+    return manifest
+
+
+def catalog_status(config: PrepareConfig) -> dict[str, int]:
+    catalog = ensure_catalog(config)
+    complete = 0
+    for task in catalog["tasks"]:
+        uri = _uri_join(_task_output_prefix(config.output_prefix, task), "manifest.json")
+        manifest = _load_json(uri)
+        if manifest is not None and _uri_exists(str(manifest.get("data_uri", ""))):
+            complete += 1
+    return {"complete": complete, "missing": len(catalog["tasks"]) - complete, "total": len(catalog["tasks"])}

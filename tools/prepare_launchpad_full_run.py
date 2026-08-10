@@ -60,6 +60,7 @@ def main() -> None:
 
     runs = out / "runs"
     runs.mkdir()
+    shutil.copy2(ROOT / "runs" / "prepare-full.toml", runs / "prepare-full.toml")
     (runs / "prepared-cloud.toml").write_text(
         f'''out = "cloud-output-prepared"
 preset = "small"
@@ -98,7 +99,7 @@ early_stop_min_delta = 0.001
     shutil.copy2(fasta, out / "pretrain.fasta")
 
     print(f"prepared {out}")
-    print("staged files: source, Rust extension, lockfile, prepared config, E. coli pretrain FASTA")
+    print("staged files: source, Rust extension, lockfile, prepare catalog, train config, E. coli pretrain FASTA")
     print(f"data source (read-only): {S3_PREFIX}")
 
 

@@ -1,7 +1,8 @@
-"""``pepdistill`` command-line interface — two commands.
+"""``pepdistill`` command-line interface.
 
     run      config.toml           -> trained model (+ optional onnx / bench)
     predict  model + FASTA          -> library.parquet
+    prepare  config.toml             -> deterministic shard assets
 
 ``run`` drives the whole Lightning pipeline from one :class:`RunConfig` (pretrain -> train ->
 export -> bench, each stage toggleable); see :mod:`pepdistill.distill.pipeline`. ``predict``
@@ -29,6 +30,72 @@ from .predict.library import write_library
 from .util import resolve_device
 
 app = typer.Typer(add_completion=False, help="Distill AlphaPeptDeep into fast spectral libraries.")
+
+
+def _parse_range(value: str | None, total: int) -> tuple[int, int]:
+    if value is None:
+        return 0, total
+    parts = value.split(":")
+    if len(parts) != 2 or not all(part.strip().isdigit() for part in parts):
+        raise typer.BadParameter("range must be a half-open integer range such as 0:100")
+    start, stop = (int(part) for part in parts)
+    if not 0 <= start <= stop <= total:
+        raise typer.BadParameter(f"range {value!r} outside catalog of {total} shard task(s)")
+    return start, stop
+
+
+@app.command()
+def prepare(
+    config: Path = typer.Argument(..., exists=True, readable=True, help="Prepare config (TOML)."),
+    range_spec: Optional[str] = typer.Option(
+        None, "--range", help="Half-open global shard range START:STOP (default: all)."
+    ),
+    force: bool = typer.Option(False, "--force", help="Rebuild completed shard assets."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Discover and report tasks without processing."),
+) -> None:
+    """Discover the global shard catalog and prepare one optional range of shards."""
+    from .etl.config import PrepareConfig
+    from .etl.prospect import ensure_catalog, prepare_range
+
+    cfg = PrepareConfig.load(config)
+    catalog = ensure_catalog(cfg, force=force)
+    start, stop = _parse_range(range_spec, len(catalog["tasks"]))
+    typer.echo(f"catalog: {len(catalog['tasks']):,} shard task(s); selected [{start}:{stop})")
+    if dry_run:
+        for task in catalog["tasks"][start:stop]:
+            typer.echo(
+                f"{task['ordinal']:06d} {task['source_id']} shard={int(task['shard_index']):06d} "
+                f"dataset={task['dataset']}"
+            )
+        return
+    prepare_range(cfg, start=start, stop=stop, force=force, log=typer.echo)
+
+
+@app.command(name="prepare-finalize")
+def prepare_finalize(
+    config: Path = typer.Argument(..., exists=True, readable=True, help="Prepare config (TOML)."),
+) -> None:
+    """Validate every shard asset and write the worker-independent training manifest."""
+    from .etl.config import PrepareConfig
+    from .etl.prospect import finalize_catalog
+
+    manifest = finalize_catalog(PrepareConfig.load(config), log=typer.echo)
+    typer.echo(f"manifest ready -> {manifest['catalog_uri'].removesuffix('/catalog.json')}/manifest.json")
+
+
+@app.command(name="prepare-status")
+def prepare_status(
+    config: Path = typer.Argument(..., exists=True, readable=True, help="Prepare config (TOML)."),
+) -> None:
+    """Report how many catalog shard assets are complete."""
+    from .etl.config import PrepareConfig
+    from .etl.prospect import catalog_status
+
+    status = catalog_status(PrepareConfig.load(config))
+    typer.echo(
+        f"prepared shards: {status['complete']:,}/{status['total']:,} complete "
+        f"({status['missing']:,} missing)"
+    )
 
 
 @app.command()

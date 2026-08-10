@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import shutil
+
 import pandas as pd
 import pytest
 import torch
@@ -10,7 +12,8 @@ pytest.importorskip("polars")
 
 from pepdistill.data.prepared import PreparedManifest, PreparedStreamingDataset
 from pepdistill.distill.context_regime import MSContextEncoder
-from pepdistill.etl.prospect import prepare_source
+from pepdistill.etl.config import PrepareConfig, PrepareGroup, PrepareSource
+from pepdistill.etl.prospect import catalog_status, discover_catalog, finalize_catalog, prepare_range
 
 
 def _source(tmp_path):
@@ -46,15 +49,25 @@ def _source(tmp_path):
     return root, stem
 
 
-def test_prepare_source_writes_manifest_and_chunked_rows(tmp_path):
+def _config(root, stem, out):
+    return PrepareConfig(
+        source_prefix=str(root),
+        output_prefix=str(out),
+        sources=(PrepareSource(id="isoform", dataset="isoform", meta="meta.parquet", archive=stem),),
+    )
+
+
+def test_prepare_shards_writes_manifest_and_chunked_rows(tmp_path):
     root, stem = _source(tmp_path)
     out = tmp_path / "prepared"
-    manifest = prepare_source(str(root), "meta.parquet", stem, str(out), "isoform")
+    config = _config(root, stem, out)
+    prepare_range(config, log=None)
+    manifest = finalize_catalog(config, log=None)
     assert manifest["version"] == 1
     assert len(manifest["chunks"]) == 1
     assert manifest["irt_stats"][0] == 1
     assert (out / "manifest.json").exists()
-    assert (out / "val_winners.parquet").exists()
+    assert (out / "validation" / "val_winners.parquet").exists()
 
     loaded = PreparedManifest.load(str(out))
     assert loaded.datasets == {"isoform": 1}
@@ -65,7 +78,9 @@ def test_prepare_source_writes_manifest_and_chunked_rows(tmp_path):
 def test_prepared_reader_streams_rows_into_real_batches(tmp_path):
     root, stem = _source(tmp_path)
     out = tmp_path / "prepared"
-    prepare_source(str(root), "meta.parquet", stem, str(out), "isoform")
+    config = _config(root, stem, out)
+    prepare_range(config, log=None)
+    finalize_catalog(config, log=None)
     manifest = PreparedManifest.load(str(out))
     ds = PreparedStreamingDataset(
         manifest, MSContextEncoder(context_dim=8), frozenset({"train"}), shuffle_buffer=0
@@ -76,24 +91,53 @@ def test_prepared_reader_streams_rows_into_real_batches(tmp_path):
     assert batch.base.ms2_target.shape[0] == 1
 
 
-def test_prepare_source_skips_complete_matching_manifest(tmp_path, monkeypatch):
+def test_prepare_shard_skips_complete_manifest(tmp_path, monkeypatch):
     root, stem = _source(tmp_path)
     out = tmp_path / "prepared"
     logs: list[str] = []
-    first = prepare_source(
-        str(root), "meta.parquet", stem, str(out), "isoform",
-        log=logs.append, context_prefix="group-a",
-    )
-    assert logs[0].startswith("[etl][group-a] ")
+    config = _config(root, stem, out)
+    first = prepare_range(config, log=logs.append)[0]
+    assert logs[0].startswith("[prepare]")
 
     def unexpected_decode(*args, **kwargs):
         raise AssertionError("a complete matching manifest should skip shard decoding")
 
     monkeypatch.setattr("pepdistill.etl.prospect._rows_for_shard", unexpected_decode)
-    second = prepare_source(
-        str(root), "meta.parquet", stem, str(out), "isoform",
-        log=logs.append, context_prefix="group-a",
-    )
+    second = prepare_range(config, log=logs.append)[0]
     assert second.pop("_skipped") is True
     assert second == first
-    assert logs[-1].startswith("[etl][group-a] ")
+    assert "complete manifest exists; skipping" in logs[-1]
+
+
+def test_shard_catalog_range_and_finalize(tmp_path):
+    root, stem = _source(tmp_path)
+    out = tmp_path / "prepared-shards"
+    config = _config(root, stem, out)
+    prepared = prepare_range(config, start=0, stop=1, log=None)
+    assert len(prepared) == 1
+    assert catalog_status(config) == {"complete": 1, "missing": 0, "total": 1}
+    manifest = finalize_catalog(config, log=None)
+    assert manifest["datasets"] == {"isoform": 1}
+    assert manifest["chunks"][0]["uri"].endswith("shards/isoform/000000/data.parquet")
+    assert PreparedManifest.load(str(out)).chunks[0].rows == 2
+
+
+def test_group_config_discovers_matching_archives(tmp_path):
+    root, stem = _source(tmp_path)
+    mirror = tmp_path / "mirror"
+    (mirror / "prospect").mkdir(parents=True)
+    shutil.copytree(root / stem, mirror / "prospect" / stem)
+    config = PrepareConfig(
+        source_prefix=str(mirror),
+        output_prefix=str(tmp_path / "prepared"),
+        groups=(
+            PrepareGroup(
+                record="prospect",
+                include=("TUM_*",),
+                dataset_prefix="prospect",
+            ),
+        ),
+    )
+    catalog = discover_catalog(config)
+    assert len(catalog["tasks"]) == 1
+    assert catalog["tasks"][0]["dataset"] == "prospect_tum_isoform"

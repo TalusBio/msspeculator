@@ -1,0 +1,29 @@
+# Full non-holdout prepared catalog. Archive directories are discovered from the source
+# mirror; test_ptm is excluded by omission. Add an archive glob to include/exclude subsets.
+
+[prepare]
+source_prefix = "s3://terraform-workstations-bucket/jspaezp/20241022_prospect"
+output_prefix = "s3://terraform-workstations-bucket/jspaezp/pepdistill-prepared/v1"
+
+[[prepare.groups]]
+record = "prospect"
+include = ["*"]
+dataset_prefix = "prospect"
+
+[[prepare.groups]]
+record = "tmt"
+include = ["*"]
+dataset_prefix = "tmt"
+strip_prefix = "TMT_"
+
+[[prepare.groups]]
+record = "multi_ptm"
+include = ["*"]
+dataset_prefix = "multi_ptm"
+strip_prefix = "TUM_mod_"
+
+[[prepare.groups]]
+record = "tmt_ptm"
+include = ["*"]
+dataset_prefix = "tmt_ptm"
+strip_prefix = "TMT_TUM_mod_"
