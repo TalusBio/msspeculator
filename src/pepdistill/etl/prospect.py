@@ -35,6 +35,8 @@ from ..data.prospect import ProspectSchema, decode_fragments
 from ..data.prospect_catalog import load_catalog, load_shard_index
 from .config import PrepareConfig, PrepareGroup, PrepareSource
 
+_CATALOG_VERSION = 2
+
 
 def _uri_join(prefix: str | Path, name: str) -> str:
     return f"{str(prefix).rstrip('/')}/{name.lstrip('/')}"
@@ -300,6 +302,17 @@ def _group_dataset(group: PrepareGroup, archive: str) -> str:
     return f"{prefix}_{name}".lower()
 
 
+def _group_metadata_name(group: PrepareGroup, archive: str) -> str:
+    """Return the record-level metadata filename for an archive.
+
+    Numbered PROSPECT ZIPs are physical partitions of one logical pool. For example,
+    ``TUM_isoform_1.zip`` and ``TUM_isoform_2.zip`` both join against
+    ``TUM_isoform_meta_data.parquet``.
+    """
+    stem = re.sub(r"_[1-9][0-9]*$", "", archive) if group.strip_number_suffix else archive
+    return f"{stem}{group.meta_suffix}"
+
+
 def _sources_from_groups(config: PrepareConfig) -> tuple[PrepareSource, ...]:
     catalog = load_catalog()["records"]
     sources: list[PrepareSource] = []
@@ -316,18 +329,25 @@ def _sources_from_groups(config: PrepareConfig) -> tuple[PrepareSource, ...]:
                 continue
             if any(fnmatch.fnmatchcase(archive, pattern) for pattern in group.exclude):
                 continue
+            meta_name = _group_metadata_name(group, archive)
+            meta_entry = record["files"].get(meta_name)
+            if not isinstance(meta_entry, dict) or not meta_entry.get("url"):
+                raise ValueError(
+                    f"PROSPECT catalog has no metadata {meta_name!r} for "
+                    f"{group.record}/{archive_filename}"
+                )
             sources.append(
                 PrepareSource(
                     id=f"{group.record}_{archive}",
                     dataset=_group_dataset(group, archive),
-                    meta=f"{archive}{group.meta_suffix}",
+                    meta=meta_name,
                     archive=archive,
                     instrument=group.instrument,
                     source_prefix=prefix,
                     record=group.record,
                     record_id=str(record["record_id"]),
                     archive_url=str(entry["url"]),
-                    meta_url=str(record["files"].get(f"{archive}{group.meta_suffix}", {}).get("url", "")),
+                    meta_url=str(meta_entry["url"]),
                 )
             )
     return tuple(sources)
@@ -453,7 +473,7 @@ def discover_catalog(config: PrepareConfig) -> dict[str, Any]:
                 }
             )
     return {
-        "version": 1,
+        "version": _CATALOG_VERSION,
         "config_fingerprint": config.fingerprint,
         "output_prefix": config.output_prefix,
         "tasks": tasks,
@@ -464,7 +484,11 @@ def ensure_catalog(config: PrepareConfig, force: bool = False) -> dict[str, Any]
     uri = _uri_join(config.output_prefix, "catalog.json")
     if not force:
         existing = _load_json(uri)
-        if existing and existing.get("version") == 1 and existing.get("config_fingerprint") == config.fingerprint:
+        if (
+            existing
+            and existing.get("version") == _CATALOG_VERSION
+            and existing.get("config_fingerprint") == config.fingerprint
+        ):
             return existing
     catalog = discover_catalog(config)
     _write_json(uri, catalog)

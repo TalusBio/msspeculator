@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pandas as pd
 import pytest
 import torch
@@ -11,7 +13,13 @@ pytest.importorskip("polars")
 from pepdistill.data.prepared import PreparedManifest, PreparedStreamingDataset
 from pepdistill.distill.context_regime import MSContextEncoder
 from pepdistill.etl.config import PrepareConfig, PrepareGroup, PrepareSource
-from pepdistill.etl.prospect import catalog_status, discover_catalog, finalize_catalog, prepare_range
+from pepdistill.etl.prospect import (
+    catalog_status,
+    discover_catalog,
+    ensure_catalog,
+    finalize_catalog,
+    prepare_range,
+)
 
 
 def _source(tmp_path):
@@ -122,7 +130,7 @@ def test_shard_catalog_range_and_finalize(tmp_path):
 
 def test_group_config_discovers_matching_archives(tmp_path):
     config = PrepareConfig(
-        source_prefix=None,
+        source_prefix=str(tmp_path / "cache"),
         output_prefix=str(tmp_path / "prepared"),
         groups=(
             PrepareGroup(
@@ -139,3 +147,36 @@ def test_group_config_discovers_matching_archives(tmp_path):
         "prospect_TUM_isoform_2",
     }
     assert catalog["tasks"][0]["dataset"] == "prospect_tum_isoform"
+    assert catalog["version"] == 2
+    assert {task["meta_uri"].rsplit("/", 1)[-1] for task in catalog["tasks"]} == {
+        "TUM_isoform_meta_data.parquet"
+    }
+    assert all(
+        task["meta_url"].endswith("TUM_isoform_meta_data.parquet/content")
+        for task in catalog["tasks"]
+    )
+
+
+def test_group_catalog_v1_is_rebuilt_for_shared_metadata_fix(tmp_path):
+    output = tmp_path / "prepared"
+    output.mkdir()
+    config = PrepareConfig(
+        source_prefix=str(tmp_path / "cache"),
+        output_prefix=str(output),
+        groups=(PrepareGroup(record="prospect", include=("TUM_isoform_1",)),),
+    )
+    (output / "catalog.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "config_fingerprint": config.fingerprint,
+                "tasks": [{"meta_url": "", "source_id": "prospect_TUM_isoform_1"}],
+            }
+        )
+    )
+
+    catalog = ensure_catalog(config)
+
+    assert catalog["version"] == 2
+    assert catalog["tasks"][0]["meta_uri"].endswith("TUM_isoform_meta_data.parquet")
+    assert catalog["tasks"][0]["meta_url"].endswith("TUM_isoform_meta_data.parquet/content")
