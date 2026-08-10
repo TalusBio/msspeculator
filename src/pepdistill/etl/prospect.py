@@ -290,13 +290,15 @@ def prepare_source(
     schema: ProspectSchema | None = None,
     force: bool = False,
     log: Callable[[str], None] | None = print,
+    context_prefix: str = "",
 ) -> dict[str, Any]:
     """Prepare one extracted PROSPECT archive and write a version-1 manifest."""
     schema = schema or ProspectSchema()
 
     def emit(message: str) -> None:
         if log is not None:
-            log(message)
+            label = f"[etl][{context_prefix}]" if context_prefix else "[etl]"
+            log(f"{label}{message.removeprefix('[etl]')}")
 
     manifest_uri = _uri_join(out_prefix, "manifest.json")
     if not force:
@@ -395,6 +397,7 @@ def main() -> None:
     parser.add_argument("--instrument", default="Lumos")
     parser.add_argument("--max-shards", type=int)
     parser.add_argument("--force", action="store_true", help="rebuild even if a matching manifest exists")
+    parser.add_argument("--context-prefix", default="", help="label prepended to progress lines")
     args = parser.parse_args()
     manifest = prepare_source(
         source_prefix=args.source_prefix,
@@ -405,6 +408,7 @@ def main() -> None:
         instrument=args.instrument,
         max_shards=args.max_shards,
         force=args.force,
+        context_prefix=args.context_prefix,
     )
     skipped = bool(manifest.pop("_skipped", False))
     print(

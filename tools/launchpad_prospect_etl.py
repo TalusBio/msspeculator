@@ -18,6 +18,7 @@ from pathlib import Path
 
 SOURCE_PREFIX = "s3://terraform-workstations-bucket/jspaezp/20241022_prospect"
 OUT_PREFIX = "s3://terraform-workstations-bucket/jspaezp/pepdistill-prepared/v1"
+CONTEXT_PREFIX = "prospect_tum_isoform/TUM_isoform_1"
 
 
 def main() -> None:
@@ -29,6 +30,7 @@ def main() -> None:
         "--out-prefix", OUT_PREFIX,
         "--dataset", "prospect_tum_isoform",
         "--instrument", "Lumos",
+        "--context-prefix", CONTEXT_PREFIX,
     ]
     if not Path("pyproject.toml").exists():
         raise SystemExit("stage is incomplete; run tools/prepare_launchpad_full_run.py first")

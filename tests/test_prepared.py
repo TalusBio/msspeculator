@@ -79,12 +79,21 @@ def test_prepared_reader_streams_rows_into_real_batches(tmp_path):
 def test_prepare_source_skips_complete_matching_manifest(tmp_path, monkeypatch):
     root, stem = _source(tmp_path)
     out = tmp_path / "prepared"
-    first = prepare_source(str(root), "meta.parquet", stem, str(out), "isoform")
+    logs: list[str] = []
+    first = prepare_source(
+        str(root), "meta.parquet", stem, str(out), "isoform",
+        log=logs.append, context_prefix="group-a",
+    )
+    assert logs[0].startswith("[etl][group-a] ")
 
     def unexpected_decode(*args, **kwargs):
         raise AssertionError("a complete matching manifest should skip shard decoding")
 
     monkeypatch.setattr("pepdistill.etl.prospect._rows_for_shard", unexpected_decode)
-    second = prepare_source(str(root), "meta.parquet", stem, str(out), "isoform")
+    second = prepare_source(
+        str(root), "meta.parquet", stem, str(out), "isoform",
+        log=logs.append, context_prefix="group-a",
+    )
     assert second.pop("_skipped") is True
     assert second == first
+    assert logs[-1].startswith("[etl][group-a] ")
