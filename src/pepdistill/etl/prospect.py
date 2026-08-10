@@ -31,6 +31,51 @@ def _uri_join(prefix: str | Path, name: str) -> str:
     return f"{str(prefix).rstrip('/')}/{name.lstrip('/')}"
 
 
+def _uri_exists(uri: str) -> bool:
+    fs, _, paths = fsspec.get_fs_token_paths(uri)
+    return bool(fs.exists(paths[0]))
+
+
+def _load_json(uri: str) -> dict[str, Any] | None:
+    try:
+        with fsspec.open(uri, "rt") as stream:
+            value = json.load(stream)
+    except (FileNotFoundError, OSError, ValueError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _existing_manifest(
+    manifest_uri: str,
+    source_prefix: str | Path,
+    meta_filename: str,
+    archive_stem: str,
+    dataset: str,
+    instrument: str,
+    max_shards: int | None,
+) -> dict[str, Any] | None:
+    """Return a complete matching manifest, if the output prefix is already prepared."""
+    manifest = _load_json(manifest_uri)
+    if manifest is None or manifest.get("version") != 1:
+        return None
+    source = manifest.get("source", {})
+    expected = {
+        "prefix": str(source_prefix),
+        "meta": meta_filename,
+        "archive": f"{archive_stem}.zip",
+        "dataset": dataset,
+        "instrument": instrument,
+        "max_shards": max_shards,
+    }
+    if any(source.get(key) != value for key, value in expected.items()):
+        return None
+    required = [row.get("uri") for row in manifest.get("chunks", [])]
+    required.append(manifest.get("val_winners_uri"))
+    if not required or any(not isinstance(uri, str) or not _uri_exists(uri) for uri in required):
+        return None
+    return manifest
+
+
 def _list_shards(source_prefix: str | Path, archive_stem: str) -> list[str]:
     """List extracted members under ``<prefix>/<stem>/<stem>``."""
     root = _uri_join(source_prefix, f"{archive_stem}/{archive_stem}")
@@ -241,9 +286,23 @@ def prepare_source(
     instrument: str = "Lumos",
     max_shards: int | None = None,
     schema: ProspectSchema | None = None,
+    force: bool = False,
 ) -> dict[str, Any]:
     """Prepare one extracted PROSPECT archive and write a version-1 manifest."""
     schema = schema or ProspectSchema()
+    manifest_uri = _uri_join(out_prefix, "manifest.json")
+    if not force:
+        existing = _existing_manifest(
+            manifest_uri,
+            source_prefix,
+            meta_filename,
+            archive_stem,
+            dataset,
+            instrument,
+            max_shards,
+        )
+        if existing is not None:
+            return {**existing, "_skipped": True}
     meta_uri = _uri_join(source_prefix, meta_filename)
     shards = _list_shards(source_prefix, archive_stem)
     if max_shards is not None:
@@ -291,9 +350,11 @@ def prepare_source(
             "prefix": str(source_prefix),
             "meta": meta_filename,
             "archive": f"{archive_stem}.zip",
+            "dataset": dataset,
+            "instrument": instrument,
+            "max_shards": max_shards,
         },
     }
-    manifest_uri = _uri_join(out_prefix, "manifest.json")
     with fsspec.open(manifest_uri, "wt") as stream:
         json.dump(manifest, stream, indent=2)
     return manifest
@@ -308,6 +369,7 @@ def main() -> None:
     parser.add_argument("--dataset", required=True)
     parser.add_argument("--instrument", default="Lumos")
     parser.add_argument("--max-shards", type=int)
+    parser.add_argument("--force", action="store_true", help="rebuild even if a matching manifest exists")
     args = parser.parse_args()
     manifest = prepare_source(
         source_prefix=args.source_prefix,
@@ -317,9 +379,11 @@ def main() -> None:
         dataset=args.dataset,
         instrument=args.instrument,
         max_shards=args.max_shards,
+        force=args.force,
     )
+    skipped = bool(manifest.pop("_skipped", False))
     print(
-        f"prepared {len(manifest['chunks'])} chunk(s), "
+        f"{'skipped existing' if skipped else 'prepared'} {len(manifest['chunks'])} chunk(s), "
         f"{sum(row['rows'] for row in manifest['chunks']):,} spectra -> "
         f"{_uri_join(args.out_prefix, 'manifest.json')}"
     )

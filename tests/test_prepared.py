@@ -74,3 +74,17 @@ def test_prepared_reader_streams_rows_into_real_batches(tmp_path):
     assert len(examples) == 1
     batch = next(ds.batches(1, shuffle=False, generator=torch.Generator().manual_seed(0)))
     assert batch.base.ms2_target.shape[0] == 1
+
+
+def test_prepare_source_skips_complete_matching_manifest(tmp_path, monkeypatch):
+    root, stem = _source(tmp_path)
+    out = tmp_path / "prepared"
+    first = prepare_source(str(root), "meta.parquet", stem, str(out), "isoform")
+
+    def unexpected_decode(*args, **kwargs):
+        raise AssertionError("a complete matching manifest should skip shard decoding")
+
+    monkeypatch.setattr("pepdistill.etl.prospect._rows_for_shard", unexpected_decode)
+    second = prepare_source(str(root), "meta.parquet", stem, str(out), "isoform")
+    assert second.pop("_skipped") is True
+    assert second == first
