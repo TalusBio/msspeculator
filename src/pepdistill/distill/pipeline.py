@@ -35,6 +35,7 @@ import torch
 from ..data.config import DigestConfig, SplitConfig
 from ..data.digest import digest_fasta
 from ..data.meta_index import MetaIndex, build_meta_index
+from ..data.prepared import PreparedManifest, PreparedStreamingDataset
 from ..data.precursors import enumerate_precursors
 from ..data.prospect import ProspectSource, make_cache
 from ..data.shard_store import extract_shards, select_members, shard_raw_files
@@ -146,6 +147,7 @@ class TrainSource:
 class TrainCfg:
     enabled: bool = True
     sources: list[TrainSource] = field(default_factory=list)
+    prepared_prefix: str | None = None
     epochs: int = 60
     batch_size: int = 256
     lr: float = 1e-3
@@ -182,6 +184,13 @@ def _check_train_sources(cfg: TrainCfg) -> None:
     is multiple GB spent to discover a typo. Called again from :func:`_build_train_stage`
     because a :class:`RunConfig` assembled in Python never passes through :func:`_train_cfg`.
     """
+    if cfg.prepared_prefix:
+        if cfg.sources:
+            raise ValueError(
+                "[train] prepared_prefix cannot be combined with [[train.sources]]; "
+                "choose raw-source or prepared-prefix training"
+            )
+        return
     if not cfg.sources:
         raise ValueError(
             "[train] is enabled but declares no [[train.sources]]; add one entry per pool "
@@ -206,6 +215,7 @@ def _train_cfg(raw: dict) -> TrainCfg:
             "[[train.sources]] entry with record/meta/zip/shards (+ dataset, instrument, "
             "val_only)"
         )
+    prepared_prefix = d.pop("prepared_prefix", None)
     sources = [TrainSource(**s) for s in d.pop("sources", [])]
     if len(sources) > 1:
         unnamed = [s.zip for s in sources if not s.dataset]
@@ -217,7 +227,7 @@ def _train_cfg(raw: dict) -> TrainCfg:
             )
     if "loss_weights" in d:
         d["loss_weights"] = tuple(d["loss_weights"])
-    cfg = TrainCfg(sources=sources, **d)
+    cfg = TrainCfg(sources=sources, prepared_prefix=prepared_prefix, **d)
     if cfg.enabled:
         _check_train_sources(cfg)
     return cfg
@@ -621,11 +631,41 @@ def run_pipeline(cfg: RunConfig, log=print) -> dict:
         # globally, so a second call there would reset the stream after the context modules had
         # already drawn from it.
         L.seed_everything(cfg.seed, verbose=False)
-        train_shards, val_shards, index, dataset_index, names_by_row, stats = _build_train_stage(
-            cfg,
-            log,
-            existing_dataset_index=loaded_context.dataset_index if loaded_context else None,
-        )
+        prepared_manifest = None
+        if cfg.train.prepared_prefix:
+            prepared_manifest = PreparedManifest.load(cfg.train.prepared_prefix)
+            dataset_index = prepared_manifest.datasets
+            names_by_row = {row: name for name, row in dataset_index.items()}
+            stats = [prepared_manifest.irt_stats]
+            train_ds = PreparedStreamingDataset(
+                prepared_manifest, encoder, frozenset({"train"}), seed=cfg.seed,
+                shuffle_buffer=cfg.train.shuffle_buffer,
+            )
+            val_ds = PreparedStreamingDataset(
+                prepared_manifest, encoder, frozenset({"val"}), seed=cfg.seed,
+                shuffle_buffer=0,
+            )
+            log(
+                f"[train] prepared prefix: {cfg.train.prepared_prefix}; "
+                f"{len(prepared_manifest.chunks)} chunk(s), "
+                f"{len(prepared_manifest.datasets)} dataset(s)"
+            )
+        else:
+            train_shards, val_shards, index, dataset_index, names_by_row, stats = _build_train_stage(
+                cfg,
+                log,
+                existing_dataset_index=loaded_context.dataset_index if loaded_context else None,
+            )
+            train_ds = StreamingRealDataset(
+                train_shards,
+                index,
+                encoder,
+                _TRAIN_SPLITS,
+                seed=cfg.seed,
+                shuffle_buffer=cfg.train.shuffle_buffer,
+            )
+            val_examples = collect_val_examples(val_shards, index, encoder, names_by_row, log=log)
+            val_ds = RealSpeclibDataset(val_examples) if val_examples else None
         # Whether the affine was set here or inherited is the difference between a cold start
         # and a continued curriculum, for a value that is permanent once set — so say which.
         if establish_rt_norm(model, stats):
@@ -642,17 +682,13 @@ def run_pipeline(cfg: RunConfig, log=print) -> dict:
             dataset_index,
             model.cfg.context_dim,
         )
-        train_ds = StreamingRealDataset(
-            train_shards,
-            index,
-            encoder,
-            _TRAIN_SPLITS,
-            seed=cfg.seed,
-            shuffle_buffer=cfg.train.shuffle_buffer,
-        )
-        val_examples = collect_val_examples(val_shards, index, encoder, names_by_row, log=log)
-        val_ds = RealSpeclibDataset(val_examples) if val_examples else None
-        log(f"[train] streaming {len(train_shards)} shard(s); val {len(val_examples)} examples")
+        if prepared_manifest is None:
+            log(f"[train] streaming {len(train_shards)} shard(s); val {len(val_examples)} examples")
+        else:
+            log(
+                f"[train] streaming prepared chunks directly; "
+                f"train rows={len(train_ds):,}, val rows={len(val_ds):,}"
+            )
         module = fit_realspeclib_datasets(
             model,
             train_ds,

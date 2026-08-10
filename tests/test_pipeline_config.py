@@ -87,6 +87,23 @@ dataset = "third_pool"
     assert cfg.train.sources[0].shards == "all"
 
 
+def test_prepared_prefix_replaces_raw_sources(tmp_path):
+    text = BASE.replace("enabled = true", "enabled = true", 1).replace(
+        "epochs = 5", "epochs = 5\nprepared_prefix = \"s3://bucket/prepared/v1\""
+    )
+    cfg = RunConfig.from_toml(_write(tmp_path, text))
+    assert cfg.train.prepared_prefix == "s3://bucket/prepared/v1"
+    assert cfg.train.sources == []
+
+
+def test_prepared_prefix_cannot_mix_raw_sources(tmp_path):
+    text = TWO_SOURCES.replace(
+        "epochs = 5", "epochs = 5\nprepared_prefix = \"s3://bucket/prepared/v1\""
+    )
+    with pytest.raises(ValueError, match="prepared_prefix cannot be combined"):
+        RunConfig.from_toml(_write(tmp_path, text))
+
+
 def test_flat_pool_keys_raise(tmp_path):
     text = BASE + '\nrecord = "prospect"\nzip = "TUM_third_pool.zip"\n'
     with pytest.raises(ValueError, match=r"\[\[train.sources\]\]"):

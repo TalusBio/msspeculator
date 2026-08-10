@@ -15,6 +15,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUT = ROOT / ".launchpad" / "full-run-stage"
 S3_PREFIX = "s3://terraform-workstations-bucket/jspaezp/20241022_prospect"
+PREPARED_PREFIX = "s3://terraform-workstations-bucket/jspaezp/pepdistill-prepared/v1"
 
 
 def main() -> None:
@@ -41,6 +42,40 @@ def main() -> None:
         f'cache_s3_prefix = "{S3_PREFIX}"',
     )
     (runs / "full-nontest-cloud.toml").write_text(config)
+    (runs / "prepared-cloud.toml").write_text(
+        f'''out = "cloud-output-prepared"
+preset = "small"
+activation = "gelu_tanh"
+device = "cpu"
+seed = 0
+
+[pretrain]
+enabled = true
+teacher = "alphapeptdeep"
+passes = 2
+chunk_size = 10000
+patience = 5
+
+[[pretrain.sources]]
+fasta = "pretrain.fasta"
+enzyme = "trypsin"
+missed = 2
+min_len = 7
+max_len = 30
+min_charge = 2
+max_charge = 4
+max_var_mods = 1
+
+[train]
+enabled = true
+prepared_prefix = "{PREPARED_PREFIX}"
+epochs = 60
+batch_size = 256
+lr = 0.0003
+early_stop_patience = 5
+early_stop_min_delta = 0.001
+'''
+    )
     shutil.copy2(ROOT / "fasta_ignore" / "hela_gt20peps.fasta", out / "pretrain.fasta")
 
     print(f"prepared {out}")

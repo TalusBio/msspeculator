@@ -567,15 +567,20 @@ def fit_realspeclib_datasets(
         return DataLoader(BatchIterable(ds, batch_size, shuffle, seed), batch_size=None)
 
     callbacks = list(trainer_kwargs.pop("callbacks", []))
+    val_dataset_ids = (
+        val_ds.dataset_ids_present
+        if hasattr(val_ds, "dataset_ids_present")
+        else set(np.unique(val_ds.dataset_id)) if val_ds is not None and len(val_ds) else set()
+    )
     if progress_log_every > 0:
         callbacks.append(_RealTrainProgress(progress_log_every, progress_metrics_path))
     if early_stop_patience < 0:
         raise ValueError("early_stop_patience must be non-negative")
     if early_stop_min_delta < 0:
         raise ValueError("early_stop_min_delta must be non-negative")
-    if early_stop_patience > 0 and val_ds is not None and len(val_ds):
+    if early_stop_patience > 0 and val_ds is not None and val_dataset_ids:
         expected_names = {
-            module.dataset_names[int(dataset_id)] for dataset_id in np.unique(val_ds.dataset_id)
+            module.dataset_names[int(dataset_id)] for dataset_id in val_dataset_ids
         }
         expected_keys = {f"val/{name}/spectral_angle" for name in expected_names}
         callbacks.append(
@@ -585,10 +590,8 @@ def fit_realspeclib_datasets(
         checkpoint_keys = (
             {
                 f"val/{module.dataset_names[int(dataset_id)]}/spectral_angle"
-                for dataset_id in np.unique(val_ds.dataset_id)
+                for dataset_id in val_dataset_ids
             }
-            if val_ds is not None and len(val_ds)
-            else set()
         )
         callbacks.insert(0, _RealCheckpoint(checkpoint_dir, checkpoint_keys))
     trainer = build_trainer(epochs, accelerator, grad_clip, callbacks=callbacks, **trainer_kwargs)

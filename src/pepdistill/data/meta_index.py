@@ -14,6 +14,7 @@ from __future__ import annotations
 import warnings
 from dataclasses import dataclass, field
 
+import pandas as pd
 import pyarrow.dataset as pads
 
 from ..chem import Peptide
@@ -110,6 +111,59 @@ class MetaIndex:
                 total += sm.irt
                 sumsq += sm.irt * sm.irt
         return n, total, sumsq
+
+
+def build_meta_index_from_frame(
+    frame: pd.DataFrame,
+    split_cfg: SplitConfig | None = None,
+    schema: ProspectSchema | None = None,
+) -> MetaIndex:
+    """Build a compact index from an already-filtered metadata frame.
+
+    The prepared-data ETL uses this for one annotation shard at a time.  Keeping the frame
+    boundary explicit prevents it from accidentally turning into a second whole-pool metadata
+    materialization.
+    """
+    s = schema or ProspectSchema()
+    split_cfg = split_cfg or SplitConfig()
+    required = [s.raw_file, s.scan_number, s.modified_sequence, s.charge]
+    missing = [col for col in required if col not in frame.columns]
+    if missing:
+        raise ValueError(f"metadata frame missing required columns {missing}")
+    irt_col = s.indexed_retention_time if s.indexed_retention_time in frame else s.retention_time
+    raw_col = s.retention_time if s.retention_time in frame else irt_col
+    if irt_col not in frame or raw_col not in frame:
+        raise ValueError(f"metadata frame missing retention-time columns {irt_col!r}/{raw_col!r}")
+    parsed: dict[str, tuple[str, tuple]] = {}
+    index = MetaIndex()
+    for row in frame.itertuples(index=False):
+        values = row._asdict()
+        modseq = str(values[s.modified_sequence])
+        if modseq not in parsed:
+            parsed[modseq] = parse_modseq(modseq)
+        stripped, mods = parsed[modseq]
+        key = (str(values[s.raw_file]), int(values[s.scan_number]))
+        if key in index.by_key:
+            continue
+        ce = values.get(s.collision_energy)
+        index.by_key[key] = SpectrumMeta(
+            peptide=Peptide(stripped, mods),
+            charge=int(values[s.charge]),
+            irt=float(values[irt_col]),
+            raw_rt=float(values[raw_col]),
+            split=assign_split(stripped, split_cfg),
+            mass_analyzer=str(values.get(s.mass_analyzer, "")),
+            fragmentation=str(values.get(s.fragmentation, "")),
+            energy=float(ce) if ce is not None else float("nan"),
+            andromeda=(
+                float(values[s.andromeda_score])
+                if s.andromeda_score in values and values[s.andromeda_score] is not None
+                else float("nan")
+            ),
+        )
+    if not index.by_key:
+        raise ValueError("metadata frame contains no rows")
+    return index
 
 
 def build_meta_index(
@@ -213,4 +267,4 @@ def build_meta_index(
     return index
 
 
-__all__ = ["SpectrumMeta", "MetaIndex", "build_meta_index"]
+__all__ = ["SpectrumMeta", "MetaIndex", "build_meta_index", "build_meta_index_from_frame"]

@@ -36,6 +36,11 @@ onnx = [
 prospect = [
     "s3fs>=2024.0",
 ]
+# Polars-based preparation of immutable, chunked training assets.
+etl = [
+    "polars>=1.0",
+    "s3fs>=2024.0",
+]
 
 [project.scripts]
 pepdistill = "pepdistill.cli:app"
