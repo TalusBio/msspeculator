@@ -12,12 +12,15 @@ choice changes the resulting assets.
 # [tool.launchpad]
 # vcpus = 8
 # memory = 30000
+# array_size = 10
 # job_name = "pepdistill-etl"
 # ///
 
 from __future__ import annotations
 
 import argparse
+import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -43,6 +46,27 @@ def main() -> None:
     command = ["uv", "run", "--project", ".", "--extra", "etl", "pepdistill", "prepare", str(args.config)]
     if args.range_spec:
         command.extend(["--range", args.range_spec])
+    else:
+        array_index = os.environ.get("AWS_BATCH_JOB_ARRAY_INDEX")
+        array_size = os.environ.get("PEPDISTILL_PREPARE_ARRAY_SIZE")
+        if array_index is not None and array_size is not None:
+            status_command = [
+                "uv", "run", "--project", ".", "--extra", "etl",
+                "pepdistill", "prepare-status", str(args.config),
+            ]
+            status = subprocess.run(status_command, check=True, capture_output=True, text=True)
+            match = re.search(r"/([0-9,]+) complete", status.stdout)
+            if match is None:
+                raise SystemExit(f"could not determine catalog size from prepare-status: {status.stdout!r}")
+            total = int(match.group(1).replace(",", ""))
+            index = int(array_index)
+            workers = int(array_size)
+            if not 0 <= index < workers:
+                raise SystemExit(f"array index {index} outside 0..{workers - 1}")
+            start = total * index // workers
+            stop = total * (index + 1) // workers
+            command.extend(["--range", f"{start}:{stop}"])
+            print(f"array child {index}/{workers}: catalog range [{start}:{stop})")
     if args.force:
         command.append("--force")
     if args.dry_run:
