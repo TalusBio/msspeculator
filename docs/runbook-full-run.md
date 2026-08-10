@@ -68,7 +68,7 @@ launchpad run tools/launchpad_prepare_finalize.py --stage .launchpad/full-run-st
 
 ```toml
 out = "runs/full"
-preset = "small"                 # flash | tiny | small | base
+preset = "small"                 # flash | small-2h | small | base-4h | base
 device = "auto"                  # auto -> mps/cpu; "cuda" -> gpu
 seed = 0
 

@@ -34,7 +34,7 @@ def test_default_mixes_shape(tmp_path):
 def test_stream_pretrain_runs_and_moves_encoder(tmp_path):
     fasta = tmp_path / "t.fasta"
     fasta.write_text(FASTA)
-    model = build_student("tiny")
+    model = build_student("flash")
     enc = MSContextEncoder(context_dim=model.cfg.context_dim)
     mixes = [
         StreamMix(
@@ -75,7 +75,7 @@ def test_stream_pretrain_early_stops_on_plateau(tmp_path):
     """With many passes but a patience, a saturated loss halts before exhausting the stream."""
     fasta = tmp_path / "t.fasta"
     fasta.write_text(FASTA)
-    model = build_student("tiny")
+    model = build_student("flash")
     enc = MSContextEncoder(context_dim=model.cfg.context_dim)
     mixes = [StreamMix("tryptic", "tryptic", str(fasta), DigestConfig())]
     cfg = StreamPretrainCfg(
@@ -105,7 +105,7 @@ def test_stream_pretrain_cfg_defaults_teacher_acquisition():
 
 
 def test_onecycle_holds_final_lr_after_configured_steps():
-    model = build_student("tiny")
+    model = build_student("flash")
     module = DistillModule(
         model,
         lr=1e-3,
@@ -129,7 +129,7 @@ def test_label_chunk_sets_ms_factors_with_swept_energy(tmp_path):
     fixed acquisition) but per-peptide swept energy, matching the NCEs the teacher was fed."""
     fasta = tmp_path / "t.fasta"
     fasta.write_text(FASTA)
-    model = build_student("tiny")
+    model = build_student("flash")
     enc = MSContextEncoder(context_dim=model.cfg.context_dim)
     mixes = [StreamMix("tryptic", "tryptic", str(fasta), DigestConfig())]
     cfg = StreamPretrainCfg(mixes=mixes, nce_range=(20.0, 40.0), chunk_size=16, batch_size=4)

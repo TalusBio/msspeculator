@@ -172,7 +172,7 @@ def test_epoch_energy_counters_track_masking_and_reset():
     """train_energy_masked/train_energy_present are the only visible signal that missing
     energy is masked rather than silently dropped. Call the hooks directly (no Trainer
     needed) so a regression to "counters never increment" is caught without a full fit."""
-    model = build_student("tiny")
+    model = build_student("flash")
     cdim = model.cfg.context_dim
     module = RealSpeclibModule(model, ChromRunbook(1, cdim), MSContextEncoder(context_dim=cdim))
 

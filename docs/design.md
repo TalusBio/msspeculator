@@ -35,8 +35,8 @@ Preparation is a separate, restartable ETL:
 - Rust (`rust/core`) is the single source of truth for peptide parsing, chemistry, tokenization,
   fragment m/z, tensor packing, and the standalone student forward pass. Python imports these
   contracts through `pepdistill_rs`.
-- The production activation is tanh-approximated GELU. Transformer and dilated-CNN presets are
-  available; the standalone Rust runtime currently supports transformer artifacts.
+- The production activation is tanh-approximated GELU. All maintained presets are transformers;
+  the `small` and `base` families expose controlled head-count variants for training sweeps.
 - The input combines residue/terminus tokens, compositional and mass-only modification features,
   position, precursor charge, and optional acquisition context.
 - MS2 context uses instrument, detector, fragmentation, and collision energy. RT can select a

@@ -73,7 +73,7 @@ def test_onnx_roundtrip(tmp_path):
     from pepdistill.predict.onnx import OnnxRunner, export_onnx
 
     # CNN exports with fully dynamic axes.
-    model = build_student("tiny")
+    model = build_student("flash")
     path = tmp_path / "m.onnx"
     export_onnx(model, path)
     precs = _precs()

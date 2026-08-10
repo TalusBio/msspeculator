@@ -23,7 +23,7 @@ def test_cli_run_pretrain_only(tmp_path: Path):
     config.write_text(
         f"""
 out = "{workdir}"
-preset = "tiny"
+preset = "flash"
 device = "cpu"
 
 [pretrain]
@@ -53,7 +53,7 @@ def test_disabled_train_does_not_require_prepared_prefix(tmp_path: Path):
     config.write_text(
         f"""
 out = "{tmp_path / 'out'}"
-preset = "tiny"
+preset = "flash"
 [pretrain]
 enabled = false
 [train]

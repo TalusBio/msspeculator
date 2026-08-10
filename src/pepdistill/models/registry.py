@@ -20,8 +20,9 @@ from .student import StudentConfig, StudentModel
 # old forward-only rates are not representative of digestion, chemistry, and serialization.
 PRESETS: dict[str, StudentConfig] = {
     "flash": StudentConfig(backbone="transformer", d_model=32, n_layers=1, n_heads=1),
-    "tiny": StudentConfig(backbone="cnn", d_model=48, n_layers=2),
+    "small-2h": StudentConfig(backbone="transformer", d_model=64, n_layers=2, n_heads=2),
     "small": StudentConfig(backbone="transformer", d_model=64, n_layers=2, n_heads=4),
+    "base-4h": StudentConfig(backbone="transformer", d_model=128, n_layers=4, n_heads=4),
     "base": StudentConfig(backbone="transformer", d_model=128, n_layers=4, n_heads=8),
 }
 

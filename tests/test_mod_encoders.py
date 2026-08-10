@@ -25,7 +25,7 @@ def test_fourier_features_shape_and_range():
 
 
 def test_unmodified_positions_contribute_exactly_zero():
-    m = build_student("tiny").eval()
+    m = build_student("flash").eval()
     b = _batch()
     with torch.no_grad():
         vec, _, _ = m._mod_vectors(b.mod_comp, b.mod_mass, b.mod_present, b.mod_named)
@@ -34,7 +34,7 @@ def test_unmodified_positions_contribute_exactly_zero():
 
 
 def test_eval_routes_named_sites_to_comp_encoder():
-    m = build_student("tiny").eval()
+    m = build_student("flash").eval()
     b = _batch()
     with torch.no_grad():
         vec, g, _ = m._mod_vectors(b.mod_comp, b.mod_mass, b.mod_present, b.mod_named)
@@ -44,7 +44,7 @@ def test_eval_routes_named_sites_to_comp_encoder():
 
 
 def test_eval_routes_mass_only_sites_to_mass_encoder():
-    m = build_student("tiny").eval()
+    m = build_student("flash").eval()
     b = _batch()
     with torch.no_grad():
         vec, _, mm = m._mod_vectors(b.mod_comp, b.mod_mass, b.mod_present, b.mod_named)
@@ -54,7 +54,7 @@ def test_eval_routes_mass_only_sites_to_mass_encoder():
 
 
 def test_eval_is_deterministic_across_calls():
-    m = build_student("tiny").eval()
+    m = build_student("flash").eval()
     b = _batch()
     with torch.no_grad():
         a = m._mod_vectors(b.mod_comp, b.mod_mass, b.mod_present, b.mod_named)[0]
@@ -66,7 +66,7 @@ def test_swap_probability_endpoints():
     b = _batch()
     named = b.mod_named
 
-    m = build_student("tiny").train()
+    m = build_student("flash").train()
     m.cfg.mass_swap_p = 0.0
     with torch.no_grad():
         vec, g, _ = m._mod_vectors(b.mod_comp, b.mod_mass, b.mod_present, b.mod_named)
@@ -84,7 +84,7 @@ def test_isobaric_mods_collapse_to_one_mass_vector():
     This is an inherent property of a scalar-input fallback, asserted here so it is a known
     documented limit rather than a surprise.
     """
-    m = build_student("tiny").eval()
+    m = build_student("flash").eval()
     mass = torch.tensor([[57.021464, 57.021464]])
     with torch.no_grad():
         out = m.mass_enc(mass)
@@ -92,7 +92,7 @@ def test_isobaric_mods_collapse_to_one_mass_vector():
 
 
 def test_forward_exposes_both_mod_vectors():
-    m = build_student("tiny").eval()
+    m = build_student("flash").eval()
     out = m(_batch())
     assert "mod_g" in out and "mod_m" in out
     assert out["mod_g"].shape == out["mod_m"].shape
@@ -131,7 +131,7 @@ def test_mod_align_does_not_train_the_comp_encoder():
     """g is the teacher: the align term must leave comp_enc's gradients untouched."""
     from pepdistill.distill.losses import mod_align_loss
 
-    model = build_student("tiny").train()
+    model = build_student("flash").train()
     b = _batch()
     out = model(b)
     mod_align_loss(out["mod_g"], out["mod_m"], b.mod_named).backward()
@@ -143,7 +143,7 @@ def test_mod_align_decreases_when_fitted():
     from pepdistill.distill.losses import mod_align_loss
 
     torch.manual_seed(0)
-    model = build_student("tiny").train()
+    model = build_student("flash").train()
     b = _batch()
     opt = torch.optim.Adam(model.mass_enc.parameters(), lr=1e-2)
     out = model(b)

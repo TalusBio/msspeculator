@@ -8,7 +8,7 @@ compact student to mimic the teacher's MS2 fragment intensities, retention time,
 CCS. A FASTA is sufficient for teacher distillation; an optional second stage fine-tunes on
 prepared experimental spectral libraries.
 
-- **No LSTMs.** The student is a Transformer encoder or dilated CNN, with a standalone
+- **No LSTMs.** The maintained students are Transformer encoders, with a standalone
   safetensors-based Rust inference implementation for production library generation.
 - **Deterministic splits.** Train/val/test is assigned by hashing the *stripped*
   sequence, so every mod-form and charge state of a peptide stays in one split
@@ -193,9 +193,13 @@ rust/
 | preset | backbone | parameters |
 |---|---|--:|
 | `flash` | Transformer 1L/1-head/d32 | 23,782 |
-| `tiny`  | dilated CNN d48/2L | 43,590 |
+| `small-2h` | Transformer 2L/2-head/d64 | 132,358 |
 | `small` | Transformer 2L/4-head/d64 | 132,358 |
+| `base-4h` | Transformer 4L/4-head/d128 | 898,822 |
 | `base`  | Transformer 4L/8-head/d128 | 898,822 |
+
+Changing only the attention head count does not change the parameter count: it repartitions the
+same model width. The paired presets are intended as controlled architecture sweeps.
 
 The production Rust path is length-bucketed, uses tanh-GELU and optimized matrix
 multiplication, and runs bounded parallel model workers feeding one writer thread. On the

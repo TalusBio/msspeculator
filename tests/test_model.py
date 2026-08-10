@@ -14,6 +14,22 @@ def _precs():
     ]
 
 
+def test_preset_sweep_contract():
+    assert set(PRESETS) == {"flash", "small-2h", "small", "base-4h", "base"}
+    dimensions = {
+        name: (cfg.d_model, cfg.n_layers, cfg.n_heads) for name, cfg in PRESETS.items()
+    }
+    assert dimensions["small-2h"] == (64, 2, 2)
+    assert dimensions["small"] == (64, 2, 4)
+    assert dimensions["base-4h"] == (128, 4, 4)
+    assert dimensions["base"] == (128, 4, 8)
+
+    import pytest
+
+    with pytest.raises(ValueError, match="unknown preset 'tiny'"):
+        build_student("tiny")
+
+
 def test_collate_always_wraps_termini():
     batch = collate(_precs())
     tok_len = 13 + 2  # longest peptide + mandatory N/C-term tokens
@@ -79,7 +95,7 @@ def test_spectral_angle_one_when_identical():
 
 
 def test_denormalize_roundtrip():
-    model = build_student("tiny")
+    model = build_student("flash")
     model.set_norm(50.0, 10.0, 400.0, 25.0)
     out = {"ms2": torch.zeros(1, 1, 1), "rt": torch.tensor([1.0]), "ccs": torch.tensor([-1.0])}
     den = model.denormalize(out)
@@ -95,7 +111,7 @@ def test_set_norm_leaves_unspecified_stats_untouched():
     had learned, so a trained head denormalized to raw standardized values and emitted
     negative CCS that looked like plausible small numbers.
     """
-    model = build_student("tiny")
+    model = build_student("flash")
     model.set_norm(50.0, 10.0, 400.0, 25.0)
 
     # force=True only waives the set-once guard on RT; it must not drag CCS along.
@@ -116,7 +132,7 @@ def test_set_norm_rejects_non_finite():
 
     import pytest
 
-    model = build_student("tiny")
+    model = build_student("flash")
     for kwargs in ({"rt_std": _math.nan}, {"ccs_mean": _math.inf}, {"rt_mean": -_math.inf}):
         with pytest.raises(ValueError, match="must be finite"):
             model.set_norm(**kwargs)
@@ -131,7 +147,7 @@ def test_set_norm_refuses_to_re_establish_rt():
     """
     import pytest
 
-    model = build_student("tiny")
+    model = build_student("flash")
     model.set_norm(50.0, 10.0, 400.0, 25.0)
 
     with pytest.raises(ValueError, match="already established"):
@@ -160,7 +176,7 @@ def test_norm_established_flag_is_not_exported():
     from pathlib import Path
 
     with tempfile.TemporaryDirectory() as d:
-        model = build_student("tiny")
+        model = build_student("flash")
         model.set_norm(50.0, 10.0, 400.0, 25.0)
         ckpt, art = Path(d) / "m.ckpt", Path(d) / "m.safetensors"
         save_checkpoint(model, ckpt)

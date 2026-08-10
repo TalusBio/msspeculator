@@ -63,7 +63,7 @@ def test_ms_context_moves_ms2_not_ccs():
 
 def test_checkpoint_without_context_is_none(tmp_path):
     path = tmp_path / "m.ckpt"
-    save_checkpoint(build_student("tiny"), path)
+    save_checkpoint(build_student("flash"), path)
     assert load_context(path) is None
 
 
