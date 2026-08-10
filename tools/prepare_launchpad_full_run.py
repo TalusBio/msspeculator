@@ -1,8 +1,8 @@
 """Build the small source bundle consumed by the prepared ETL/training jobs.
 
-The PROSPECT data itself is deliberately not copied here.  The cloud entrypoint reads the
-already-extracted parquet objects from the S3 mirror by range request, which keeps the
-Launchpad worker's 32 GB scratch volume from filling with a 461 GB dataset.
+The PROSPECT data itself is deliberately not copied here. Workers discover shards from the
+vendored Zenodo catalog/index and use S3 only as a read-through archive cache, keeping the
+Launchpad worker's 32 GB scratch volume independent of the full corpus size.
 """
 
 from __future__ import annotations

@@ -5,11 +5,11 @@ hardware-friendly student models.
 
 The teacher models (AlphaPeptDeep) are accurate but heavy. `pepdistill` trains a
 compact student to mimic the teacher's MS2 fragment intensities, retention time, and
-CCS — using **only a FASTA file** as input. No experimental spectra required: the
-teacher generates the training labels from in-silico digests.
+CCS. A FASTA is sufficient for teacher distillation; an optional second stage fine-tunes on
+prepared experimental spectral libraries.
 
-- **No LSTMs.** The student is a Transformer-encoder or dilated-CNN — both parallelize
-  well on CPU/GPU and export cleanly to ONNX.
+- **No LSTMs.** The student is a Transformer encoder or dilated CNN, with a standalone
+  safetensors-based Rust inference implementation for production library generation.
 - **Deterministic splits.** Train/val/test is assigned by hashing the *stripped*
   sequence, so every mod-form and charge state of a peptide stays in one split
   (no leakage) and the split is stable across runs and dataset growth.
@@ -23,9 +23,9 @@ teacher generates the training labels from in-silico digests.
 ## Install
 
 ```bash
-uv sync                     # core (torch, pandas, typer) + the pepdistill_rs Rust ext
-uv sync --extra teacher     # + AlphaPeptDeep teacher (peptdeep)
-uv sync --extra onnx        # + ONNX export & onnxruntime inference
+uv sync                                  # inference + the pepdistill_rs Rust extension
+uv sync --extra teacher --extra etl      # full preparation/training environment
+uv sync --extra onnx                     # optional/deferred ONNX environment
 ```
 
 Chemistry, the `Peptide` type, tokenization, and batch-encoding are single-sourced in Rust
@@ -42,6 +42,11 @@ uv run maturin develop -m rust/Cargo.toml --release
 
 The `fake` teacher (deterministic, dependency-free) is always available for
 development and tests; the real `alphapeptdeep` teacher needs the `teacher` extra.
+
+## Documentation
+
+Start with the [documentation index](docs/README.md) for the current design, model details,
+full preparation/training runbook, and roadmap.
 
 ## Quick start
 
@@ -67,34 +72,32 @@ enabled = true
 prepared_prefix = "s3://bucket/pepdistill-prepared/v1"
 epochs = 60
 
-[export]                      # ONNX
-enabled = true
-
-[bench]                       # library throughput
-enabled = true
-fasta   = "proteome.fasta"
+# [export] and [bench] are optional and off by default.
 ```
 
 ```bash
-pepdistill run run.toml                 # -> work/model.ckpt, work/model.onnx, work/summary.json
+pepdistill run run.toml                 # -> work/{pretrain,latest,best,model}.ckpt + summary.json
 pepdistill run run.toml --no-train      # pretrain only (disable any stage inline)
 ```
 
-Real-spectrum training consumes immutable prepared Parquet chunks. Run the Polars preparation
-stage once, publish its manifest to object storage, then point `[train].prepared_prefix` at that
-prefix. The trainer never downloads or extracts annotation archives.
+Real-spectrum training consumes immutable prepared Parquet chunks. The preparation workflow is
+restartable and range-addressable; see [the full-run runbook](docs/runbook-full-run.md). The
+trainer never downloads or extracts annotation archives.
 
-Distillation-only (no real spectra): drop the `[train]` block or `enabled = false`. Any stage
-can be turned off in the config or with `--no-pretrain` / `--no-train`.
+For distillation only, set `[train] enabled = false` or pass `--no-train`. Omitting `[train]`
+does **not** disable it: training is on by default and requires `prepared_prefix`. Any stage can
+be turned off in the config or with its corresponding `--no-*` flag.
 
 ### Predict a library
 
-Standalone inference from a trained model (torch or ONNX):
+Standalone Python inference from a trained checkpoint:
 
 ```bash
 pepdistill predict --model work/model.ckpt  --fasta proteome.fasta -o library.parquet --device auto
-pepdistill predict --model work/model.onnx  --fasta proteome.fasta -o library.parquet --runtime onnx
 ```
+
+The ONNX path remains available behind the `onnx` extra, but is deferred while the production
+work focuses on the Rust library generator and search integration.
 
 Condition MS2 on the run's acquisition context (torch runtime only, needs a checkpoint with a
 saved `MSContextEncoder` — i.e. one trained with `[train]` or `[pretrain]` enabled). Give the
@@ -167,39 +170,36 @@ pepdistill/
                series, and the Peptide class all live in Rust (rust/core); no chemistry
                logic left in Python
   data/        FASTA digest, precursor enumeration, deterministic split, tensor encoding,
-               PROSPECT real-spectra source + tiered fsspec cache
+               vendored PROSPECT catalog/shard index, prepared-data reader
+  etl/         restartable Polars preparation, shard manifests, and finalization
   teacher/     Teacher ABC + FakeTeacher + PeptDeepTeacher (behind [teacher] extra)
   models/      student architectures (no LSTM) + presets + context conditioning + checkpoint I/O
   distill/     dataset, losses (MS2 cosine / RT+CCS MSE), Lightning regimes (distill +
                real-speclib context) and the config-driven pipeline
-  predict/     library.py (reference) + fast.py (vectorized) + onnx.py (export/runtime)
+  predict/     library.py (reference) + fast.py (vectorized) + deferred ONNX export/runtime
   eval.py      val reduction (best example per library entry)
   util.py      device resolution (auto -> mps/cpu)
-  cli.py       typer CLI (run + predict + export-rust)
+  cli.py       run/predict/export-rust plus prepare/prepare-status/prepare-finalize
 
 rust/
   core/        chemistry + Peptide + tokenizer + student forward — the single source of truth,
                used by both the Python ext and the CLI
-  cli/         pepdistill-cli: single-peptide predict binary (.safetensors -> JSON on stdout)
+  cli/         pepdistill-cli: FASTA -> DIA-NN TSV and single-peptide JSON inference
   src/lib.rs   pepdistill_rs: pyo3 extension exposing core to Python (a hard dependency)
 ```
 
 ## Student presets & speed
 
-| preset | backbone | params | forward-only (torch CPU) | (torch MPS) |
-|---|---|--:|--:|--:|
-| `flash` | Transformer 1L/1-head/d32 | 19K | **~165k/s** | ~266k/s |
-| `tiny`  | dilated CNN d48/2L | 35K | ~12k/s | ~214k/s |
-| `small` | Transformer 2L/4-head/d64 | 119K | ~11k/s | ~89k/s |
-| `base`  | Transformer 4L/8-head/d128 | 600K | — | — |
+| preset | backbone | parameters |
+|---|---|--:|
+| `flash` | Transformer 1L/1-head/d32 | 23,782 |
+| `tiny`  | dilated CNN d48/2L | 43,590 |
+| `small` | Transformer 2L/4-head/d64 | 132,358 |
+| `base`  | Transformer 4L/8-head/d128 | 898,822 |
 
-`flash` is the throughput pick on a no-GPU box: a single-head, single-layer transformer
-clears 100k precursors/s on CPU alone. Swap or add presets in
-`pepdistill/models/registry.py`.
-
-**Inference is length-bucketed and fully vectorized** (`predict/fast.py`): precursors are
-grouped by length into dense tensors (no padding), the model runs once per bucket, and
-fragment m/z + the output table are built with pure numpy — no per-fragment Python. The
-remaining end-to-end ceiling is the DataFrame/parquet assembly over millions of fragment
-rows; that is the part a Rust runtime would take over. `forward_dense` (mask-free) is the
-export/inference path and is what ONNX serializes.
+The production Rust path is length-bucketed, uses tanh-GELU and optimized matrix
+multiplication, and runs bounded parallel model workers feeding one writer thread. On the
+documented 474,630-precursor / 16,650,774-transition fixture it improved from 168.62 seconds
+single-core to 11.53–12.97 seconds with the worker pool (roughly 36.6k–41.2k precursors/s).
+Treat these as workload-specific measurements, not forward-only model claims; reproduce them
+on target hardware before capacity planning. Output order is unspecified.

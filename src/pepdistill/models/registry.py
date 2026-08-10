@@ -16,9 +16,8 @@ from .context import (
 )
 from .student import StudentConfig, StudentModel
 
-# Size presets. Swap freely; benchmark decides the winner.
-# "flash" is the throughput pick from forward-only benchmarks: a single-head, single-layer
-# d32 transformer hits ~165k precursors/s on CPU and ~266k on MPS (no GPU needed).
+# Size presets. Benchmark the complete library-generation workload on the deployment hardware;
+# old forward-only rates are not representative of digestion, chemistry, and serialization.
 PRESETS: dict[str, StudentConfig] = {
     "flash": StudentConfig(backbone="transformer", d_model=32, n_layers=1, n_heads=1),
     "tiny": StudentConfig(backbone="cnn", d_model=48, n_layers=2),

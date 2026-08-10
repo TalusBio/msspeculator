@@ -26,6 +26,13 @@ implementations.
   The `.safetensors` artifact carries a `format_version`; `core/src/artifact.rs` rejects any
   version it does not read rather than filling in missing tensors.
 
+FASTA inference groups precursors into equal-length batches of 64. A bounded worker pool clones
+the immutable model per worker and feeds one writer thread; set `PEPDISTILL_WORKERS` to override
+the default of `available_parallelism - 1`. Output order is unspecified. On the documented
+474,630-precursor / 16,650,774-transition fixture, the worker pool completed in 11.53–12.97
+seconds (roughly 36.6k–41.2k precursors/s); measure again on the deployment host because this is
+end-to-end, workload- and hardware-specific throughput.
+
 ## Build into the project venv
 
 This extension is a **hard runtime dependency** of `pepdistill`, not an optional

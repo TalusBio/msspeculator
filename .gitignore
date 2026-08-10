@@ -17,8 +17,7 @@ rust/target/
 .pytest_cache/
 .ruff_cache/
 
-# Plans and specs are never in version control
-docs/
+# Run outputs and local inputs
 runs/*
 !runs/*.toml
 fasta_ignore/
