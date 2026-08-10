@@ -15,7 +15,9 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import time
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any
 
 import fsspec
@@ -287,9 +289,15 @@ def prepare_source(
     max_shards: int | None = None,
     schema: ProspectSchema | None = None,
     force: bool = False,
+    log: Callable[[str], None] | None = print,
 ) -> dict[str, Any]:
     """Prepare one extracted PROSPECT archive and write a version-1 manifest."""
     schema = schema or ProspectSchema()
+
+    def emit(message: str) -> None:
+        if log is not None:
+            log(message)
+
     manifest_uri = _uri_join(out_prefix, "manifest.json")
     if not force:
         existing = _existing_manifest(
@@ -302,6 +310,7 @@ def prepare_source(
             max_shards,
         )
         if existing is not None:
+            emit(f"[etl] complete manifest exists at {manifest_uri}; skipping shard work")
             return {**existing, "_skipped": True}
     meta_uri = _uri_join(source_prefix, meta_filename)
     shards = _list_shards(source_prefix, archive_stem)
@@ -309,17 +318,27 @@ def prepare_source(
         shards = shards[:max_shards]
     if not shards:
         raise ValueError(f"no extracted parquet shards found for {archive_stem!r}")
+    emit(f"[etl] {archive_stem}: preparing {len(shards)} shard(s)")
 
     chunk_rows: list[dict[str, Any]] = []
     chunk_uris: list[str] = []
     for index, shard_uri in enumerate(shards):
+        started = time.perf_counter()
+        label = f"[etl] shard {index + 1}/{len(shards)} {Path(shard_uri).name}"
+        emit(f"{label}: discovering raw files")
         raw_files = _shard_raw_files(shard_uri)
+        emit(f"{label}: {len(raw_files)} raw file(s); filtering and decoding")
         rows = _rows_for_shard(meta_uri, shard_uri, raw_files, dataset, instrument, schema)
         if not rows:
+            emit(f"{label}: no usable spectra ({time.perf_counter() - started:.1f}s)")
             continue
         frame = pl.DataFrame(rows).with_columns(pl.col("ms2").cast(pl.List(pl.Float32)))
         chunk_uri = _uri_join(out_prefix, f"chunks/{dataset}/{index:06d}.parquet")
         _write_parquet(frame, chunk_uri)
+        emit(
+            f"{label}: wrote {frame.height:,} spectra in "
+            f"{time.perf_counter() - started:.1f}s"
+        )
         chunk_uris.append(chunk_uri)
         chunk_rows.append(
             {
@@ -332,8 +351,10 @@ def prepare_source(
 
     if not chunk_rows:
         raise ValueError(f"no usable spectra found while preparing {archive_stem!r}")
+    emit(f"[etl] selecting validation winners across {len(chunk_rows)} chunk(s)")
     winners_uri = _uri_join(out_prefix, "val_winners.parquet")
-    _val_winners(chunk_uris, winners_uri)
+    winners = _val_winners(chunk_uris, winners_uri)
+    emit(f"[etl] selected {len(winners):,} validation winner(s)")
     stats = _irt_stats(chunk_uris)
     split_rows = _split_rows(chunk_uris)
     split_datasets = _split_datasets(chunk_uris)
@@ -357,6 +378,10 @@ def prepare_source(
     }
     with fsspec.open(manifest_uri, "wt") as stream:
         json.dump(manifest, stream, indent=2)
+    emit(
+        f"[etl] manifest ready: {sum(row['rows'] for row in chunk_rows):,} spectra "
+        f"across {len(chunk_rows)} chunk(s) -> {manifest_uri}"
+    )
     return manifest
 
 
