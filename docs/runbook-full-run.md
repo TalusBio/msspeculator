@@ -43,12 +43,22 @@ For the Launchpad array wrapper used by this repository:
 ```bash
 .venv/bin/python tools/prepare_launchpad_full_run.py
 launchpad run tools/launchpad_prospect_etl.py \
-  --stage .launchpad/full-run-stage --env PEPDISTILL_PREPARE_ARRAY_SIZE=10
+  --stage .launchpad/full-run-stage --array-size 10 \
+  --env PEPDISTILL_PREPARE_ARRAY_SIZE=10
 ```
 
 Each array task derives its global range from its array index; the prepared output is identical
-whether it runs on one worker or thousands. After the array succeeds, finalize in the same staged
+whether it runs on one worker or thousands.
+
+To retry one interrupted range without launching another array, pass it explicitly through the
 environment:
+
+```bash
+launchpad run tools/launchpad_prospect_etl.py --stage .launchpad/full-run-stage \
+  --env PEPDISTILL_PREPARE_RANGE=517:1034
+```
+
+After all ranges succeed, finalize in the same staged environment:
 
 ```bash
 launchpad run tools/launchpad_prepare_finalize.py --stage .launchpad/full-run-stage

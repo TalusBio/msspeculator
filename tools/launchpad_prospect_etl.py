@@ -12,7 +12,6 @@ choice changes the resulting assets.
 # [tool.launchpad]
 # vcpus = 8
 # memory = 30000
-# array_size = 10
 # job_name = "pepdistill-etl"
 # ///
 
@@ -44,8 +43,9 @@ def main() -> None:
     if not Path("pyproject.toml").exists():
         raise SystemExit("stage is incomplete; run tools/prepare_launchpad_full_run.py first")
     command = ["uv", "run", "--project", ".", "--extra", "etl", "pepdistill", "prepare", str(args.config)]
-    if args.range_spec:
-        command.extend(["--range", args.range_spec])
+    range_spec = args.range_spec or os.environ.get("PEPDISTILL_PREPARE_RANGE")
+    if range_spec:
+        command.extend(["--range", range_spec])
     else:
         array_index = os.environ.get("AWS_BATCH_JOB_ARRAY_INDEX")
         array_size = os.environ.get("PEPDISTILL_PREPARE_ARRAY_SIZE")
