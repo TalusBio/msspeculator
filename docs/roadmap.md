@@ -38,6 +38,9 @@ deferred until it solves a measured deployment need.
   and compressed shard index define the inputs; S3 is only an optional read-through cache.
 - Every source shard produces one immutable prepared asset. Finalization verifies all shards and
   publishes one worker-independent training manifest.
+- CPU training uses exact-length dense batches, direct Polars-to-tensor collation, and disjoint
+  persistent shard-loader workers. The cloud launcher now requests 8 vCPUs: four model threads
+  plus four single-threaded Polars workers, instead of reserving 31 vCPUs for one trainer.
 - The full preparation config selects all non-test `prospect`, `tmt`, `multi_ptm`, and `tmt_ptm`
   archives. The separately labelled `test_ptm` record is excluded from training.
 

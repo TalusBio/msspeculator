@@ -5,9 +5,10 @@
 # dependencies = []
 #
 # [tool.launchpad]
-# vcpus = 31
+# vcpus = 8
 # memory = 30000
 # job_name = "pepdistill-prepared-train"
+# env = { POLARS_MAX_THREADS = "1" }
 # ///
 
 from __future__ import annotations

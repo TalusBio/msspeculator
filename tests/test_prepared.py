@@ -7,6 +7,7 @@ import json
 import pandas as pd
 import pytest
 import torch
+from torch.utils.data import DataLoader
 
 pytest.importorskip("polars")
 
@@ -18,6 +19,7 @@ from pepdistill.data.prepared_schema import (
     VALIDATION_WINNER_SCHEMA,
 )
 from pepdistill.distill.context_regime import MSContextEncoder
+from pepdistill.distill.dataset import BatchIterable
 from pepdistill.etl.config import PrepareConfig, PrepareGroup, PrepareSource
 from pepdistill.etl.prospect import (
     balanced_partition_range,
@@ -111,6 +113,27 @@ def test_prepared_reader_streams_rows_into_real_batches(tmp_path):
     assert "s, read_decode=" in logs[0]
     batch = next(ds.batches(1, shuffle=False, generator=torch.Generator().manual_seed(0)))
     assert batch.base.ms2_target.shape[0] == 1
+
+
+def test_prepared_reader_partitions_shards_across_loader_workers(tmp_path):
+    root, stem = _source(tmp_path)
+    out = tmp_path / "prepared-workers"
+    config = _config(root, stem, out)
+    prepare_range(config, log=None)
+    finalize_catalog(config, log=None)
+    ds = PreparedStreamingDataset(
+        PreparedManifest.load(str(out)),
+        MSContextEncoder(context_dim=8),
+        frozenset({"train", "val"}),
+    )
+    loader = DataLoader(
+        BatchIterable(ds, batch_size=1, shuffle=False, seed=0),
+        batch_size=None,
+        num_workers=2,
+    )
+    # The fixture contains two total rows in one shard. A naive IterableDataset would replay
+    # that shard in both workers and return four; the worker-aware reader must return it once.
+    assert sum(batch.raw_rt.numel() for batch in loader) == 2
 
 
 def test_prepare_shard_skips_complete_manifest(tmp_path, monkeypatch):

@@ -397,6 +397,14 @@ class StudentModel(nn.Module):
         keep = (~pad_mask).float().unsqueeze(-1)  # (B, L, 1)
         return (h * keep).sum(1) / keep.sum(1).clamp_min(1.0)
 
+    def _encode_batch(self, x: torch.Tensor, batch: Batch) -> tuple[torch.Tensor, torch.Tensor]:
+        """Encode and pool, avoiding attention masks for equal-length dense batches."""
+        if not bool(batch.pad_mask.any()):
+            h = self.backbone(x, None)
+            return h, h.mean(dim=1)
+        h = self.backbone(x, batch.pad_mask)
+        return h, self._masked_mean(h, batch.pad_mask)
+
     def forward(
         self,
         batch: Batch,
@@ -405,8 +413,7 @@ class StudentModel(nn.Module):
         chrom_affine: tuple[torch.Tensor, torch.Tensor] | None = None,
     ) -> dict[str, torch.Tensor]:
         x, g, m = self._embed(batch)
-        h = self.backbone(x, batch.pad_mask)  # (B, L, d)
-        pooled = self._masked_mean(h, batch.pad_mask)  # (B, d)
+        h, pooled = self._encode_batch(x, batch)
         ms2, rt, ccs = self._apply_heads(
             h, pooled, batch.charge, ms_context, chrom_context, chrom_affine
         )
@@ -426,8 +433,7 @@ class StudentModel(nn.Module):
         ``rt_base`` deliberately sees neither chrom_context nor chrom_affine: it is the iRT
         anchor, and conditioning it on the dataset would destroy the frame it defines."""
         x, g, m = self._embed(batch)
-        h = self.backbone(x, batch.pad_mask)
-        pooled = self._masked_mean(h, batch.pad_mask)
+        h, pooled = self._encode_batch(x, batch)
         ms2, rt, ccs = self._apply_heads(
             h, pooled, batch.charge, ms_context, chrom_context, chrom_affine
         )

@@ -546,6 +546,7 @@ def fit_realspeclib_datasets(
     artifact_mirror=None,
     early_stop_patience: int = 0,
     early_stop_min_delta: float = 1e-3,
+    num_workers: int = 0,
     **trainer_kwargs,
 ) -> RealSpeclibModule:
     """Fit on datasets the caller already built.
@@ -574,10 +575,24 @@ def fit_realspeclib_datasets(
         mod_align_weight=mod_align_weight,
     )
 
+    if num_workers < 0:
+        raise ValueError("num_workers must be non-negative")
+
     def loader(ds, shuffle: bool) -> DataLoader | None:
         if ds is None:
             return None
-        return DataLoader(BatchIterable(ds, batch_size, shuffle, seed), batch_size=None)
+        if num_workers and not getattr(ds, "worker_partitioned", False):
+            raise ValueError(
+                "num_workers > 0 requires a dataset that partitions work between workers"
+            )
+        return DataLoader(
+            BatchIterable(ds, batch_size, shuffle, seed),
+            batch_size=None,
+            num_workers=num_workers,
+            # Workers retain BatchIterable._epoch between epochs, so shard ordering advances
+            # rather than resetting when DataLoader reconstructs its processes.
+            persistent_workers=num_workers > 0,
+        )
 
     callbacks = list(trainer_kwargs.pop("callbacks", []))
     if trainer_kwargs.get("logger"):

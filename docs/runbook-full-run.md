@@ -98,6 +98,8 @@ max_var_mods = 1
 enabled = true
 prepared_prefix = "s3://bucket/pepdistill-prepared/v1"
 epochs = 60
+num_workers = 4                 # concurrent shard read/decode/collation processes
+model_threads = 4               # intra-op threads in the model process
 loss_weights = [1.0, 1.0, 1.0]   # (ms2, iRT, raw_rt)
 
 # [export] / [bench] left off. ONNX is deferred; use export-rust for production inference.

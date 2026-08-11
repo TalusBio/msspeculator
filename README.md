@@ -71,6 +71,8 @@ fasta = "proteome.fasta"
 enabled = true
 prepared_prefix = "s3://bucket/pepdistill-prepared/v1"
 epochs = 60
+num_workers = 4              # concurrent shard read/decode/collation
+model_threads = 4            # intra-op CPU threads used by the model
 
 # [export] and [bench] are optional and off by default.
 ```

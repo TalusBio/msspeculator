@@ -30,6 +30,10 @@ Preparation is a separate, restartable ETL:
 - `--range START:STOP` distributes half-open global shard ranges independently of worker count.
 - Finalization verifies all shard assets and publishes the worker-independent training manifest.
 
+Prepared training partitions shuffled shards exactly once across persistent loader workers.
+Within each worker, rows are carried across shard boundaries into exact-length batches, avoiding
+transformer padding/masks and allowing Parquet decode and tensor collation to overlap model work.
+
 ## Model and data contracts
 
 - Rust (`rust/core`) is the single source of truth for peptide parsing, chemistry, tokenization,

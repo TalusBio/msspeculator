@@ -22,8 +22,10 @@ import numpy as np
 import pandas as pd
 import polars as pl
 import torch
+from torch.utils.data import get_worker_info
 
 from ..chem import ION_TYPES, Peptide
+from ..data.encode import FRAG_OFFSET, collate
 from ..teacher.base import PrecursorLabels
 from .precursors import Precursor
 from .prepared_schema import read_prepared_parquet, read_validation_winners
@@ -151,8 +153,82 @@ def _row_examples(frame: pd.DataFrame, dataset_id: int, encoder) -> list[RealExa
     return out
 
 
+def _frame_batch(frame: pl.DataFrame, encoder) -> RealBatch:
+    """Collate one prepared frame directly, without a Pandas/RealExample round trip."""
+    from ..distill.context_regime import RealBatch
+    from ..distill.dataset import LabeledBatch, MSFactors
+
+    sequences = frame["sequence"].to_list()
+    precursors = [
+        Precursor(
+            peptide=Peptide(sequence, _parse_mods(str(mods or ""))),
+            charge=int(charge),
+            split=str(split),
+        )
+        for sequence, mods, charge, split in zip(
+            sequences,
+            frame["mods"].to_list(),
+            frame["charge"].to_list(),
+            frame["split"].to_list(),
+            strict=True,
+        )
+    ]
+    inputs = collate(precursors)
+    lengths = [len(sequence) for sequence in sequences]
+    sites = max(lengths[0] - 1, 0)
+    if any(length != lengths[0] for length in lengths):
+        raise ValueError("prepared training batches must contain one peptide length")
+    flat_ms2 = np.asarray(frame["ms2"].to_list(), dtype=np.float32)
+    expected_shape = (frame.height, sites * len(ION_TYPES))
+    if flat_ms2.shape != expected_shape:
+        raise ValueError(
+            f"prepared batch has ms2 shape {flat_ms2.shape}; expected {expected_shape}"
+        )
+    ms2 = torch.zeros(
+        frame.height, inputs.frag_mask.shape[1], len(ION_TYPES), dtype=torch.float32
+    )
+    ms2[:, FRAG_OFFSET : FRAG_OFFSET + sites] = torch.from_numpy(
+        flat_ms2.reshape((frame.height, sites, len(ION_TYPES)))
+    )
+
+    def float_tensor(name: str) -> torch.Tensor:
+        # Polars may expose a read-only Arrow-backed view; own the small batch array before
+        # handing it to PyTorch, whose tensors are mutable by contract.
+        return torch.from_numpy(frame[name].to_numpy().astype(np.float32, copy=True))
+
+    def id_tensor(values: list[int]) -> torch.Tensor:
+        return torch.tensor(values, dtype=torch.int64)
+
+    factors = MSFactors(
+        instrument_id=id_tensor([encoder.instrument_id(x) for x in frame["instrument"]]),
+        detector_id=id_tensor([encoder.detector_id(x) for x in frame["detector"]]),
+        fragmentation_id=id_tensor(
+            [encoder.fragmentation_id(x) for x in frame["fragmentation"]]
+        ),
+        energy=float_tensor("energy"),
+    )
+    labeled = LabeledBatch(
+        inputs=inputs,
+        ms2_target=ms2,
+        rt_target=float_tensor("irt"),
+        ccs_target=torch.full((frame.height,), float("nan"), dtype=torch.float32),
+    )
+    return RealBatch(
+        base=labeled,
+        raw_rt=float_tensor("raw_rt"),
+        dataset_id=torch.from_numpy(
+            frame["_dataset_id"].to_numpy().astype(np.int64, copy=True)
+        ),
+        ms_factors=factors,
+    )
+
+
 class PreparedStreamingDataset:
     """Manifest-backed streaming dataset for the real-spectrum training stage."""
+
+    # ``fit_realspeclib_datasets`` uses this marker to reject multiprocessing for generic
+    # iterable sources that would otherwise replay the complete dataset in every worker.
+    worker_partitioned = True
 
     def __init__(
         self,
@@ -186,12 +262,19 @@ class PreparedStreamingDataset:
             )
         return frozenset(self.dataset_ids[chunk.dataset] for chunk in self.manifest.chunks)
 
-    def iter_examples(self, epoch: int, shuffle: bool = True) -> Iterator[RealExample]:
+    def _iter_frames(self, epoch: int, shuffle: bool) -> Iterator[pl.DataFrame]:
         chunks = list(self.manifest.chunks)
         rng = random.Random(hash((self.seed, epoch)))
         if shuffle:
             rng.shuffle(chunks)
-        for chunk_index, chunk in enumerate(chunks, start=1):
+        indexed_chunks = list(enumerate(chunks, start=1))
+        worker = get_worker_info()
+        if worker is not None:
+            # Every worker receives the same epoch/shuffle seed, then takes a disjoint stride
+            # through that common ordering. This preserves exactly-once shard coverage while
+            # allowing S3 reads, Parquet decode, row conversion, and collation to overlap.
+            indexed_chunks = indexed_chunks[worker.id :: worker.num_workers]
+        for chunk_index, chunk in indexed_chunks:
             dataset_id = self.dataset_ids[chunk.dataset]
             opened_at = time.perf_counter()
             stream = _open_parquet(chunk.uri)
@@ -213,6 +296,12 @@ class PreparedStreamingDataset:
                         for value in frame["spectrum_id"].to_list()
                     ]
                     frame = frame.filter(pl.Series("is_winner", keep))
+                # Transformer cost is set by the longest sequence in each batch. Grouping equal
+                # lengths inside an already-shuffled shard removes padding work without adding
+                # a large row-level shuffle buffer or changing which observations are trained.
+                frame = frame.with_columns(
+                    pl.col("sequence").str.len_chars().alias("_sequence_length")
+                ).sort("_sequence_length")
                 frame = frame.drop("spectrum_id")
                 read_seconds = time.perf_counter() - read_at
                 if self.log is not None:
@@ -228,32 +317,51 @@ class PreparedStreamingDataset:
                         f"rows={frame.height:,}, open={open_seconds:.3f}s, "
                         f"read_decode={read_seconds:.3f}s{transfer}"
                     )
+                frame = frame.with_columns(
+                    pl.lit(dataset_id, dtype=pl.Int64).alias("_dataset_id")
+                )
                 for offset in range(0, frame.height, self.row_group_size):
-                    pandas_frame = frame.slice(offset, self.row_group_size).to_pandas()
-                    for example in _row_examples(pandas_frame, dataset_id, self.encoder):
-                        yield example
+                    yield frame.slice(offset, self.row_group_size)
             finally:
                 if hasattr(stream, "close"):
                     stream.close()
 
+    def iter_examples(self, epoch: int, shuffle: bool = True) -> Iterator[RealExample]:
+        for frame in self._iter_frames(epoch, shuffle):
+            pandas_frame = frame.drop("_dataset_id", "_sequence_length").to_pandas()
+            dataset_id = int(frame["_dataset_id"][0])
+            yield from _row_examples(pandas_frame, dataset_id, self.encoder)
+
     def batches(
         self, batch_size: int, shuffle: bool, generator: torch.Generator
     ) -> Iterator[RealBatch]:
-        from ..distill.context_regime import RealSpeclibDataset
-
         epoch = (
             int(torch.randint(0, 2**31 - 1, (1,), generator=generator).item())
             if shuffle
             else 0
         )
-        pending: list[RealExample] = []
-        for example in self.iter_examples(epoch, shuffle=shuffle):
-            pending.append(example)
-            if len(pending) == batch_size:
-                yield next(RealSpeclibDataset(pending).batches(batch_size, False, generator))
-                pending = []
-        if pending:
-            yield next(RealSpeclibDataset(pending).batches(len(pending), False, generator))
+        pending: dict[int, pl.DataFrame] = {}
+        for frame in self._iter_frames(epoch, shuffle):
+            for group in frame.partition_by("_sequence_length", maintain_order=True):
+                length = int(group["_sequence_length"][0])
+                carried = pending.pop(length, None)
+                if carried is not None:
+                    needed = batch_size - carried.height
+                    taken = min(needed, group.height)
+                    carried = pl.concat([carried, group.head(taken)], rechunk=False)
+                    group = group.slice(taken)
+                    if carried.height == batch_size:
+                        yield _frame_batch(carried, self.encoder)
+                    else:
+                        pending[length] = carried
+                        continue
+                full_rows = group.height - group.height % batch_size
+                for offset in range(0, full_rows, batch_size):
+                    yield _frame_batch(group.slice(offset, batch_size), self.encoder)
+                if full_rows < group.height:
+                    pending[length] = group.slice(full_rows)
+        for length in sorted(pending):
+            yield _frame_batch(pending[length], self.encoder)
 
 
 __all__ = ["PreparedChunk", "PreparedManifest", "PreparedStreamingDataset"]

@@ -48,10 +48,9 @@ from .stream_pretrain import StreamMix, StreamPretrainCfg, fit_stream_pretrain
 def _configure_runtime_warnings() -> None:
     """Filter known dependency chatter while preserving model/data warnings.
 
-    Lightning 2.6 still probes torch 2.3+'s deprecated ``LeafSpec`` API.  Its worker-count
-    suggestion is also not applicable to our stateful streaming iterable: adding workers
-    without explicit shard partitioning would duplicate each epoch.  Keep these two known,
-    non-actionable messages out of long training logs; genuine warnings continue through.
+    Lightning 2.6 still probes torch 2.3+'s deprecated ``LeafSpec`` API. Its generic worker-count
+    suggestion ignores the explicitly configured, benchmarked prepared-loader worker count.
+    Keep these two known, non-actionable messages out of long logs; genuine warnings continue.
     """
     warnings.filterwarnings(
         "ignore",
@@ -128,6 +127,12 @@ class TrainCfg:
     prepared_prefix: str | None = None
     epochs: int = 60
     batch_size: int = 256
+    # Prepared shards are partitioned exactly once across these loader processes. They overlap
+    # S3 reads, Parquet decode, Python row conversion, and tensor collation with model training.
+    num_workers: int = 4
+    # Intra-op threads used by the model process. Four was fastest for the `small` preset on
+    # the local CPU benchmark; loader workers run separately and PyTorch pins each of them to 1.
+    model_threads: int = 4
     lr: float = 1e-3
     loss_weights: tuple[float, float, float] = (1.0, 1.0, 1.0)  # ms2, irt, raw_rt
     mod_align_weight: float = 1.0
@@ -520,6 +525,9 @@ def run_pipeline(cfg: RunConfig, log=print) -> dict:
         assert encoder is not None, "need_encoder covers cfg.train.enabled"
         if not cfg.train.prepared_prefix:
             raise ValueError("[train] requires prepared_prefix; run the prepared ETL first")
+        if cfg.train.model_threads < 1:
+            raise ValueError("[train] model_threads must be positive")
+        torch.set_num_threads(cfg.train.model_threads)
         # Seed before the runbook is built: fit_realspeclib_datasets deliberately does NOT seed
         # globally, so a second call there would reset the stream after the context modules had
         # already drawn from it.
@@ -555,7 +563,8 @@ def run_pipeline(cfg: RunConfig, log=print) -> dict:
         )
         log(
             f"[train] streaming prepared chunks directly; "
-            f"train rows={len(train_ds):,}, val rows={len(val_ds):,}"
+            f"train rows={len(train_ds):,}, val rows={len(val_ds):,}, "
+            f"loader workers={cfg.train.num_workers}, model threads={torch.get_num_threads()}"
         )
         module = fit_realspeclib_datasets(
             model,
@@ -566,6 +575,7 @@ def run_pipeline(cfg: RunConfig, log=print) -> dict:
             encoder=encoder,
             epochs=cfg.train.epochs,
             batch_size=cfg.train.batch_size,
+            num_workers=cfg.train.num_workers,
             lr=cfg.train.lr,
             loss_weights=cfg.train.loss_weights,
             seed=cfg.seed,
