@@ -98,7 +98,7 @@ max_var_mods = 1
 enabled = true
 prepared_prefix = "s3://bucket/pepdistill-prepared/v1"
 epochs = 60
-num_workers = 4                 # concurrent shard read/decode/collation processes
+num_workers = 0                 # Polars decodes in-process; avoids unsafe post-init forks
 model_threads = 4               # intra-op threads in the model process
 loss_weights = [1.0, 1.0, 1.0]   # (ms2, iRT, raw_rt)
 
