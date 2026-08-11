@@ -150,13 +150,12 @@ name = "small"
 tags = ["full-nontest", "small"]
 ```
 
-Install with `uv sync --extra tracking`. For Launchpad, store the key in AWS Secrets Manager,
-grant the Batch job role `secretsmanager:GetSecretValue`, and pass only the non-secret identifier
-as `--env PEPDISTILL_WANDB_SECRET_ID=pepdistill/wandb-api-key`. The wrapper fetches the value into
-the training subprocess without logging or writing it. Do **not** use `--env WANDB_API_KEY=...`:
-Launchpad environment values are plaintext in AWS job metadata and CloudTrail. Locally, use the
-normal `WANDB_API_KEY` environment variable. Use `mode = "offline"` for a local run that should be
-synchronized later.
+Install with `uv sync --extra tracking`. The current Launchpad workflow deliberately uses a
+short-lived, dedicated W&B service-account key passed as `WANDB_API_KEY`: AWS Batch job metadata
+and CloudTrail can retain the plaintext value, so this is appropriate only while those surfaces
+have trusted access. Revoke the key after every array child and retry is terminal. Keep the
+literal out of shell history by reading it into the local environment, and do not use Launchpad
+`--dry-run` while supplying it. Use `mode = "offline"` when no online credential is available.
 
 These checkpoints are **warm starts**, not exact training resumes: they contain model and context
 weights, but not optimizer, scheduler, early-stop, epoch, or streaming-cursor state. Starting from
@@ -172,7 +171,7 @@ The staging helper generates one config and one S3 output prefix for each of `fl
 launchpad run tools/launchpad_prepared_train.py \
   --stage .launchpad/full-run-stage --array-size 5 \
   --env PEPDISTILL_TRAIN_PRESETS=flash,small-2h,small,base-4h,base \
-  --env PEPDISTILL_WANDB_SECRET_ID=pepdistill/wandb-api-key
+  --env WANDB_API_KEY="$WANDB_API_KEY"
 ```
 
 A standalone invocation defaults to `small`; select one explicitly with

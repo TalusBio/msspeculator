@@ -1,9 +1,9 @@
 """Cloud wrapper selection stays deterministic across standalone and array jobs."""
 
 import importlib.util
-import sys
 from pathlib import Path
-from types import SimpleNamespace
+
+import pytest
 
 
 def _module():
@@ -27,15 +27,13 @@ def test_array_training_selects_preset_by_index(monkeypatch):
     assert _module()._selected_preset() == "base-4h"
 
 
-def test_training_environment_reads_wandb_key_from_secrets_manager(monkeypatch):
-    monkeypatch.delenv("WANDB_API_KEY", raising=False)
-    monkeypatch.setenv("PEPDISTILL_WANDB_SECRET_ID", "pepdistill/wandb")
-
-    class Client:
-        def get_secret_value(self, **kwargs):
-            assert kwargs == {"SecretId": "pepdistill/wandb"}
-            return {"SecretString": '{"WANDB_API_KEY":"secret-value"}'}
-
-    monkeypatch.setitem(sys.modules, "boto3", SimpleNamespace(client=lambda _: Client()))
+def test_training_environment_passes_wandb_key_without_logging_it(monkeypatch):
+    monkeypatch.setenv("WANDB_API_KEY", "short-lived-key")
     env = _module()._training_environment()
-    assert env["WANDB_API_KEY"] == "secret-value"
+    assert env["WANDB_API_KEY"] == "short-lived-key"
+
+
+def test_training_environment_requires_wandb_key(monkeypatch):
+    monkeypatch.delenv("WANDB_API_KEY", raising=False)
+    with pytest.raises(SystemExit, match="short-lived service-account key"):
+        _module()._training_environment()
