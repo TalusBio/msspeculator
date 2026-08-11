@@ -151,11 +151,8 @@ tags = ["full-nontest", "small"]
 ```
 
 Install with `uv sync --extra tracking`. Cloud runs use a short-lived, dedicated W&B
-service-account key stored locally as the ignored `WANDB_SECRET` file. Copy it into the staged
-directory immediately before submission. Each standalone job reads the key, deletes the local
-copy and its S3 staging object, and passes it only to the training subprocess. Revoke the key
-after every job and retry is terminal. Use `mode = "offline"` when no online credential is
-available.
+service-account key passed as `WANDB_API_KEY` in Batch job metadata. Revoke the key after every
+job and retry is terminal. Use `mode = "offline"` when no online credential is available.
 
 These checkpoints are **warm starts**, not exact training resumes: they contain model and context
 weights, but not optimizer, scheduler, early-stop, epoch, or streaming-cursor state. Starting from
@@ -164,16 +161,17 @@ one therefore begins the configured stage again with the saved weights.
 ### Launch the five-preset cloud sweep
 
 The staging helper generates one config and one S3 output prefix for each of `flash`, `small-2h`,
-`small`, `base-4h`, and `base`. Launch these as five standalone jobs so each one can safely delete
-its own staged credential object without racing array children:
+`small`, `base-4h`, and `base`. Upload the immutable stage once, then reuse its S3 prefix for all
+five jobs:
 
 ```bash
 .venv/bin/python tools/prepare_launchpad_full_run.py
-cp WANDB_SECRET .launchpad/full-run-stage/WANDB_SECRET
+aws s3 sync .launchpad/full-run-stage "$STAGE_URI"
 for preset in flash small-2h small base-4h base; do
   launchpad run tools/launchpad_prepared_train.py \
-    --stage .launchpad/full-run-stage \
-    --env PEPDISTILL_TRAIN_PRESET="$preset"
+    --stage "$STAGE_URI" \
+    --env PEPDISTILL_TRAIN_PRESET="$preset" \
+    --env WANDB_API_KEY="$WANDB_API_KEY"
 done
 ```
 
