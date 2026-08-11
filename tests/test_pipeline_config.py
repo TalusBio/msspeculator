@@ -80,6 +80,7 @@ project = "spectra"
 group = "full-v1"
 tags = ["base", "non-test"]
 mode = "offline"
+min_log_interval_seconds = 12.5
 '''
     cfg = RunConfig.from_toml(_write(tmp_path, text))
     assert cfg.tracking.enabled
@@ -87,3 +88,4 @@ mode = "offline"
     assert cfg.tracking.group == "full-v1"
     assert cfg.tracking.tags == ["base", "non-test"]
     assert cfg.tracking.mode == "offline"
+    assert cfg.tracking.min_log_interval_seconds == 12.5

@@ -11,10 +11,11 @@ from __future__ import annotations
 
 import json
 import random
+import time
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 import fsspec
 import numpy as np
@@ -159,15 +160,15 @@ class PreparedStreamingDataset:
         encoder,
         splits: frozenset[str],
         seed: int = 0,
-        shuffle_buffer: int = 50_000,
         row_group_size: int = 65_536,
+        log: Callable[[str], None] | None = None,
     ) -> None:
         self.manifest = manifest
         self.encoder = encoder
         self.splits = splits
         self.seed = seed
-        self.shuffle_buffer = shuffle_buffer
         self.row_group_size = row_group_size
+        self.log = log
         self.dataset_ids = manifest.datasets
 
     def __len__(self) -> int:
@@ -190,15 +191,17 @@ class PreparedStreamingDataset:
         rng = random.Random(hash((self.seed, epoch)))
         if shuffle:
             rng.shuffle(chunks)
-        buf: list[RealExample] = []
-        for chunk in chunks:
+        for chunk_index, chunk in enumerate(chunks, start=1):
             dataset_id = self.dataset_ids[chunk.dataset]
+            opened_at = time.perf_counter()
             stream = _open_parquet(chunk.uri)
+            open_seconds = time.perf_counter() - opened_at
             try:
                 # PROSPECT hashes occupy the full unsigned 64-bit range. Polars therefore
                 # persisted some shard IDs as Int128; PyArrow refuses to open a Parquet schema
                 # containing Int128 even when that column is not selected. Read with Polars,
                 # use the ID only for validation selection, and drop it before Pandas conversion.
+                read_at = time.perf_counter()
                 frame = read_prepared_parquet(stream).filter(
                     pl.col("split").is_in(self.splits)
                     & pl.col("irt").is_finite()
@@ -211,23 +214,27 @@ class PreparedStreamingDataset:
                     ]
                     frame = frame.filter(pl.Series("is_winner", keep))
                 frame = frame.drop("spectrum_id")
+                read_seconds = time.perf_counter() - read_at
+                if self.log is not None:
+                    size = getattr(stream, "size", None)
+                    size_mib = float(size) / (1024 * 1024) if size is not None else None
+                    transfer = (
+                        f", size={size_mib:.1f} MiB, effective={size_mib / read_seconds:.1f} MiB/s"
+                        if size_mib is not None and read_seconds > 0
+                        else ""
+                    )
+                    self.log(
+                        f"[data] shard {chunk_index:,}/{len(chunks):,}, dataset={chunk.dataset}, "
+                        f"rows={frame.height:,}, open={open_seconds:.3f}s, "
+                        f"read_decode={read_seconds:.3f}s{transfer}"
+                    )
                 for offset in range(0, frame.height, self.row_group_size):
                     pandas_frame = frame.slice(offset, self.row_group_size).to_pandas()
                     for example in _row_examples(pandas_frame, dataset_id, self.encoder):
-                        if not shuffle or self.shuffle_buffer <= 0:
-                            yield example
-                            continue
-                        buf.append(example)
-                        if len(buf) >= self.shuffle_buffer:
-                            j = rng.randrange(len(buf))
-                            buf[j], buf[-1] = buf[-1], buf[j]
-                            yield buf.pop()
+                        yield example
             finally:
                 if hasattr(stream, "close"):
                     stream.close()
-        if shuffle:
-            rng.shuffle(buf)
-        yield from buf
 
     def batches(
         self, batch_size: int, shuffle: bool, generator: torch.Generator

@@ -100,11 +100,15 @@ def test_prepared_reader_streams_rows_into_real_batches(tmp_path):
     prepare_range(config, log=None)
     finalize_catalog(config, log=None)
     manifest = PreparedManifest.load(str(out))
+    logs: list[str] = []
     ds = PreparedStreamingDataset(
-        manifest, MSContextEncoder(context_dim=8), frozenset({"train"}), shuffle_buffer=0
+        manifest, MSContextEncoder(context_dim=8), frozenset({"train"}), log=logs.append
     )
     examples = list(ds.iter_examples(0, shuffle=False))
     assert len(examples) == 1
+    assert len(logs) == 1
+    assert logs[0].startswith("[data] shard 1/1, dataset=isoform, rows=1, open=")
+    assert "s, read_decode=" in logs[0]
     batch = next(ds.batches(1, shuffle=False, generator=torch.Generator().manual_seed(0)))
     assert batch.base.ms2_target.shape[0] == 1
 
@@ -158,7 +162,7 @@ def test_finalize_and_reader_exclude_nonfinite_rt_rows(tmp_path):
     assert finalized["split_rows"] == {"train": 1, "val": 1}
     manifest = PreparedManifest.load(str(out))
     ds = PreparedStreamingDataset(
-        manifest, MSContextEncoder(context_dim=8), frozenset({"train"}), shuffle_buffer=0
+        manifest, MSContextEncoder(context_dim=8), frozenset({"train"})
     )
     assert len(list(ds.iter_examples(0, shuffle=False))) == 1
 
@@ -179,7 +183,7 @@ def test_prepared_reader_accepts_int128_spectrum_ids(tmp_path):
     manifest = PreparedManifest.load(str(out))
     assert manifest.val_winners and max(manifest.val_winners) > 2**63
     val = PreparedStreamingDataset(
-        manifest, MSContextEncoder(context_dim=8), frozenset({"val"}), shuffle_buffer=0
+        manifest, MSContextEncoder(context_dim=8), frozenset({"val"})
     )
     assert len(list(val.iter_examples(0, shuffle=False))) == 1
 

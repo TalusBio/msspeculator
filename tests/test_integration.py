@@ -93,6 +93,13 @@ def test_wandb_stage_loggers_share_one_run(tmp_path: Path, monkeypatch):
         def __init__(self, experiment=None, **kwargs):
             self.experiment = experiment or Experiment()
             self.kwargs = kwargs
+            self.logged = []
+
+        def log_metrics(self, metrics, step=None):
+            self.logged.append((metrics, step))
+
+        def finalize(self, status):
+            self.status = status
 
     initialized = {}
     experiment = Experiment()
@@ -117,3 +124,16 @@ def test_wandb_stage_loggers_share_one_run(tmp_path: Path, monkeypatch):
     assert root.kwargs["log_model"] is False
     assert initialized["config"]["preset"] == "flash"
     assert initialized["mode"] == "offline"
+
+    ticks = iter((0.0, 1.0, 2.0, 11.0))
+    monkeypatch.setattr("pepdistill.distill.pipeline.time.monotonic", lambda: next(ticks))
+    train.log_metrics({"train_ms2": 0.3}, step=1)
+    train.log_metrics({"train_ms2": 0.2}, step=2)
+    train.log_metrics({"val/data/spectral_angle": 0.6}, step=3)
+    train.log_metrics({"train_ms2": 0.1}, step=4)
+    assert train.logged == [
+        ({"train_ms2": 0.3}, 1),
+        ({"val/data/spectral_angle": 0.6}, 3),
+    ]
+    train.finalize("success")
+    assert train.logged[-1] == ({"train_ms2": 0.1}, 4)

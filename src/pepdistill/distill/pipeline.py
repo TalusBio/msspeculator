@@ -134,10 +134,6 @@ class TrainCfg:
     # Validation spectral-angle early stop; 0 disables it. Patience is in real-data epochs.
     early_stop_patience: int = 0
     early_stop_min_delta: float = 1e-3
-    # Examples held for cross-shard shuffling. Shards are also visited in a per-epoch shuffled
-    # order, so this only has to break up within-shard correlation. 0 disables shuffling
-    # entirely (sequential shard order) for debugging a data problem.
-    shuffle_buffer: int = 50_000
 
 
 # What the real-data stage trains on — and therefore the population the RT affine is estimated
@@ -191,6 +187,7 @@ class TrackingCfg:
     tags: list[str] = field(default_factory=list)
     notes: str | None = None
     mode: str = "online"  # online | offline
+    min_log_interval_seconds: float = 10.0
 
 
 @dataclass
@@ -338,9 +335,40 @@ def _wandb_loggers(cfg: RunConfig, out: Path):
         ) from exc
     if experiment is None:
         raise RuntimeError("wandb.init() did not return a run")
+
+    class ThrottledWandbLogger(WandbLogger):
+        """Limit remote train telemetry by wall time while retaining important boundaries."""
+
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self._last_remote_log_at: float | None = None
+            self._pending_metrics: tuple[dict, int | None] | None = None
+
+        def log_metrics(self, metrics: dict, step: int | None = None) -> None:
+            now = time.monotonic()
+            force = any(str(key).startswith("val/") for key in metrics)
+            due = (
+                self._last_remote_log_at is None
+                or cfg.tracking.min_log_interval_seconds <= 0
+                or now - self._last_remote_log_at >= cfg.tracking.min_log_interval_seconds
+            )
+            if force or due:
+                self._pending_metrics = None
+                self._last_remote_log_at = now
+                super().log_metrics(metrics, step)
+            else:
+                self._pending_metrics = (dict(metrics), step)
+
+        def finalize(self, status: str) -> None:
+            if self._pending_metrics is not None:
+                metrics, step = self._pending_metrics
+                self._pending_metrics = None
+                super().log_metrics(metrics, step)
+            super().finalize(status)
+
     root = WandbLogger(experiment=experiment, log_model=False)
-    pretrain = WandbLogger(experiment=experiment, prefix="pretrain")
-    train = WandbLogger(experiment=experiment, prefix="train")
+    pretrain = ThrottledWandbLogger(experiment=experiment, prefix="pretrain")
+    train = ThrottledWandbLogger(experiment=experiment, prefix="train")
     pretrain.LOGGER_JOIN_CHAR = "/"
     train.LOGGER_JOIN_CHAR = "/"
     return root, pretrain, train
@@ -499,12 +527,10 @@ def run_pipeline(cfg: RunConfig, log=print) -> dict:
         prepared_manifest = PreparedManifest.load(cfg.train.prepared_prefix)
         dataset_index = prepared_manifest.datasets
         train_ds = PreparedStreamingDataset(
-            prepared_manifest, encoder, frozenset({"train"}), seed=cfg.seed,
-            shuffle_buffer=cfg.train.shuffle_buffer,
+            prepared_manifest, encoder, frozenset({"train"}), seed=cfg.seed, log=log,
         )
         val_ds = PreparedStreamingDataset(
-            prepared_manifest, encoder, frozenset({"val"}), seed=cfg.seed,
-            shuffle_buffer=0,
+            prepared_manifest, encoder, frozenset({"val"}), seed=cfg.seed, log=log,
         )
         log(
             f"[train] prepared prefix: {cfg.train.prepared_prefix}; "
