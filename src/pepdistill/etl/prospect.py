@@ -57,6 +57,26 @@ def _load_json(uri: str) -> dict[str, Any] | None:
     return value if isinstance(value, dict) else None
 
 
+def _load_json_paths(fs: Any, paths: list[str]) -> dict[str, dict[str, Any]]:
+    """Read explicit JSON paths using the filesystem's batched/concurrent implementation."""
+    if not paths:
+        return {}
+    blobs = fs.cat(paths, on_error="return")
+    if not isinstance(blobs, dict):
+        blobs = {paths[0]: blobs}
+    loaded: dict[str, dict[str, Any]] = {}
+    for path, blob in blobs.items():
+        if isinstance(blob, BaseException):
+            continue
+        try:
+            value = json.loads(blob)
+        except (TypeError, ValueError, UnicodeDecodeError):
+            continue
+        if isinstance(value, dict):
+            loaded[str(path)] = value
+    return loaded
+
+
 def _list_shards(source_prefix: str | Path, archive_stem: str) -> list[str]:
     """List extracted members under ``<prefix>/<stem>/<stem>``."""
     root = _uri_join(source_prefix, f"{archive_stem}/{archive_stem}")
@@ -503,6 +523,58 @@ def _task_output_prefix(output_prefix: str, task: dict[str, Any]) -> str:
     )
 
 
+def _catalog_manifests(
+    config: PrepareConfig,
+    catalog: dict[str, Any],
+    log: Callable[[str], None] | None = None,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Load and validate completed task manifests without per-object HEAD requests."""
+    fs, _, roots = fsspec.get_fs_token_paths(_uri_join(config.output_prefix, "shards"))
+    if log is not None:
+        log(f"[prepare] listing completed shard assets for {len(catalog['tasks']):,} task(s)")
+    try:
+        existing = set(fs.find(roots[0]))
+    except FileNotFoundError:
+        existing = set()
+
+    assets: list[tuple[dict[str, Any], str, str]] = []
+    for task in catalog["tasks"]:
+        prefix = _task_output_prefix(config.output_prefix, task)
+        assets.append(
+            (
+                task,
+                fs._strip_protocol(_uri_join(prefix, "manifest.json")),
+                fs._strip_protocol(_uri_join(prefix, "data.parquet")),
+            )
+        )
+    manifest_paths = [
+        path for _, path, data_path in assets if path in existing and data_path in existing
+    ]
+    if log is not None:
+        log(f"[prepare] reading {len(manifest_paths):,} manifest(s) in a concurrent batch")
+    loaded = _load_json_paths(fs, manifest_paths)
+
+    manifests: list[dict[str, Any]] = []
+    missing: list[str] = []
+    for task, manifest_path, data_path in assets:
+        manifest = loaded.get(manifest_path)
+        expected_data_uri = _uri_join(
+            _task_output_prefix(config.output_prefix, task), "data.parquet"
+        )
+        valid = (
+            manifest is not None
+            and manifest.get("version") == 1
+            and data_path in existing
+            and manifest.get("data_uri") == expected_data_uri
+            and manifest.get("task", {}).get("config_fingerprint") == config.fingerprint
+        )
+        if valid:
+            manifests.append(manifest)
+        else:
+            missing.append(f"{task['source_id']}/{int(task['shard_index']):06d}")
+    return manifests, missing
+
+
 def prepare_task(
     output_prefix: str,
     task: dict[str, Any],
@@ -628,18 +700,12 @@ def balanced_partition_range(
     return start, stop, prefix[stop] - prefix[start]
 
 
-def finalize_catalog(config: PrepareConfig, log: Callable[[str], None] | None = print) -> dict[str, Any]:
+def finalize_catalog(
+    config: PrepareConfig, log: Callable[[str], None] | None = print
+) -> dict[str, Any]:
     """Validate all shard manifests and write the worker-independent training manifest."""
     catalog = ensure_catalog(config)
-    manifests: list[dict[str, Any]] = []
-    missing: list[str] = []
-    for task in catalog["tasks"]:
-        uri = _uri_join(_task_output_prefix(config.output_prefix, task), "manifest.json")
-        manifest = _load_json(uri)
-        if manifest is None or not _uri_exists(str(manifest.get("data_uri", ""))):
-            missing.append(f"{task['source_id']}/{int(task['shard_index']):06d}")
-        else:
-            manifests.append(manifest)
+    manifests, missing = _catalog_manifests(config, catalog, log=log)
     if missing:
         preview = ", ".join(missing[:8])
         raise ValueError(f"cannot finalize: {len(missing)} shard task(s) missing ({preview})")
@@ -679,10 +745,10 @@ def catalog_status(config: PrepareConfig, count_only: bool = False) -> dict[str,
     catalog = ensure_catalog(config)
     if count_only:
         return {"complete": 0, "missing": len(catalog["tasks"]), "total": len(catalog["tasks"])}
-    complete = 0
-    for task in catalog["tasks"]:
-        uri = _uri_join(_task_output_prefix(config.output_prefix, task), "manifest.json")
-        manifest = _load_json(uri)
-        if manifest is not None and _uri_exists(str(manifest.get("data_uri", ""))):
-            complete += 1
-    return {"complete": complete, "missing": len(catalog["tasks"]) - complete, "total": len(catalog["tasks"])}
+    manifests, _ = _catalog_manifests(config, catalog)
+    complete = len(manifests)
+    return {
+        "complete": complete,
+        "missing": len(catalog["tasks"]) - complete,
+        "total": len(catalog["tasks"]),
+    }

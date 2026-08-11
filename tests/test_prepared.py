@@ -129,6 +129,20 @@ def test_shard_catalog_range_and_finalize(tmp_path):
     assert PreparedManifest.load(str(out)).chunks[0].rows == 2
 
 
+def test_catalog_status_and_finalize_do_not_head_each_data_object(tmp_path, monkeypatch):
+    root, stem = _source(tmp_path)
+    out = tmp_path / "prepared-batched"
+    config = _config(root, stem, out)
+    prepare_range(config, log=None)
+
+    def unexpected_head(*args, **kwargs):
+        raise AssertionError("catalog validation should use the prefix inventory")
+
+    monkeypatch.setattr("pepdistill.etl.prospect._uri_exists", unexpected_head)
+    assert catalog_status(config) == {"complete": 1, "missing": 0, "total": 1}
+    assert len(finalize_catalog(config, log=None)["chunks"]) == 1
+
+
 def test_group_config_discovers_matching_archives(tmp_path):
     config = PrepareConfig(
         source_prefix=str(tmp_path / "cache"),
