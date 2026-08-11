@@ -10,6 +10,8 @@ import torch
 
 pytest.importorskip("polars")
 
+import polars as pl
+
 from pepdistill.data.prepared import PreparedManifest, PreparedStreamingDataset
 from pepdistill.distill.context_regime import MSContextEncoder
 from pepdistill.etl.config import PrepareConfig, PrepareGroup, PrepareSource
@@ -150,6 +152,27 @@ def test_finalize_and_reader_exclude_nonfinite_rt_rows(tmp_path):
         manifest, MSContextEncoder(context_dim=8), frozenset({"train"}), shuffle_buffer=0
     )
     assert len(list(ds.iter_examples(0, shuffle=False))) == 1
+
+
+def test_prepared_reader_accepts_int128_spectrum_ids(tmp_path):
+    root, stem = _source(tmp_path)
+    out = tmp_path / "prepared-int128-id"
+    config = _config(root, stem, out)
+    prepare_range(config, log=None)
+    data = out / "shards" / "isoform" / "000000" / "data.parquet"
+    frame = pl.read_parquet(data).with_columns(
+        (pl.col("spectrum_id").cast(pl.Int128) + pl.lit(2**63, dtype=pl.Int128))
+        .alias("spectrum_id")
+    )
+    frame.write_parquet(data)
+
+    finalize_catalog(config, log=None)
+    manifest = PreparedManifest.load(str(out))
+    assert manifest.val_winners and max(manifest.val_winners) > 2**63
+    val = PreparedStreamingDataset(
+        manifest, MSContextEncoder(context_dim=8), frozenset({"val"}), shuffle_buffer=0
+    )
+    assert len(list(val.iter_examples(0, shuffle=False))) == 1
 
 
 def test_catalog_status_and_finalize_do_not_head_each_data_object(tmp_path, monkeypatch):

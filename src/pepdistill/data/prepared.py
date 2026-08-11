@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING
 import fsspec
 import numpy as np
 import pandas as pd
-import pyarrow.parquet as pq
+import polars as pl
 import torch
 
 from ..chem import ION_TYPES, Peptide
@@ -71,7 +71,8 @@ class PreparedManifest:
         winners_uri = raw.get("val_winners_uri")
         if not winners and winners_uri:
             with fsspec.open(str(winners_uri), "rb") as stream:
-                winners = frozenset(int(x) for x in pq.read_table(stream, columns=["spectrum_id"])["spectrum_id"].to_pylist())
+                winner_ids = pl.read_parquet(stream, columns=["spectrum_id"])["spectrum_id"]
+                winners = frozenset(int(x) for x in winner_ids.to_list())
         stats = raw.get("irt_stats", [0, 0.0, 0.0])
         split_rows = {str(k): int(v) for k, v in raw.get("split_rows", {}).items()}
         split_datasets = {
@@ -193,17 +194,25 @@ class PreparedStreamingDataset:
             dataset_id = self.dataset_ids[chunk.dataset]
             stream = _open_parquet(chunk.uri)
             try:
-                pf = pq.ParquetFile(stream)
-                for batch in pf.iter_batches(batch_size=self.row_group_size):
-                    frame = batch.to_pandas()
-                    frame = frame.loc[
-                        frame["split"].isin(self.splits)
-                        & np.isfinite(frame["irt"])
-                        & np.isfinite(frame["raw_rt"])
+                # PROSPECT hashes occupy the full unsigned 64-bit range. Polars therefore
+                # persisted some shard IDs as Int128; PyArrow refuses to open a Parquet schema
+                # containing Int128 even when that column is not selected. Read with Polars,
+                # use the ID only for validation selection, and drop it before Pandas conversion.
+                frame = pl.read_parquet(stream).filter(
+                    pl.col("split").is_in(self.splits)
+                    & pl.col("irt").is_finite()
+                    & pl.col("raw_rt").is_finite()
+                )
+                if self.splits == frozenset({"val"}) and self.manifest.val_winners:
+                    keep = [
+                        int(value) in self.manifest.val_winners
+                        for value in frame["spectrum_id"].to_list()
                     ]
-                    if self.splits == frozenset({"val"}) and self.manifest.val_winners:
-                        frame = frame.loc[frame["spectrum_id"].isin(self.manifest.val_winners)]
-                    for example in _row_examples(frame, dataset_id, self.encoder):
+                    frame = frame.filter(pl.Series("is_winner", keep))
+                frame = frame.drop("spectrum_id")
+                for offset in range(0, frame.height, self.row_group_size):
+                    pandas_frame = frame.slice(offset, self.row_group_size).to_pandas()
+                    for example in _row_examples(pandas_frame, dataset_id, self.encoder):
                         if not shuffle or self.shuffle_buffer <= 0:
                             yield example
                             continue
