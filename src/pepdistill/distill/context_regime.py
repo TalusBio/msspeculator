@@ -271,9 +271,9 @@ class RealSpeclibModule(L.LightningModule):
 class _RealTrainProgress(L.Callback):
     """Low-noise progress for the streaming real-data stage.
 
-    The iterable dataset cannot know its epoch length without decoding every shard first, so
-    Lightning's normal percentage bar is misleading here.  Report epoch/batch checkpoints and
-    elapsed time instead; the batch index is still useful for spotting a stalled shard or loader.
+    Prepared manifests know their row count but not the exact number of length-bucketed partial
+    batches. ``ceil(rows / batch_size)`` is nevertheless accurate to within a few dozen batches
+    across a roughly 350k-batch epoch, so report it explicitly as an approximate denominator.
     """
 
     def __init__(
@@ -281,12 +281,15 @@ class _RealTrainProgress(L.Callback):
         every: int = 100,
         metrics_path: str | Path | None = None,
         artifact_mirror=None,
+        estimated_batches: int | None = None,
     ) -> None:
         super().__init__()
         self.every = every
         self.metrics_path = Path(metrics_path) if metrics_path is not None else None
         self.artifact_mirror = artifact_mirror
+        self.estimated_batches = estimated_batches
         self._started = 0.0
+        self._examples = 0
 
     def _write_epoch_metrics(self, trainer: L.Trainer) -> None:
         if self.metrics_path is None:
@@ -306,7 +309,16 @@ class _RealTrainProgress(L.Callback):
 
     def on_train_epoch_start(self, trainer: L.Trainer, pl_module: L.LightningModule) -> None:
         self._started = time.perf_counter()
-        trainer.print(f"[train] epoch {trainer.current_epoch + 1}/{trainer.max_epochs} started")
+        self._examples = 0
+        denominator = (
+            f", approximately {self.estimated_batches:,} batches"
+            if self.estimated_batches is not None
+            else ""
+        )
+        trainer.print(
+            f"[train] epoch {trainer.current_epoch + 1}/{trainer.max_epochs} started"
+            f"{denominator}"
+        )
 
     def on_train_batch_end(
         self,
@@ -317,14 +329,24 @@ class _RealTrainProgress(L.Callback):
         batch_idx: int,
     ) -> None:
         n = batch_idx + 1
+        self._examples += int(batch.base.inputs.charge.numel())
         if self.every > 0 and n % self.every == 0:
             loss = trainer.callback_metrics.get("train_ms2")
             loss_text = "" if loss is None else f", ms2={float(loss):.4f}"
             lr = float(trainer.optimizers[0].param_groups[0]["lr"])
             elapsed = time.perf_counter() - self._started
+            progress = f"batch {n:,}"
+            eta_text = ""
+            if self.estimated_batches is not None:
+                fraction = min(n / self.estimated_batches, 1.0)
+                remaining = max(self.estimated_batches - n, 0) * elapsed / n
+                progress += f"/~{self.estimated_batches:,} ({fraction:.1%})"
+                eta_text = f", epoch_eta={remaining / 3600:.2f}h"
+            examples_per_second = self._examples / elapsed if elapsed > 0 else 0.0
             trainer.print(
                 f"[train] epoch {trainer.current_epoch + 1}/{trainer.max_epochs}, "
-                f"batch {n}{loss_text}, lr={lr:.6g}, elapsed {elapsed:.0f}s"
+                f"{progress}{loss_text}, lr={lr:.6g}, {examples_per_second:,.0f} examples/s, "
+                f"elapsed={elapsed:.0f}s{eta_text}"
             )
 
     def on_train_epoch_end(self, trainer: L.Trainer, pl_module: L.LightningModule) -> None:
@@ -603,8 +625,14 @@ def fit_realspeclib_datasets(
         else set(np.unique(val_ds.dataset_id)) if val_ds is not None and len(val_ds) else set()
     )
     if progress_log_every > 0:
+        estimated_batches = math.ceil(len(train_ds) / batch_size) if len(train_ds) else None
         callbacks.append(
-            _RealTrainProgress(progress_log_every, progress_metrics_path, artifact_mirror)
+            _RealTrainProgress(
+                progress_log_every,
+                progress_metrics_path,
+                artifact_mirror,
+                estimated_batches=estimated_batches,
+            )
         )
     if early_stop_patience < 0:
         raise ValueError("early_stop_patience must be non-negative")

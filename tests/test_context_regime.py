@@ -228,7 +228,7 @@ def test_degenerate_variance_falls_back_to_unit_std():
     assert float(model.rt_std) == pytest.approx(1.0)
 
 
-def test_fit_from_prebuilt_datasets_trains_and_reports_metrics(tmp_path):
+def test_fit_from_prebuilt_datasets_trains_and_reports_metrics(tmp_path, capsys):
     from pepdistill.distill.context_regime import RealSpeclibDataset
 
     model = build_student("small")
@@ -245,6 +245,7 @@ def test_fit_from_prebuilt_datasets_trains_and_reports_metrics(tmp_path):
         encoder=MSContextEncoder(context_dim=cdim),
         epochs=1,
         batch_size=4,
+        progress_log_every=1,
         enable_progress_bar=False,
         progress_metrics_path=tmp_path / "train_metrics.jsonl",
         checkpoint_dir=tmp_path,
@@ -260,6 +261,11 @@ def test_fit_from_prebuilt_datasets_trains_and_reports_metrics(tmp_path):
     assert "latest.ckpt" in mirrored
     assert "best.ckpt" in mirrored
     assert "train_metrics.jsonl" in mirrored
+    progress = capsys.readouterr().out
+    assert "approximately 2 batches" in progress
+    assert "batch 1/~2 (50.0%)" in progress
+    assert "examples/s" in progress
+    assert "epoch_eta=" in progress
 
 
 def test_validation_early_stop_fails_on_missing_metric_key():
