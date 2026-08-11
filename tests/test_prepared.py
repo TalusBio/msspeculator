@@ -13,6 +13,10 @@ pytest.importorskip("polars")
 import polars as pl
 
 from pepdistill.data.prepared import PreparedManifest, PreparedStreamingDataset
+from pepdistill.data.prepared_schema import (
+    PREPARED_SPECTRA_SCHEMA,
+    VALIDATION_WINNER_SCHEMA,
+)
 from pepdistill.distill.context_regime import MSContextEncoder
 from pepdistill.etl.config import PrepareConfig, PrepareGroup, PrepareSource
 from pepdistill.etl.prospect import (
@@ -77,6 +81,11 @@ def test_prepare_shards_writes_manifest_and_chunked_rows(tmp_path):
     assert manifest["irt_stats"][0] == 1
     assert (out / "manifest.json").exists()
     assert (out / "validation" / "val_winners.parquet").exists()
+    assert pl.read_parquet_schema(manifest["chunks"][0]["uri"]) == PREPARED_SPECTRA_SCHEMA
+    assert (
+        pl.read_parquet_schema(out / "validation" / "val_winners.parquet")
+        == VALIDATION_WINNER_SCHEMA
+    )
 
     loaded = PreparedManifest.load(str(out))
     assert loaded.datasets == {"isoform": 1}

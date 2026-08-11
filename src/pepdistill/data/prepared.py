@@ -25,6 +25,7 @@ import torch
 from ..chem import ION_TYPES, Peptide
 from ..teacher.base import PrecursorLabels
 from .precursors import Precursor
+from .prepared_schema import read_prepared_parquet, read_validation_winners
 
 if TYPE_CHECKING:
     from ..distill.context_regime import RealBatch, RealExample
@@ -71,7 +72,7 @@ class PreparedManifest:
         winners_uri = raw.get("val_winners_uri")
         if not winners and winners_uri:
             with fsspec.open(str(winners_uri), "rb") as stream:
-                winner_ids = pl.read_parquet(stream, columns=["spectrum_id"])["spectrum_id"]
+                winner_ids = read_validation_winners(stream)["spectrum_id"]
                 winners = frozenset(int(x) for x in winner_ids.to_list())
         stats = raw.get("irt_stats", [0, 0.0, 0.0])
         split_rows = {str(k): int(v) for k, v in raw.get("split_rows", {}).items()}
@@ -198,7 +199,7 @@ class PreparedStreamingDataset:
                 # persisted some shard IDs as Int128; PyArrow refuses to open a Parquet schema
                 # containing Int128 even when that column is not selected. Read with Polars,
                 # use the ID only for validation selection, and drop it before Pandas conversion.
-                frame = pl.read_parquet(stream).filter(
+                frame = read_prepared_parquet(stream).filter(
                     pl.col("split").is_in(self.splits)
                     & pl.col("irt").is_finite()
                     & pl.col("raw_rt").is_finite()

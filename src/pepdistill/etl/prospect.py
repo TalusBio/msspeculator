@@ -32,6 +32,12 @@ import polars as pl
 import pyarrow.parquet as pq
 
 from ..data.meta_index import build_meta_index_from_frame
+from ..data.prepared_schema import (
+    VALIDATION_WINNER_SCHEMA,
+    canonical_prepared_scan,
+    prepared_frame,
+    require_schema,
+)
 from ..data.prospect import ProspectSchema, decode_fragments
 from ..data.prospect_catalog import load_catalog, load_shard_index
 from .config import PrepareConfig, PrepareGroup, PrepareSource
@@ -224,7 +230,7 @@ def _val_winners(chunks: list[str], out_uri: str) -> list[int]:
     if not chunks:
         return []
     values = (
-        pl.scan_parquet(chunks)
+        canonical_prepared_scan(chunks)
         .filter(
             (pl.col("split") == "val")
             & pl.col("irt").is_finite()
@@ -240,13 +246,14 @@ def _val_winners(chunks: list[str], out_uri: str) -> list[int]:
         .collect(engine="streaming")
     )
     winners = [int(value) for value in values["spectrum_id"].to_list()]
+    require_schema(values, VALIDATION_WINNER_SCHEMA, "validation winners")
     _write_parquet(values, out_uri)
     return winners
 
 
 def _irt_stats(chunks: list[str]) -> tuple[int, float, float]:
     row = (
-        pl.scan_parquet(chunks)
+        canonical_prepared_scan(chunks)
         .filter(
             (pl.col("split") == "train")
             & pl.col("irt").is_finite()
@@ -265,7 +272,7 @@ def _irt_stats(chunks: list[str]) -> tuple[int, float, float]:
 
 def _split_rows(chunks: list[str]) -> dict[str, int]:
     rows = (
-        pl.scan_parquet(chunks)
+        canonical_prepared_scan(chunks)
         .filter(pl.col("irt").is_finite() & pl.col("raw_rt").is_finite())
         .group_by("split")
         .agg(pl.len().alias("rows"))
@@ -276,7 +283,7 @@ def _split_rows(chunks: list[str]) -> dict[str, int]:
 
 def _split_datasets(chunks: list[str]) -> dict[str, list[str]]:
     rows = (
-        pl.scan_parquet(chunks)
+        canonical_prepared_scan(chunks)
         .filter(pl.col("irt").is_finite() & pl.col("raw_rt").is_finite())
         .select(["dataset", "split"])
         .unique()
@@ -634,7 +641,7 @@ def prepare_task(
             shutil.rmtree(temporary_dir, ignore_errors=True)
     if not rows:
         raise ValueError(f"task {task['source_id']}/{task['shard_index']} produced no usable spectra")
-    frame = pl.DataFrame(rows).with_columns(pl.col("ms2").cast(pl.List(pl.Float32)))
+    frame = prepared_frame(rows)
     _write_parquet(frame, data_uri)
     emit(f"wrote {frame.height:,} spectra in {time.perf_counter() - started:.1f}s")
     manifest = {
