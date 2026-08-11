@@ -21,6 +21,7 @@ rust/target/
 runs/*
 !runs/*.toml
 fasta_ignore/
+WANDB_SECRET
 
 # subagent-driven-development scratch (ledger, briefs, review packages)
 .superpowers/
