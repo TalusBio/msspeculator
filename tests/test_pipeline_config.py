@@ -27,7 +27,7 @@ def _write(tmp_path, text):
 def test_prepared_prefix_parses(tmp_path):
     cfg = RunConfig.from_toml(_write(tmp_path, BASE))
     assert cfg.train.prepared_prefix == "s3://bucket/prepared/v1"
-    assert cfg.train.num_workers == 4
+    assert cfg.train.num_workers == 0
     assert cfg.train.model_threads == 4
 
 

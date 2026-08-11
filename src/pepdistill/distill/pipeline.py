@@ -127,9 +127,11 @@ class TrainCfg:
     prepared_prefix: str | None = None
     epochs: int = 60
     batch_size: int = 256
-    # Prepared shards are partitioned exactly once across these loader processes. They overlap
-    # S3 reads, Parquet decode, Python row conversion, and tensor collation with model training.
-    num_workers: int = 4
+    # Keep Polars-backed streaming in the trainer process by default. Forking a DataLoader
+    # after Polars has initialized its native thread pool can deadlock on Linux, and measured
+    # prepared-shard throughput did not improve with process workers. Polars still parallelizes
+    # decode internally; explicit workers remain available for controlled experiments.
+    num_workers: int = 0
     # Intra-op threads used by the model process. Four was fastest for the `small` preset on
     # the local CPU benchmark; loader workers run separately and PyTorch pins each of them to 1.
     model_threads: int = 4
@@ -600,6 +602,9 @@ def run_pipeline(cfg: RunConfig, log=print) -> dict:
             mod_align_weight=cfg.train.mod_align_weight,
             early_stop_patience=cfg.train.early_stop_patience,
             early_stop_min_delta=cfg.train.early_stop_min_delta,
+            # A sanity pass delays the first training batch and is redundant with the full
+            # per-epoch validation performed by this streaming regime.
+            num_sanity_val_steps=0,
             enable_progress_bar=False,
             progress_metrics_path=out / "train_metrics.jsonl",
             checkpoint_dir=out,
