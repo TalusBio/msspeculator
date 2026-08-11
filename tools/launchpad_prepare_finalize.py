@@ -5,8 +5,8 @@
 # dependencies = []
 #
 # [tool.launchpad]
-# vcpus = 2
-# memory = 8000
+# vcpus = 8
+# memory = 16000
 # job_name = "pepdistill-etl-finalize"
 # ///
 
