@@ -25,7 +25,7 @@ import torch
 from torch.utils.data import get_worker_info
 
 from ..chem import ION_TYPES, Peptide
-from ..data.encode import FRAG_OFFSET, collate
+from ..data.encode import Batch, FRAG_OFFSET
 from ..teacher.base import PrecursorLabels
 from .precursors import Precursor
 from .prepared_schema import read_prepared_parquet, read_validation_winners
@@ -158,27 +158,35 @@ def _frame_batch(frame: pl.DataFrame, encoder) -> RealBatch:
     from ..distill.context_regime import RealBatch
     from ..distill.dataset import LabeledBatch, MSFactors
 
+    import pepdistill_rs as _rs
+
     sequences = frame["sequence"].to_list()
-    precursors = [
-        Precursor(
-            peptide=Peptide(sequence, _parse_mods(str(mods or ""))),
-            charge=int(charge),
-            split=str(split),
-        )
-        for sequence, mods, charge, split in zip(
-            sequences,
-            frame["mods"].to_list(),
-            frame["charge"].to_list(),
-            frame["split"].to_list(),
-            strict=True,
-        )
-    ]
-    inputs = collate(precursors)
+    arrays = _rs.collate_prepared(
+        sequences,
+        frame["mods"].fill_null("").to_list(),
+        frame["charge"].to_list(),
+    )
+    inputs = Batch(
+        torch.from_numpy(arrays["tokens"]),
+        torch.from_numpy(arrays["mod_comp"]),
+        torch.from_numpy(arrays["mod_mass"]),
+        torch.from_numpy(arrays["mod_present"]),
+        torch.from_numpy(arrays["mod_named"]),
+        torch.from_numpy(arrays["charge"]),
+        torch.from_numpy(arrays["lengths"]),
+        torch.from_numpy(arrays["pad_mask"]),
+        torch.from_numpy(arrays["frag_mask"]),
+    )
     lengths = [len(sequence) for sequence in sequences]
     sites = max(lengths[0] - 1, 0)
     if any(length != lengths[0] for length in lengths):
         raise ValueError("prepared training batches must contain one peptide length")
-    flat_ms2 = np.asarray(frame["ms2"].to_list(), dtype=np.float32)
+    # Equal-length buckets also have equal-length fragment vectors. Convert the Arrow list
+    # column directly to one dense array, avoiding a Python list per spectrum.
+    flat_ms2 = (
+        frame["ms2"].list.to_array(sites * len(ION_TYPES)).to_numpy()
+        .astype(np.float32, copy=True)
+    )
     expected_shape = (frame.height, sites * len(ION_TYPES))
     if flat_ms2.shape != expected_shape:
         raise ValueError(

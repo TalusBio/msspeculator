@@ -48,6 +48,36 @@ fn parse_mods(mods: &[(Bound<'_, PyAny>, Bound<'_, PyAny>)]) -> PyResult<Vec<(Si
     mods.iter().map(|(s, m)| Ok((parse_site(s)?, parse_spec(m)?))).collect()
 }
 
+/// Parse the compact prepared-Parquet representation (`site:spec;...`) without constructing
+/// Python Peptide objects. Modification names may contain `:`, so only the first colon
+/// separates the site from the specification.
+fn parse_prepared_peptide(sequence: String, serialized: &str) -> anyhow::Result<CorePeptide> {
+    let mut mods = Vec::new();
+    if !serialized.is_empty() {
+        for pair in serialized.split(';') {
+            let (site_raw, spec_raw) = pair
+                .split_once(':')
+                .ok_or_else(|| anyhow::anyhow!("bad prepared modification {pair:?}"))?;
+            let site = match site_raw {
+                "n" => Site::NTerm,
+                "c" => Site::CTerm,
+                value => Site::Residue(value.parse().map_err(|_| {
+                    anyhow::anyhow!("bad prepared modification site {value:?}")
+                })?),
+            };
+            let spec = if spec_raw.starts_with('+') || spec_raw.starts_with('-') {
+                ModSpec::MassOnly(spec_raw.parse().map_err(|_| {
+                    anyhow::anyhow!("bad prepared mass delta {spec_raw:?}")
+                })?)
+            } else {
+                ModSpec::Named(spec_raw.to_string())
+            };
+            mods.push((site, spec));
+        }
+    }
+    Ok(CorePeptide::new(sequence, mods))
+}
+
 /// Inverse of `parse_site`: `Site::NTerm -> "n"`, `CTerm -> "c"`, `Residue(i) -> i`.
 fn site_to_py(site: &Site, py: Python<'_>) -> PyObject {
     match site {
@@ -175,6 +205,40 @@ fn collate<'py>(
     Ok(d)
 }
 
+/// Collate prepared string columns directly into NumPy-backed model arrays.
+#[pyfunction]
+fn collate_prepared<'py>(
+    py: Python<'py>,
+    sequences: Vec<String>,
+    serialized_mods: Vec<String>,
+    charges: Vec<i64>,
+) -> PyResult<Bound<'py, PyDict>> {
+    if sequences.len() != serialized_mods.len() || sequences.len() != charges.len() {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "prepared columns have unequal lengths: sequences={}, mods={}, charges={}",
+            sequences.len(), serialized_mods.len(), charges.len()
+        )));
+    }
+    let peptides = sequences
+        .into_iter()
+        .zip(serialized_mods.iter())
+        .map(|(sequence, mods)| parse_prepared_peptide(sequence, mods))
+        .collect::<anyhow::Result<Vec<_>>>()
+        .map_err(to_pyerr)?;
+    let a = tokenize::collate(&peptides, &charges).map_err(to_pyerr)?;
+    let d = PyDict::new_bound(py);
+    d.set_item("tokens", a.tokens.into_pyarray_bound(py))?;
+    d.set_item("mod_comp", a.mod_comp.into_pyarray_bound(py))?;
+    d.set_item("mod_mass", a.mod_mass.into_pyarray_bound(py))?;
+    d.set_item("mod_present", a.mod_present.into_pyarray_bound(py))?;
+    d.set_item("mod_named", a.mod_named.into_pyarray_bound(py))?;
+    d.set_item("charge", a.charge.into_pyarray_bound(py))?;
+    d.set_item("lengths", a.lengths.into_pyarray_bound(py))?;
+    d.set_item("pad_mask", a.pad_mask.into_pyarray_bound(py))?;
+    d.set_item("frag_mask", a.frag_mask.into_pyarray_bound(py))?;
+    Ok(d)
+}
+
 #[pyfunction]
 fn bucket_arrays<'py>(
     py: Python<'py>,
@@ -218,6 +282,7 @@ fn pepdistill_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(unimod_name, m)?)?;
     m.add_function(wrap_pyfunction!(mod_element_comp, m)?)?;
     m.add_function(wrap_pyfunction!(collate, m)?)?;
+    m.add_function(wrap_pyfunction!(collate_prepared, m)?)?;
     m.add_function(wrap_pyfunction!(bucket_arrays, m)?)?;
     m.add_function(wrap_pyfunction!(bucket_fragment_mz, m)?)?;
 

@@ -237,7 +237,7 @@ mod tests {
                 (Site::Residue(3), ModSpec::MassOnly(15.994915)),
             ],
         );
-        let err = match collate(&[p.clone()], &[2]) {
+        let err = match collate(std::slice::from_ref(&p), &[2]) {
             Ok(_) => panic!("a co-sited Named + MassOnly must be refused"),
             Err(e) => e.to_string(),
         };
@@ -258,7 +258,7 @@ mod tests {
                     (site, ModSpec::MassOnly(1.5)),
                 ],
             );
-            assert!(collate(&[p.clone()], &[2]).is_err(), "{site:?} must be refused");
+            assert!(collate(std::slice::from_ref(&p), &[2]).is_err(), "{site:?} must be refused");
             assert!(p.residue_masses().is_err(), "{site:?} must be refused for mass too");
         }
     }
@@ -274,7 +274,7 @@ mod tests {
                 (Site::Residue(0), ModSpec::MassOnly(15.994915)),
             ],
         );
-        let a = collate(&[p.clone()], &[2]).unwrap();
+        let a = collate(std::slice::from_ref(&p), &[2]).unwrap();
         assert!(a.mod_named[[0, 0]] && !a.mod_named[[0, 1]]);
         assert!((a.mod_mass[[0, 1]] - 15.994915).abs() < 1e-5);
         assert!(p.mono_mass().is_ok());
