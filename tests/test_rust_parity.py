@@ -12,6 +12,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import numpy as np
 import torch
 
 from pepdistill.chem import Peptide
@@ -24,8 +25,22 @@ from pepdistill.predict.fast import TorchRunner, predict_library_fast
 
 RUST_DIR = Path(__file__).resolve().parents[1] / "rust"
 BIN = RUST_DIR / "target" / "release" / "pepdistill-cli"
-TOL = 1e-3
+PRED_ATOL = 1e-3
+PRED_RTOL = 2e-5
+MZ_ATOL = 1e-7
+MZ_RTOL = 1e-9
 PEPTIDE, CHARGE = "PEPTIDER", 2
+
+
+def _assert_close(label, actual, expected, *, atol=PRED_ATOL, rtol=PRED_RTOL):
+    """Assert NumPy-style mixed tolerance while naming the output that drifted."""
+    np.testing.assert_allclose(
+        actual,
+        expected,
+        atol=atol,
+        rtol=rtol,
+        err_msg=f"{label} outside atol={atol:g}, rtol={rtol:g}",
+    )
 
 
 def _binary() -> str:
@@ -206,13 +221,32 @@ def test_parity(artifact, capsys, label, extra, ids):
     d_pmz = abs(float(lib["precursor_mz"].iloc[0]) - rj["precursor_mz"])
     d_mz = max(abs(py[k][0] - rs[k][0]) for k in py)
     d_rel = max(abs(py[k][1] - rs[k][1]) for k in py)
-    worst = max(d_rt, d_ccs, d_pmz, d_mz, d_rel)
     with capsys.disabled():
         print(
             f"\n[{label}] n={len(py)} d_rt={d_rt:.2e} d_ccs={d_ccs:.2e} "
             f"d_pmz={d_pmz:.2e} d_mz={d_mz:.2e} d_rel={d_rel:.2e}"
         )
-    assert worst < TOL, f"{label}: worst delta {worst:.2e} exceeds {TOL}"
+    _assert_close(f"{label} RT", float(lib["rt_pred"].iloc[0]), rj["rt"])
+    _assert_close(f"{label} CCS", float(lib["ccs_pred"].iloc[0]), rj["ccs"])
+    _assert_close(
+        f"{label} precursor m/z",
+        float(lib["precursor_mz"].iloc[0]),
+        rj["precursor_mz"],
+        atol=MZ_ATOL,
+        rtol=MZ_RTOL,
+    )
+    _assert_close(
+        f"{label} fragment m/z",
+        [py[key][0] for key in py],
+        [rs[key][0] for key in py],
+        atol=MZ_ATOL,
+        rtol=MZ_RTOL,
+    )
+    _assert_close(
+        f"{label} relative intensity",
+        [py[key][1] for key in py],
+        [rs[key][1] for key in py],
+    )
 
 
 def test_parity_chrom_context(artifact, capsys):
@@ -235,10 +269,9 @@ def test_parity_chrom_context(artifact, capsys):
 
     rj = _rust(binary, artifact["path"], ["--chrom-context", "dsA"])
     base = _rust(binary, artifact["path"], [])
-    d_rt = abs(rt_py - rj["rt"])
     with capsys.disabled():
         print(f"\n[chrom] rt_py={rt_py:.4f} rt_rust={rj['rt']:.4f} base_rt={base['rt']:.4f}")
-    assert d_rt < TOL, f"chrom RT delta {d_rt:.2e} exceeds {TOL}"
+    _assert_close("chrom RT", rt_py, rj["rt"])
     # chrom_context must actually move RT off the base (random runbook row is non-trivial).
     assert abs(rj["rt"] - base["rt"]) > 1e-4
 
@@ -290,7 +323,27 @@ def test_parity_modified_peptides(artifact, capsys, label, modseq, mods):
     worst = max(d_rt, d_ccs, d_pmz, d_mz, d_rel)
     with capsys.disabled():
         print(f"\n[{label}] n={len(py)} worst={worst:.2e}")
-    assert worst < TOL, f"{label}: worst delta {worst:.2e} exceeds {TOL}"
+    _assert_close(f"{label} RT", float(lib["rt_pred"].iloc[0]), rj["rt"])
+    _assert_close(f"{label} CCS", float(lib["ccs_pred"].iloc[0]), rj["ccs"])
+    _assert_close(
+        f"{label} precursor m/z",
+        float(lib["precursor_mz"].iloc[0]),
+        rj["precursor_mz"],
+        atol=MZ_ATOL,
+        rtol=MZ_RTOL,
+    )
+    _assert_close(
+        f"{label} fragment m/z",
+        [py[key][0] for key in py],
+        [rs[key][0] for key in py],
+        atol=MZ_ATOL,
+        rtol=MZ_RTOL,
+    )
+    _assert_close(
+        f"{label} relative intensity",
+        [py[key][1] for key in py],
+        [rs[key][1] for key in py],
+    )
 
 
 def test_modified_peptide_differs_from_the_bare_one(artifact):
