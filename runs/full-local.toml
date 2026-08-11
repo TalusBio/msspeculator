@@ -1,0 +1,49 @@
+# Canonical local pretrain -> real-data run.
+#
+# The prepared PROSPECT corpus is streamed directly from the shared S3 prefix; no local copy of
+# the ~100M-row training set is made. Checkpoints and metrics stay under `out`. Run commands are
+# documented in docs/runbook-full-run.md.
+
+out = "runs/full-local-small"
+preset = "small"
+activation = "gelu_tanh"
+device = "auto"
+seed = 0
+
+[tracking]
+enabled = true
+project = "pepdistill"
+name = "local-small"
+group = "full-v1-local"
+tags = ["full-nontest", "small", "local"]
+min_log_interval_seconds = 10.0
+
+[pretrain]
+enabled = true
+teacher = "alphapeptdeep"
+device = "cpu"
+passes = 2
+chunk_size = 10000
+patience = 5
+checkpoint_every_steps = 500
+
+[[pretrain.sources]]
+fasta = "uniprot:UP000000625" # E. coli K-12 reference proteome; cached after first download
+enzyme = "trypsin"
+missed = 2
+min_len = 7
+max_len = 30
+min_charge = 2
+max_charge = 4
+max_var_mods = 1
+
+[train]
+enabled = true
+prepared_prefix = "s3://terraform-workstations-bucket/jspaezp/pepdistill-prepared/v1"
+epochs = 60
+batch_size = 256
+num_workers = 0
+model_threads = 4
+lr = 3e-4
+early_stop_patience = 5
+early_stop_min_delta = 0.001

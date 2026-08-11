@@ -2,19 +2,90 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Iterable
+import os
+import re
+import time
+import urllib.request
+from collections.abc import Callable, Iterator, Iterable
 from pathlib import Path
 
 from .config import DigestConfig, Enzyme
 
 _VALID_AA = set("GASPVTCLINDQKEMHFRYW")
+_UNIPROT_PROTEOME = re.compile(r"UP\d{9}")
+
+
+def resolve_fasta(
+    source: str | Path,
+    *,
+    cache_dir: str | Path | None = None,
+    log: Callable[[str], None] | None = None,
+) -> Path:
+    """Resolve a local path or ``uniprot:UP...`` proteome into a local FASTA.
+
+    UniProt references are downloaded atomically once and then reused. ``PEPDISTILL_CACHE_DIR``
+    overrides the cache root; otherwise the XDG cache directory (or ``~/.cache``) is used.
+    """
+    value = str(source)
+    if not value.startswith("uniprot:"):
+        path = Path(value)
+        if not path.is_file():
+            raise FileNotFoundError(f"FASTA does not exist: {path}")
+        return path
+
+    accession = value.removeprefix("uniprot:")
+    if not _UNIPROT_PROTEOME.fullmatch(accession):
+        raise ValueError(
+            f"invalid UniProt proteome reference {value!r}; expected uniprot:UP followed by "
+            "nine digits"
+        )
+    if cache_dir is None:
+        configured = os.environ.get("PEPDISTILL_CACHE_DIR")
+        if configured:
+            root = Path(configured)
+        else:
+            root = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "pepdistill"
+    else:
+        root = Path(cache_dir)
+    target = root / "fasta" / f"{accession}.fasta"
+    if target.is_file() and target.stat().st_size > 0:
+        if log is not None:
+            log(f"[fasta] using cached {accession}: {target}")
+        return target
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_suffix(".fasta.part")
+    url = (
+        "https://rest.uniprot.org/uniprotkb/stream?format=fasta&query="
+        f"proteome%3A{accession}"
+    )
+    if log is not None:
+        log(f"[fasta] downloading {accession} from UniProt -> {target}")
+    started = time.perf_counter()
+    try:
+        with urllib.request.urlopen(url, timeout=120) as response, temporary.open("wb") as out:
+            while block := response.read(1024 * 1024):
+                out.write(block)
+        if temporary.stat().st_size == 0:
+            raise RuntimeError(f"UniProt returned an empty FASTA for {accession}")
+        os.replace(temporary, target)
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
+    if log is not None:
+        log(
+            f"[fasta] cached {accession}: {target} "
+            f"({target.stat().st_size / (1024 * 1024):.1f} MiB in "
+            f"{time.perf_counter() - started:.1f}s)"
+        )
+    return target
 
 
 def parse_fasta(path: str | Path) -> Iterator[tuple[str, str]]:
     """Yield ``(header, sequence)`` pairs from a FASTA file."""
     header: str | None = None
     chunks: list[str] = []
-    with open(path) as fh:
+    with resolve_fasta(path).open() as fh:
         for line in fh:
             line = line.rstrip()
             if not line:

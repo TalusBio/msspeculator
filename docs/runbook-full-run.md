@@ -121,6 +121,31 @@ loss_weights = [1.0, 1.0, 1.0]   # (ms2, iRT, raw_rt)
 
 ## 3. Run pretrain → train
 
+The checked-in local full-run config streams the prepared corpus from S3 while keeping model
+artifacts on the local machine:
+
+```bash
+WANDB_API_KEY="$(tr -d '\r\n' < WANDB_SECRET)" \
+  uv run --extra teacher --extra etl --extra tracking \
+  pepdistill run runs/full-local.toml
+```
+
+It defaults to the `small` preset, CPU teacher inference, and automatic student-device selection.
+Its `uniprot:UP000000625` FASTA reference is downloaded once to
+`${PEPDISTILL_CACHE_DIR:-${XDG_CACHE_HOME:-~/.cache}/pepdistill}/fasta/` and reused, so the FASTA
+does not need to be uploaded or committed. Use `--device cuda` to train the student on a CUDA
+GPU. To reuse an existing checkpoint and skip teacher pretraining:
+
+```bash
+WANDB_API_KEY="$(tr -d '\r\n' < WANDB_SECRET)" \
+  uv run --extra teacher --extra etl --extra tracking \
+  pepdistill run runs/full-local.toml --no-pretrain --model-in s3://bucket/path/model.ckpt
+```
+
+The local machine needs AWS credentials that can read the prepared prefix. `num_workers = 0` is
+intentional: Polars still performs native threaded decode, while post-initialization DataLoader
+forks can deadlock on Linux.
+
 ```bash
 pepdistill run run.toml
 # -> runs/full/model.ckpt   (student + saved MSContextEncoder + ChromRunbook + dataset_index)

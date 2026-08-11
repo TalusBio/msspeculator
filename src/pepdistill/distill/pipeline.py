@@ -34,7 +34,7 @@ import lightning as L
 import torch
 
 from ..data.config import DigestConfig, SplitConfig
-from ..data.digest import digest_fasta
+from ..data.digest import digest_fasta, resolve_fasta
 from ..data.prepared import PreparedManifest, PreparedStreamingDataset
 from ..data.precursors import enumerate_precursors
 from ..models.context import ChromRunbook, MSContextEncoder
@@ -258,13 +258,13 @@ def _digest_cfg(s: DigestSource) -> DigestConfig:
     )
 
 
-def _stream_mixes(cfg: PretrainCfg) -> list[StreamMix]:
+def _stream_mixes(cfg: PretrainCfg, log=None) -> list[StreamMix]:
     """Map each pretrain source to a StreamMix (enzyme 'unspecific' -> immunopeptidome windows)."""
     return [
         StreamMix(
             name=s.enzyme,
             kind="unspecific" if s.enzyme == "unspecific" else "tryptic",
-            fasta=s.fasta,
+            fasta=str(resolve_fasta(s.fasta, log=log)),
             cfg=_digest_cfg(s),
             min_len=s.min_len,
             max_len=s.max_len,
@@ -423,10 +423,11 @@ def _runbook_for_index(
 def _run_pretrain(cfg: RunConfig, model, encoder, acc, out: Path, mirror, trainer_logger, log):
     p = cfg.pretrain
     assert encoder is not None  # guaranteed by need_encoder in run_pipeline
+    mixes = _stream_mixes(p, log)
     kw = {} if p.teacher == "fake" else {"device": p.device, "instrument": p.instrument}
     teacher = get_teacher(p.teacher, **kw)
     spc = StreamPretrainCfg(
-        mixes=_stream_mixes(p),
+        mixes=mixes,
         nce_range=(p.nce_min, p.nce_max),
         chunk_size=p.chunk_size,
         batch_size=p.batch_size,

@@ -1,7 +1,9 @@
+import io
+
 import pytest
 
 from pepdistill.data.config import DigestConfig, SplitConfig
-from pepdistill.data.digest import cleave_protein, digest_records
+from pepdistill.data.digest import cleave_protein, digest_records, resolve_fasta
 from pepdistill.data.precursors import (
     enumerate_precursors,
     frame_to_precursors,
@@ -16,6 +18,31 @@ def test_trypsin_cleaves_after_kr_not_before_p():
     # cut after K (not before P? next is A, so it cuts) and after R.
     assert "SAMPK" in peps
     assert "AER" in peps
+
+
+def test_uniprot_fasta_is_downloaded_once_to_cache(tmp_path, monkeypatch):
+    calls: list[str] = []
+
+    def open_url(url, timeout):
+        calls.append(url)
+        assert timeout == 120
+        return io.BytesIO(b">protein\nSAMPLERK\n")
+
+    monkeypatch.setattr("pepdistill.data.digest.urllib.request.urlopen", open_url)
+    logs: list[str] = []
+    first = resolve_fasta("uniprot:UP000000625", cache_dir=tmp_path, log=logs.append)
+    second = resolve_fasta("uniprot:UP000000625", cache_dir=tmp_path, log=logs.append)
+
+    assert first == second == tmp_path / "fasta" / "UP000000625.fasta"
+    assert first.read_bytes() == b">protein\nSAMPLERK\n"
+    assert len(calls) == 1
+    assert "downloading UP000000625" in logs[0]
+    assert "using cached UP000000625" in logs[-1]
+
+
+def test_uniprot_fasta_reference_is_validated(tmp_path):
+    with pytest.raises(ValueError, match="invalid UniProt proteome reference"):
+        resolve_fasta("uniprot:not-an-accession", cache_dir=tmp_path)
 
 
 def test_trypsin_skips_kp_bond():
