@@ -19,7 +19,16 @@ DEFAULT_OUT = ROOT / ".launchpad" / "full-run-stage"
 S3_PREFIX = "s3://terraform-workstations-bucket/jspaezp/20241022_prospect"
 PREPARED_PREFIX = "s3://terraform-workstations-bucket/jspaezp/pepdistill-prepared/v1"
 TRAIN_OUTPUT_PREFIX = "s3://terraform-workstations-bucket/jspaezp/pepdistill-training/full-v1"
-TRAIN_PRESETS = ("flash", "small-2h", "small", "base-4h", "base")
+TRAIN_RUNS = (
+    # run name, model preset, real-training batch size, real-training learning rate
+    ("flash", "flash", 256, 3e-4),
+    ("small-2h", "small-2h", 256, 3e-4),
+    ("small", "small", 256, 3e-4),
+    ("base-4h", "base-4h", 256, 3e-4),
+    ("base", "base", 256, 3e-4),
+    ("flash-lr1e4", "flash", 256, 1e-4),
+    ("flash-b512", "flash", 512, 3e-4),
+)
 PRETRAIN_FASTA = ROOT / "fasta_ignore" / "ecoli_k12.fasta"
 UNIPROT_FASTA_URL = (
     "https://rest.uniprot.org/uniprotkb/stream?format=fasta&query=proteome%3AUP000000625"
@@ -63,11 +72,11 @@ def main() -> None:
     runs = out / "runs"
     runs.mkdir()
     shutil.copy2(ROOT / "runs" / "prepare-full.toml", runs / "prepare-full.toml")
-    for preset in TRAIN_PRESETS:
-        (runs / f"prepared-cloud-{preset}.toml").write_text(
-            f'''out = "cloud-output-{preset}"
-remote_output_prefix = "{TRAIN_OUTPUT_PREFIX}/{preset}"
-preset = "{preset}"
+    for run_name, model_preset, batch_size, learning_rate in TRAIN_RUNS:
+        (runs / f"prepared-cloud-{run_name}.toml").write_text(
+            f'''out = "cloud-output-{run_name}"
+remote_output_prefix = "{TRAIN_OUTPUT_PREFIX}/{run_name}"
+preset = "{model_preset}"
 activation = "gelu_tanh"
 device = "cpu"
 seed = 0
@@ -75,9 +84,9 @@ seed = 0
 [tracking]
 enabled = true
 project = "pepdistill"
-name = "{preset}"
+name = "{run_name}"
 group = "full-v1"
-tags = ["full-nontest", "{preset}"]
+tags = ["full-nontest", "{model_preset}", "{run_name}"]
 
 [pretrain]
 enabled = true
@@ -101,8 +110,8 @@ max_var_mods = 1
 enabled = true
 prepared_prefix = "{PREPARED_PREFIX}"
 epochs = 60
-batch_size = 256
-lr = 0.0003
+batch_size = {batch_size}
+lr = {learning_rate}
 early_stop_patience = 5
 early_stop_min_delta = 0.001
 '''
@@ -113,7 +122,7 @@ early_stop_min_delta = 0.001
     print(f"prepared {out}")
     print(
         "staged files: source, Rust extension, lockfile, prepare catalog, "
-        f"{len(TRAIN_PRESETS)} train configs, E. coli pretrain FASTA"
+        f"{len(TRAIN_RUNS)} train configs, E. coli pretrain FASTA"
     )
     print(f"data source (read-only): {S3_PREFIX}")
 
