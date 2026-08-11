@@ -18,14 +18,27 @@ from pathlib import Path
 
 
 DEFAULT_PRESETS = ("flash", "small-2h", "small", "base-4h", "base")
+WANDB_KEY_FILE = Path("WANDB_SECRET")
 
 
 def _training_environment() -> dict[str, str]:
-    """Require the short-lived W&B service-account key supplied to the Batch job."""
+    """Load the staged short-lived W&B key, then remove both staged copies."""
     env = os.environ.copy()
-    if not env.get("WANDB_API_KEY"):
+    if not WANDB_KEY_FILE.is_file():
         raise SystemExit(
-            "tracking is enabled; set WANDB_API_KEY to a short-lived service-account key"
+            f"tracking is enabled; stage the short-lived key as {WANDB_KEY_FILE}"
+        )
+    key = WANDB_KEY_FILE.read_text().strip()
+    if not key:
+        raise SystemExit(f"staged W&B key {WANDB_KEY_FILE} is empty")
+    env["WANDB_API_KEY"] = key
+    WANDB_KEY_FILE.unlink()
+
+    stage_uri = env.get("LP_STAGE_URI", "").rstrip("/")
+    if stage_uri:
+        subprocess.run(
+            ["aws", "s3", "rm", f"{stage_uri}/{WANDB_KEY_FILE.name}"],
+            check=True,
         )
     return env
 
