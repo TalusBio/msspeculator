@@ -225,7 +225,11 @@ def _val_winners(chunks: list[str], out_uri: str) -> list[int]:
         return []
     values = (
         pl.scan_parquet(chunks)
-        .filter(pl.col("split") == "val")
+        .filter(
+            (pl.col("split") == "val")
+            & pl.col("irt").is_finite()
+            & pl.col("raw_rt").is_finite()
+        )
         .sort(
             ["dataset", "sequence", "charge", "andromeda_score", "spectrum_id"],
             descending=[False, False, False, True, False],
@@ -243,7 +247,11 @@ def _val_winners(chunks: list[str], out_uri: str) -> list[int]:
 def _irt_stats(chunks: list[str]) -> tuple[int, float, float]:
     row = (
         pl.scan_parquet(chunks)
-        .filter(pl.col("split") == "train")
+        .filter(
+            (pl.col("split") == "train")
+            & pl.col("irt").is_finite()
+            & pl.col("raw_rt").is_finite()
+        )
         .select(
             pl.len().alias("n"),
             pl.col("irt").sum().alias("sum"),
@@ -258,6 +266,7 @@ def _irt_stats(chunks: list[str]) -> tuple[int, float, float]:
 def _split_rows(chunks: list[str]) -> dict[str, int]:
     rows = (
         pl.scan_parquet(chunks)
+        .filter(pl.col("irt").is_finite() & pl.col("raw_rt").is_finite())
         .group_by("split")
         .agg(pl.len().alias("rows"))
         .collect(engine="streaming")
@@ -268,6 +277,7 @@ def _split_rows(chunks: list[str]) -> dict[str, int]:
 def _split_datasets(chunks: list[str]) -> dict[str, list[str]]:
     rows = (
         pl.scan_parquet(chunks)
+        .filter(pl.col("irt").is_finite() & pl.col("raw_rt").is_finite())
         .select(["dataset", "split"])
         .unique()
         .collect(engine="streaming")

@@ -196,7 +196,11 @@ class PreparedStreamingDataset:
                 pf = pq.ParquetFile(stream)
                 for batch in pf.iter_batches(batch_size=self.row_group_size):
                     frame = batch.to_pandas()
-                    frame = frame.loc[frame["split"].isin(self.splits)]
+                    frame = frame.loc[
+                        frame["split"].isin(self.splits)
+                        & np.isfinite(frame["irt"])
+                        & np.isfinite(frame["raw_rt"])
+                    ]
                     if self.splits == frozenset({"val"}) and self.manifest.val_winners:
                         frame = frame.loc[frame["spectrum_id"].isin(self.manifest.val_winners)]
                     for example in _row_examples(frame, dataset_id, self.encoder):

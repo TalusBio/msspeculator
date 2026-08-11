@@ -129,6 +129,29 @@ def test_shard_catalog_range_and_finalize(tmp_path):
     assert PreparedManifest.load(str(out)).chunks[0].rows == 2
 
 
+def test_finalize_and_reader_exclude_nonfinite_rt_rows(tmp_path):
+    root, stem = _source(tmp_path)
+    out = tmp_path / "prepared-finite-rt"
+    config = _config(root, stem, out)
+    prepare_range(config, log=None)
+    data = out / "shards" / "isoform" / "000000" / "data.parquet"
+    frame = pd.read_parquet(data)
+    invalid = frame.iloc[[0]].copy()
+    invalid["spectrum_id"] += 10_000
+    invalid["split"] = "train"
+    invalid["irt"] = float("nan")
+    pd.concat([frame, invalid], ignore_index=True).to_parquet(data, index=False)
+
+    finalized = finalize_catalog(config, log=None)
+    assert finalized["irt_stats"][0] == 1
+    assert finalized["split_rows"] == {"train": 1, "val": 1}
+    manifest = PreparedManifest.load(str(out))
+    ds = PreparedStreamingDataset(
+        manifest, MSContextEncoder(context_dim=8), frozenset({"train"}), shuffle_buffer=0
+    )
+    assert len(list(ds.iter_examples(0, shuffle=False))) == 1
+
+
 def test_catalog_status_and_finalize_do_not_head_each_data_object(tmp_path, monkeypatch):
     root, stem = _source(tmp_path)
     out = tmp_path / "prepared-batched"
