@@ -125,7 +125,7 @@ def test_wandb_stage_loggers_share_one_run(tmp_path: Path, monkeypatch):
     assert initialized["config"]["preset"] == "flash"
     assert initialized["mode"] == "offline"
 
-    ticks = iter((0.0, 1.0, 2.0, 11.0))
+    ticks = iter((0.0, 1.0, 2.0, 11.0, 12.0))
     monkeypatch.setattr("pepdistill.distill.pipeline.time.monotonic", lambda: next(ticks))
     train.log_metrics({"train_ms2": 0.3}, step=1)
     train.log_metrics({"train_ms2": 0.2}, step=2)
@@ -137,3 +137,56 @@ def test_wandb_stage_loggers_share_one_run(tmp_path: Path, monkeypatch):
     ]
     train.finalize("success")
     assert train.logged[-1] == ({"train_ms2": 0.1}, 4)
+
+
+def test_wandb_throttle_merges_metric_families_at_the_same_step(
+    tmp_path: Path, monkeypatch
+):
+    class Experiment:
+        pass
+
+    class Logger:
+        LOGGER_JOIN_CHAR = "-"
+
+        def __init__(self, experiment=None, **kwargs):
+            self.experiment = experiment or Experiment()
+            self.logged = []
+
+        def log_metrics(self, metrics, step=None):
+            self.logged.append((metrics, step))
+
+        def finalize(self, status):
+            pass
+
+    experiment = Experiment()
+    monkeypatch.setitem(
+        sys.modules,
+        "wandb",
+        SimpleNamespace(init=lambda **kwargs: experiment),
+    )
+    monkeypatch.setattr("lightning.pytorch.loggers.WandbLogger", Logger)
+    cfg = RunConfig(
+        out=str(tmp_path),
+        preset="flash",
+        tracking=TrackingCfg(enabled=True, project="pepdistill-tests", mode="offline"),
+    )
+    _, pretrain, _ = _wandb_loggers(cfg, tmp_path)
+    ticks = iter((0.0, 0.1, 11.0, 11.1, 12.0))
+    monkeypatch.setattr("pepdistill.distill.pipeline.time.monotonic", lambda: next(ticks))
+
+    pretrain.log_metrics({"lr-AdamW": 1e-3}, step=50)
+    pretrain.log_metrics({"train_ms2": 0.5, "train_total": 0.8}, step=50)
+    pretrain.log_metrics({"lr-AdamW": 9e-4}, step=100)
+    pretrain.log_metrics({"train_ms2": 0.4, "train_total": 0.7}, step=100)
+
+    assert pretrain.logged == [
+        (
+            {"lr-AdamW": 1e-3, "train_ms2": 0.5, "train_total": 0.8},
+            50,
+        )
+    ]
+    pretrain.finalize("success")
+    assert pretrain.logged[-1] == (
+        {"lr-AdamW": 9e-4, "train_ms2": 0.4, "train_total": 0.7},
+        100,
+    )

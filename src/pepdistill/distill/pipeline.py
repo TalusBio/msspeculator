@@ -349,26 +349,43 @@ def _wandb_loggers(cfg: RunConfig, out: Path):
             self._last_remote_log_at: float | None = None
             self._pending_metrics: tuple[dict, int | None] | None = None
 
+        def _flush_pending(self, now: float) -> None:
+            if self._pending_metrics is None:
+                return
+            metrics, step = self._pending_metrics
+            self._pending_metrics = None
+            self._last_remote_log_at = now
+            super().log_metrics(metrics, step)
+
         def log_metrics(self, metrics: dict, step: int | None = None) -> None:
             now = time.monotonic()
             force = any(str(key).startswith("val/") for key in metrics)
+            if self._pending_metrics is not None:
+                pending_metrics, pending_step = self._pending_metrics
+                if pending_step == step:
+                    # Lightning emits LearningRateMonitor and module metrics in separate calls
+                    # at the same global step. Merge before rate limiting or whichever callback
+                    # runs first permanently starves the other metric family.
+                    pending_metrics.update(metrics)
+                    if force:
+                        self._flush_pending(now)
+                    return
             due = (
                 self._last_remote_log_at is None
                 or cfg.tracking.min_log_interval_seconds <= 0
                 or now - self._last_remote_log_at >= cfg.tracking.min_log_interval_seconds
             )
-            if force or due:
-                self._pending_metrics = None
-                self._last_remote_log_at = now
-                super().log_metrics(metrics, step)
-            else:
-                self._pending_metrics = (dict(metrics), step)
+            # A new step proves the pending step is complete. Flush it if the interval is due;
+            # otherwise replace it with the newer sample. The current step remains pending so
+            # later logger calls at that same step can be merged into one W&B record.
+            if due:
+                self._flush_pending(now)
+            self._pending_metrics = (dict(metrics), step)
+            if force:
+                self._flush_pending(now)
 
         def finalize(self, status: str) -> None:
-            if self._pending_metrics is not None:
-                metrics, step = self._pending_metrics
-                self._pending_metrics = None
-                super().log_metrics(metrics, step)
+            self._flush_pending(time.monotonic())
             super().finalize(status)
 
     root = WandbLogger(experiment=experiment, log_model=False)
