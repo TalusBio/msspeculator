@@ -1,44 +1,136 @@
-//! pepdistill Rust inference CLI: FASTA -> DIA-NN TSV library, or one peptide -> JSON.
+//! pepdistill Rust inference CLI: FASTA libraries, peptide prediction, and model diagnostics.
 
-use anyhow::{anyhow, Result};
-use clap::Parser;
+use std::str::FromStr;
+
+use anyhow::Result;
+use clap::{Parser, Subcommand};
 use pepdistill_core::{predict, Artifact, MsContext, Prediction};
 use serde_json::json;
 
+mod diagnostics;
 mod library;
 
 #[derive(Parser)]
 #[command(
     name = "pepdistill-cli",
-    about = "Generate a DIA-NN TSV library from FASTA or predict one peptide."
+    about = "Generate libraries, predict peptides, or render model diagnostics."
 )]
-struct Args {
+struct Cli {
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Predict one peptide and print one JSON object.
+    Predict(PredictArgs),
+    /// Digest a FASTA and write a DIA-NN TSV spectral library.
+    Library(LibraryArgs),
+    /// Run a built-in model health panel and write diagnostic artifacts.
+    RunDoctor(DoctorArgs),
+}
+
+#[derive(clap::Args)]
+struct ArtifactArgs {
     /// Path to the .safetensors artifact (from `pepdistill export-rust`).
     #[arg(long)]
     model: String,
-    /// Peptide as a modified sequence: uppercase residues with optional `[mod]` brackets.
-    ///
-    /// A leading bracket is the N-terminus and a trailing one the C-terminus; a bracket after
-    /// a residue modifies that residue. A body starting with `+`/`-` is a bare mass delta in
-    /// Daltons, routed through the mass encoder instead of the compositional one. The
-    /// `peptide` field of the JSON output echoes back how the string was read.
-    ///
-    /// Examples: `PEPTIDER`, `PEPC[Carbamidomethyl@C]IDER`, `[TMT6plex]PEPTIDER`,
-    /// `PEP[+42.010565]TIDER`.
-    #[arg(long)]
-    peptide: Option<String>,
-    /// Precursor charge.
-    #[arg(long)]
-    charge: Option<i64>,
-    /// Digest this FASTA and write a DIA-NN TSV spectral library using Rust inference.
-    #[arg(long)]
-    fasta: Option<String>,
-    /// Output path for --fasta library generation.
-    #[arg(long)]
-    out: Option<String>,
     /// Override the artifact activation for a controlled inference benchmark.
     #[arg(long, value_name = "ACTIVATION")]
     activation: Option<String>,
+}
+
+#[derive(Clone)]
+struct FullMsContext {
+    raw: String,
+    instrument: String,
+    detector: String,
+    fragmentation: String,
+    energy: f32,
+}
+
+impl FromStr for FullMsContext {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let parts: Vec<&str> = value.split("::").collect();
+        if parts.len() != 4 {
+            return Err("expected INSTRUMENT::DETECTOR::FRAGMENTATION::ENERGY".to_string());
+        }
+        let energy = parts[3]
+            .parse()
+            .map_err(|_| format!("energy {:?} is not a number", parts[3]))?;
+        Ok(Self {
+            raw: value.to_string(),
+            instrument: parts[0].to_string(),
+            detector: parts[1].to_string(),
+            fragmentation: parts[2].to_string(),
+            energy,
+        })
+    }
+}
+
+#[derive(clap::Args)]
+struct ContextArgs {
+    /// Full acquisition context "INSTRUMENT::DETECTOR::FRAGMENTATION::ENERGY".
+    #[arg(long, conflicts_with = "nce")]
+    ms_context: Option<FullMsContext>,
+    /// Shorthand: collision energy only (unknown instrument/detector/fragmentation).
+    #[arg(long, conflicts_with = "ms_context")]
+    nce: Option<f32>,
+    /// Named chromatography context (dataset) for raw RT; absent means context-free iRT.
+    #[arg(long)]
+    chrom_context: Option<String>,
+}
+
+impl ContextArgs {
+    fn ms_context(&self) -> Option<MsContext> {
+        self.ms_context
+            .as_ref()
+            .map(|context| MsContext {
+                instrument: context.instrument.clone(),
+                detector: context.detector.clone(),
+                fragmentation: context.fragmentation.clone(),
+                energy: Some(context.energy),
+            })
+            .or_else(|| {
+                self.nce.map(|energy| MsContext {
+                    instrument: String::new(),
+                    detector: String::new(),
+                    fragmentation: String::new(),
+                    energy: Some(energy),
+                })
+            })
+    }
+}
+
+#[derive(clap::Args)]
+struct PredictArgs {
+    #[command(flatten)]
+    artifact: ArtifactArgs,
+    /// Peptide as a modified sequence, for example `PEPC[Carbamidomethyl@C]IDER`.
+    #[arg(long)]
+    peptide: String,
+    /// Precursor charge.
+    #[arg(long)]
+    charge: i64,
+    #[command(flatten)]
+    context: ContextArgs,
+    /// Drop fragments below this base-peak-relative intensity.
+    #[arg(long, default_value_t = 0.01)]
+    min_intensity: f64,
+}
+
+#[derive(clap::Args)]
+struct LibraryArgs {
+    #[command(flatten)]
+    artifact: ArtifactArgs,
+    /// FASTA to digest.
+    #[arg(long)]
+    fasta: String,
+    /// DIA-NN TSV output path.
+    #[arg(long)]
+    out: String,
     #[arg(long, default_value_t = 2)]
     missed_cleavages: usize,
     #[arg(long, default_value_t = 7)]
@@ -55,128 +147,115 @@ struct Args {
     /// Do not apply fixed Carbamidomethyl@C during FASTA library generation.
     #[arg(long)]
     no_fixed_carbamidomethyl: bool,
-    /// Full acquisition context "INSTRUMENT::DETECTOR::FRAGMENTATION::ENERGY".
-    #[arg(long)]
-    ms_context: Option<String>,
-    /// Shorthand: collision energy only (unknown instrument/detector/fragmentation).
-    #[arg(long)]
-    nce: Option<f32>,
-    /// Named chromatography context (dataset) for raw RT; absent -> iRT base.
-    #[arg(long)]
-    chrom_context: Option<String>,
+    #[command(flatten)]
+    context: ContextArgs,
     /// Drop fragments below this base-peak-relative intensity.
     #[arg(long, default_value_t = 0.01)]
     min_intensity: f64,
 }
 
-fn parse_ms_context(args: &Args) -> Result<Option<MsContext>> {
-    if let Some(spec) = &args.ms_context {
-        let parts: Vec<&str> = spec.split("::").collect();
-        if parts.len() != 4 {
-            return Err(anyhow!(
-                "--ms-context must be 'INSTRUMENT::DETECTOR::FRAGMENTATION::ENERGY'"
-            ));
-        }
-        let energy: f32 = parts[3]
-            .parse()
-            .map_err(|_| anyhow!("energy {:?} is not a number", parts[3]))?;
-        return Ok(Some(MsContext {
-            instrument: parts[0].to_string(),
-            detector: parts[1].to_string(),
-            fragmentation: parts[2].to_string(),
-            energy: Some(energy),
-        }));
-    }
-    if let Some(nce) = args.nce {
-        return Ok(Some(MsContext {
-            instrument: String::new(),
-            detector: String::new(),
-            fragmentation: String::new(),
-            energy: Some(nce),
-        }));
-    }
-    Ok(None)
+#[derive(clap::Args)]
+struct DoctorArgs {
+    #[command(flatten)]
+    artifact: ArtifactArgs,
+    /// Directory for diagnostic artifacts.
+    #[arg(long, default_value = "model-doctor")]
+    out: String,
 }
 
 fn to_json(
-    p: &Prediction,
+    prediction: &Prediction,
     ms_context: Option<&String>,
-    chrom: Option<&String>,
+    chrom_context: Option<&String>,
 ) -> serde_json::Value {
     json!({
-        "peptide": p.peptide,
-        "charge": p.charge,
-        "precursor_mz": p.precursor_mz,
-        "rt": p.rt,
-        "ccs": p.ccs,
+        "peptide": prediction.peptide,
+        "charge": prediction.charge,
+        "precursor_mz": prediction.precursor_mz,
+        "rt": prediction.rt,
+        "ccs": prediction.ccs,
         "ms_context": ms_context,
-        "chrom_context": chrom,
+        "chrom_context": chrom_context,
         "fragments": {
-            "ion": p.fragments.ion,
-            "ord": p.fragments.ord,
-            "z": p.fragments.z,
-            "mz": p.fragments.mz,
-            "rel": p.fragments.rel,
+            "ion": prediction.fragments.ion,
+            "ord": prediction.fragments.ord,
+            "z": prediction.fragments.z,
+            "mz": prediction.fragments.mz,
+            "rel": prediction.fragments.rel,
         }
     })
 }
 
-fn main() -> Result<()> {
-    let args = Args::parse();
-    let ms_ctx = parse_ms_context(&args)?;
-    if let Some(fasta) = args.fasta.as_deref() {
-        if args.peptide.is_some() || args.charge.is_some() {
-            return Err(anyhow!(
-                "--fasta cannot be combined with --peptide/--charge"
-            ));
-        }
-        let out = args
-            .out
-            .as_deref()
-            .ok_or_else(|| anyhow!("--fasta requires --out"))?;
-        let stats = library::write_diann_tsv(&library::LibraryOptions {
-            model: &args.model,
-            fasta,
-            out,
-            activation: args.activation.as_deref(),
-            ms_context: ms_ctx.as_ref(),
-            chrom_context: args.chrom_context.as_deref(),
-            min_intensity: args.min_intensity,
-            missed_cleavages: args.missed_cleavages,
-            min_length: args.min_length,
-            max_length: args.max_length,
-            min_charge: args.min_charge,
-            max_charge: args.max_charge,
-            max_variable_oxidation: args.max_variable_oxidation,
-            no_fixed_carbamidomethyl: args.no_fixed_carbamidomethyl,
-        })?;
-        eprintln!(
-            "{} proteins -> {} peptides -> {} precursors -> {} fragments -> {}",
-            stats.proteins, stats.peptides, stats.precursors, stats.fragments, out
-        );
-        return Ok(());
-    }
-    let peptide = args
-        .peptide
-        .as_deref()
-        .ok_or_else(|| anyhow!("provide --peptide or --fasta"))?;
-    let charge = args
-        .charge
-        .ok_or_else(|| anyhow!("--peptide requires --charge"))?;
-    if args.out.is_some() {
-        return Err(anyhow!("--out is only valid with --fasta"));
-    }
-    let mut art = Artifact::load(&args.model)?;
-    library::apply_activation_override(&mut art, args.activation.as_deref())?;
-    let pred = predict(
-        &art,
-        peptide,
-        charge,
-        ms_ctx.as_ref(),
-        args.chrom_context.as_deref(),
+fn run_predict(args: PredictArgs) -> Result<()> {
+    let mut artifact = Artifact::load(&args.artifact.model)?;
+    library::apply_activation_override(&mut artifact, args.artifact.activation.as_deref())?;
+    let ms_context = args.context.ms_context();
+    let prediction = predict(
+        &artifact,
+        &args.peptide,
+        args.charge,
+        ms_context.as_ref(),
+        args.context.chrom_context.as_deref(),
         args.min_intensity,
     )?;
-    let out = to_json(&pred, args.ms_context.as_ref(), args.chrom_context.as_ref());
-    println!("{}", serde_json::to_string(&out)?);
+    let raw_ms_context = args.context.ms_context.as_ref().map(|context| &context.raw);
+    println!(
+        "{}",
+        serde_json::to_string(&to_json(
+            &prediction,
+            raw_ms_context,
+            args.context.chrom_context.as_ref(),
+        ))?
+    );
     Ok(())
+}
+
+fn run_library(args: LibraryArgs) -> Result<()> {
+    let ms_context = args.context.ms_context();
+    let stats = library::write_diann_tsv(&library::LibraryOptions {
+        model: &args.artifact.model,
+        fasta: &args.fasta,
+        out: &args.out,
+        activation: args.artifact.activation.as_deref(),
+        ms_context: ms_context.as_ref(),
+        chrom_context: args.context.chrom_context.as_deref(),
+        min_intensity: args.min_intensity,
+        missed_cleavages: args.missed_cleavages,
+        min_length: args.min_length,
+        max_length: args.max_length,
+        min_charge: args.min_charge,
+        max_charge: args.max_charge,
+        max_variable_oxidation: args.max_variable_oxidation,
+        no_fixed_carbamidomethyl: args.no_fixed_carbamidomethyl,
+    })?;
+    eprintln!(
+        "{} proteins -> {} peptides -> {} precursors -> {} fragments -> {}",
+        stats.proteins, stats.peptides, stats.precursors, stats.fragments, args.out
+    );
+    Ok(())
+}
+
+fn run_doctor(args: DoctorArgs) -> Result<()> {
+    let mut artifact = Artifact::load(&args.artifact.model)?;
+    library::apply_activation_override(&mut artifact, args.artifact.activation.as_deref())?;
+    let report = diagnostics::run_doctor(&artifact, &args.out)?;
+    println!("{}", report.terminal_plot);
+    eprintln!(
+        "{} iRT standards -> {} (slope={:.4}, intercept={:.4}, R2={:.4}, MAE={:.4})",
+        report.summary.n,
+        report.svg_path.display(),
+        report.summary.slope,
+        report.summary.intercept,
+        report.summary.r_squared,
+        report.summary.mae
+    );
+    Ok(())
+}
+
+fn main() -> Result<()> {
+    match Cli::parse().command {
+        Command::Predict(args) => run_predict(args),
+        Command::Library(args) => run_library(args),
+        Command::RunDoctor(args) => run_doctor(args),
+    }
 }

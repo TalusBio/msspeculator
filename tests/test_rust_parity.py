@@ -81,7 +81,17 @@ def artifact(tmp_path_factory):
 
 def _rust(binary, art, extra, peptide=PEPTIDE):
     r = subprocess.run(
-        [binary, "--model", str(art), "--peptide", peptide, "--charge", str(CHARGE), *extra],
+        [
+            binary,
+            "predict",
+            "--model",
+            str(art),
+            "--peptide",
+            peptide,
+            "--charge",
+            str(CHARGE),
+            *extra,
+        ],
         capture_output=True,
         text=True,
     )
@@ -115,6 +125,7 @@ def test_rust_fasta_generates_diann_tsv(artifact, tmp_path):
     r = subprocess.run(
         [
             _binary(),
+            "library",
             "--model",
             str(artifact["path"]),
             "--fasta",
@@ -152,9 +163,10 @@ def test_rust_fasta_generates_diann_tsv(artifact, tmp_path):
     # independently evaluated single-charge path, not merely produce the expected row count.
     for charge in (2, 3):
         scalar = subprocess.run(
-            [
-                _binary(),
-                "--model",
+                [
+                    _binary(),
+                    "predict",
+                    "--model",
                 str(artifact["path"]),
                 "--peptide",
                 "PEPTIDEM",
@@ -173,8 +185,7 @@ def test_rust_fasta_generates_diann_tsv(artifact, tmp_path):
                 int(row["FragmentCharge"]),
             ): (float(row["FragmentMz"]), float(row["RelativeIntensity"]))
             for row in rows
-            if row["ModifiedPeptide"] == "PEPTIDEM"
-            and int(row["PrecursorCharge"]) == charge
+            if row["ModifiedPeptide"] == "PEPTIDEM" and int(row["PrecursorCharge"]) == charge
         }
         assert batch_map.keys() == scalar_map.keys()
         for key in batch_map:
@@ -359,7 +370,16 @@ def test_modified_peptide_differs_from_the_bare_one(artifact):
 def test_rust_rejects_an_out_of_range_charge(artifact):
     """An out-of-range charge must be a named error, not an ndarray bounds abort (rc=101)."""
     r = subprocess.run(
-        [_binary(), "--model", str(artifact["path"]), "--peptide", PEPTIDE, "--charge", "20"],
+        [
+            _binary(),
+            "predict",
+            "--model",
+            str(artifact["path"]),
+            "--peptide",
+            PEPTIDE,
+            "--charge",
+            "20",
+        ],
         capture_output=True,
         text=True,
     )
@@ -373,7 +393,16 @@ def test_rust_refuses_a_site_carrying_a_named_and_a_mass_only_mod(artifact):
     model input while still moving every m/z. Both runtimes must refuse instead."""
     modseq = "PEPC[Carbamidomethyl@C][+15.994915]IDER"
     r = subprocess.run(
-        [_binary(), "--model", str(artifact["path"]), "--peptide", modseq, "--charge", "2"],
+        [
+            _binary(),
+            "predict",
+            "--model",
+            str(artifact["path"]),
+            "--peptide",
+            modseq,
+            "--charge",
+            "2",
+        ],
         capture_output=True,
         text=True,
     )
@@ -397,7 +426,16 @@ def test_rust_rejects_a_v1_artifact(artifact, tmp_path):
     save_file(tensors, str(stale), metadata={"pepdistill": _json.dumps(meta)})
 
     r = subprocess.run(
-        [_binary(), "--model", str(stale), "--peptide", PEPTIDE, "--charge", str(CHARGE)],
+        [
+            _binary(),
+            "predict",
+            "--model",
+            str(stale),
+            "--peptide",
+            PEPTIDE,
+            "--charge",
+            str(CHARGE),
+        ],
         capture_output=True,
         text=True,
     )

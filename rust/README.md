@@ -18,13 +18,15 @@ implementations.
   chemistry or tokenization logic of its own.
 - `cli/` (`pepdistill-cli`) — a standalone Rust binary (no Python) used for spectral-library
   generation and the Python-vs-Rust prediction-parity check (`tests/test_rust_parity.py`).
-  `--fasta ... --out library.tsv` digests and enumerates precursors, loads the `.safetensors`
+  `library --fasta ... --out library.tsv` digests and enumerates precursors, loads the `.safetensors`
   weights once, predicts in Rust, converts CCS to Bruker 1/K0, and writes DIA-NN TSV.
-  `--peptide` takes a
+  `predict --peptide` takes a
   **modified sequence** (`[TMT6plex]PEPC[Carbamidomethyl@C]IDER`, or a bare Dalton delta
   `PEP[+42.010565]TIDER`), parsed by `Peptide::parse` — the inverse of `modified_sequence()`.
   The `.safetensors` artifact carries a `format_version`; `core/src/artifact.rs` rejects any
   version it does not read rather than filling in missing tensors.
+  `run-doctor --model MODEL --out DIR` predicts the vendored Biognosys iRT standards, renders
+  a compact terminal scatter, and writes `DIR/irt-scatter.svg` for model debugging.
 
 FASTA inference groups precursors into equal-length batches of 64. A bounded worker pool clones
 the immutable model per worker and feeds one writer thread; set `PEPDISTILL_WORKERS` to override

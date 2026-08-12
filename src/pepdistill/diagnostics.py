@@ -30,7 +30,9 @@ class PcaBasis:
         mean = values.mean(axis=0)
         _, singular, vt = np.linalg.svd(values - mean, full_matrices=False)
         variance = singular**2
-        ratio = variance[:n_components] / variance.sum() if variance.sum() else np.zeros(n_components)
+        ratio = (
+            variance[:n_components] / variance.sum() if variance.sum() else np.zeros(n_components)
+        )
         return cls(mean, vt[:n_components], ratio)
 
     def transform(self, embeddings: np.ndarray) -> np.ndarray:
@@ -50,6 +52,57 @@ class SpectrumComparison:
     student_intensity: np.ndarray
     reference_intensity: np.ndarray
     reference_name: str = "teacher/target"
+
+
+@dataclass(frozen=True)
+class LabeledEmbedding:
+    """One named vector in a shared learned space."""
+
+    label: str
+    family: str
+    vector: np.ndarray
+
+
+@dataclass(frozen=True)
+class EmbeddingConnection:
+    """A labeled relationship to draw between two projected embeddings."""
+
+    first_label: str
+    second_label: str
+
+
+@dataclass(frozen=True)
+class RtObservation:
+    """Observed and context-free predicted iRT for one peptide."""
+
+    sequence: str
+    observed_irt: float
+    predicted_irt: float
+    dataset: str = ""
+
+
+@dataclass(frozen=True)
+class IrtStandard:
+    """One immutable peptide in the canonical iRT calibration panel."""
+
+    sequence: str
+    irt: float
+    charge: int = 2
+
+
+IRT_STANDARDS = (
+    IrtStandard("LGGNEQVTR", -24.916114),
+    IrtStandard("GAGSSEPVTGLDAK", 0.0009403333333324326),
+    IrtStandard("VEATFGVDESNAK", 12.389374888888767),
+    IrtStandard("YILAGVENSK", 19.78791066666666),
+    IrtStandard("TPVISGGPYEYR", 28.714581222222122),
+    IrtStandard("TPVITGAPYEYR", 33.381242999999984),
+    IrtStandard("DGLDAASYYAPVR", 42.26388844444456),
+    IrtStandard("ADVTPADFSEWSK", 54.621042),
+    IrtStandard("GTFIIDPGGVIR", 70.51874133333332),
+    IrtStandard("GTFIIDPAAVIR", 87.23322233333332),
+    IrtStandard("LFLQFGAQGSPFLK", 100.00282166666665),
+)
 
 
 @dataclass(frozen=True)
@@ -99,9 +152,7 @@ class DiagnosticReferencePanel:
             experimental_parts.append(
                 np.asarray(spectrum.experimental_intensity, dtype=np.float32).ravel()
             )
-            teacher_parts.append(
-                np.asarray(spectrum.teacher_intensity, dtype=np.float32).ravel()
-            )
+            teacher_parts.append(np.asarray(spectrum.teacher_intensity, dtype=np.float32).ravel())
             offset += size
         payload = io.BytesIO()
         np.savez_compressed(
@@ -109,7 +160,9 @@ class DiagnosticReferencePanel:
             metadata=np.asarray(json.dumps(metadata)),
             fragment_mz=np.concatenate(mz_parts) if mz_parts else np.empty(0, np.float32),
             experimental=(
-                np.concatenate(experimental_parts) if experimental_parts else np.empty(0, np.float32)
+                np.concatenate(experimental_parts)
+                if experimental_parts
+                else np.empty(0, np.float32)
             ),
             teacher=np.concatenate(teacher_parts) if teacher_parts else np.empty(0, np.float32),
         )
@@ -167,6 +220,9 @@ def normalized_spectral_angle(first: np.ndarray, second: np.ndarray) -> float:
 
 def _pyplot():
     try:
+        import matplotlib
+
+        matplotlib.use("Agg")
         import matplotlib.pyplot as plt
     except ImportError as exc:  # pragma: no cover - optional dependency
         raise ImportError("diagnostic plots require the 'tracking' extra") from exc
@@ -225,6 +281,144 @@ def plot_embedding_pca(
     return target
 
 
+def plot_labeled_embedding_pca(
+    embeddings: Sequence[LabeledEmbedding],
+    path: str | Path,
+    *,
+    title: str,
+    connections: Sequence[EmbeddingConnection] = (),
+    basis: PcaBasis | None = None,
+) -> tuple[Path, PcaBasis]:
+    """PCA plot for small named vocabularies such as residues, mods, or context factors."""
+    if len(embeddings) < 2:
+        raise ValueError("at least two labeled embeddings are required")
+    vectors = np.stack([np.asarray(item.vector, dtype=np.float64) for item in embeddings])
+    basis = basis or PcaBasis.fit(vectors)
+    xy = basis.transform(vectors)
+    by_label = {item.label: xy[index] for index, item in enumerate(embeddings)}
+
+    plt = _pyplot()
+    fig, ax = plt.subplots(figsize=(9, 7), constrained_layout=True)
+    families = list(dict.fromkeys(item.family for item in embeddings))
+    palette = plt.get_cmap("tab10")
+    for family_index, family in enumerate(families):
+        mask = np.asarray([item.family == family for item in embeddings])
+        ax.scatter(
+            xy[mask, 0],
+            xy[mask, 1],
+            s=58,
+            alpha=0.85,
+            color=palette(family_index % 10),
+            label=family,
+        )
+    for connection in connections:
+        first = by_label[connection.first_label]
+        second = by_label[connection.second_label]
+        ax.plot(
+            [first[0], second[0]],
+            [first[1], second[1]],
+            color="0.65",
+            linewidth=1.0,
+            zorder=0,
+        )
+    annotation_offsets = ((5, 5), (5, -12), (5, 18), (5, -25), (5, 31), (5, -38))
+    x_tolerance = max(float(np.ptp(xy[:, 0])) * 0.025, 1e-9)
+    y_tolerance = max(float(np.ptp(xy[:, 1])) * 0.025, 1e-9)
+    previous_points: list[np.ndarray] = []
+    for item, point in zip(embeddings, xy, strict=True):
+        neighbor_count = sum(
+            abs(point[0] - previous[0]) <= x_tolerance
+            and abs(point[1] - previous[1]) <= y_tolerance
+            for previous in previous_points
+        )
+        offset = annotation_offsets[min(neighbor_count, len(annotation_offsets) - 1)]
+        ax.annotate(
+            item.label,
+            point,
+            xytext=offset,
+            textcoords="offset points",
+            fontsize=8,
+            annotation_clip=False,
+        )
+        previous_points.append(point)
+    ratio = basis.explained_variance_ratio
+    ax.set(
+        title=title,
+        xlabel=f"PC1 ({ratio[0]:.1%})",
+        ylabel=f"PC2 ({ratio[1]:.1%})",
+    )
+    ax.axhline(0, color="0.88", linewidth=0.8, zorder=0)
+    ax.axvline(0, color="0.88", linewidth=0.8, zorder=0)
+    ax.margins(x=0.08, y=0.08)
+    ax.legend(frameon=False)
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(target, dpi=160)
+    plt.close(fig)
+    return target, basis
+
+
+def plot_irt_scatter(
+    observations: Sequence[RtObservation],
+    path: str | Path,
+    *,
+    title: str = "Context-free predicted iRT vs observed iRT",
+) -> Path:
+    """Plot observed/predicted iRT with identity and least-squares fit diagnostics."""
+    if len(observations) < 2:
+        raise ValueError("at least two iRT observations are required")
+    observed = np.asarray([item.observed_irt for item in observations], dtype=np.float64)
+    predicted = np.asarray([item.predicted_irt for item in observations], dtype=np.float64)
+    slope, intercept = np.polyfit(observed, predicted, 1)
+    correlation = np.corrcoef(observed, predicted)[0, 1]
+    r_squared = float(correlation**2) if np.isfinite(correlation) else 0.0
+    mae = float(np.mean(np.abs(predicted - observed)))
+    low = float(min(observed.min(), predicted.min()))
+    high = float(max(observed.max(), predicted.max()))
+    margin = max((high - low) * 0.04, 1.0)
+    axis = np.asarray([low - margin, high + margin])
+
+    plt = _pyplot()
+    fig, ax = plt.subplots(figsize=(7.5, 7), constrained_layout=True)
+    datasets = list(dict.fromkeys(item.dataset or "reference" for item in observations))
+    palette = plt.get_cmap("tab10")
+    for index, dataset in enumerate(datasets):
+        mask = np.asarray([(item.dataset or "reference") == dataset for item in observations])
+        ax.scatter(
+            observed[mask],
+            predicted[mask],
+            s=18,
+            alpha=0.45,
+            color=palette(index % 10),
+            label=dataset,
+        )
+    ax.plot(axis, axis, linestyle="--", color="0.25", linewidth=1.2, label="identity")
+    ax.plot(axis, slope * axis + intercept, color="#D1495B", linewidth=1.4, label="fit")
+    ax.set(
+        xlim=axis,
+        ylim=axis,
+        aspect="equal",
+        xlabel="observed iRT",
+        ylabel="predicted context-free iRT",
+        title=title,
+    )
+    ax.text(
+        0.03,
+        0.97,
+        f"slope={slope:.3f}\nintercept={intercept:.3f}\nR²={r_squared:.3f}\nMAE={mae:.3f}",
+        transform=ax.transAxes,
+        va="top",
+        bbox={"boxstyle": "round", "facecolor": "white", "alpha": 0.85},
+    )
+    if len(datasets) <= 8:
+        ax.legend(frameon=False)
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(target, dpi=160)
+    plt.close(fig)
+    return target
+
+
 def plot_spectrum_butterflies(
     references: Sequence[SpectrumComparison],
     path: str | Path,
@@ -240,7 +434,10 @@ def plot_spectrum_butterflies(
         raise ValueError("at least one reference spectrum is required")
     plt = _pyplot()
     fig, axes = plt.subplots(
-        len(references), 1, figsize=(11, 3.2 * len(references)), squeeze=False,
+        len(references),
+        1,
+        figsize=(11, 3.2 * len(references)),
+        squeeze=False,
         constrained_layout=True,
     )
     fig.suptitle(title)
@@ -249,15 +446,17 @@ def plot_spectrum_butterflies(
         student = np.asarray(comparison.student_intensity, dtype=float).ravel()
         target = np.asarray(comparison.reference_intensity, dtype=float).ravel()
         if not (mz.shape == student.shape == target.shape):
-            raise ValueError(
-                f"spectrum arrays do not align for {comparison.modified_sequence}"
-            )
+            raise ValueError(f"spectrum arrays do not align for {comparison.modified_sequence}")
         student = student / max(float(student.max()), 1e-12)
         target = target / max(float(target.max()), 1e-12)
         agreement = normalized_spectral_angle(student, target)
         ax.vlines(mz, 0, student, color="#2878B5", linewidth=1.0, label="student")
         ax.vlines(
-            mz, 0, -target, color="#E07B39", linewidth=1.0,
+            mz,
+            0,
+            -target,
+            color="#E07B39",
+            linewidth=1.0,
             label=comparison.reference_name,
         )
         ax.axhline(0, color="0.2", linewidth=0.8)
@@ -279,11 +478,18 @@ def plot_spectrum_butterflies(
 
 
 __all__ = [
+    "IRT_STANDARDS",
     "PcaBasis",
     "DiagnosticReferencePanel",
+    "EmbeddingConnection",
+    "LabeledEmbedding",
+    "IrtStandard",
     "ReferenceSpectrum",
+    "RtObservation",
     "SpectrumComparison",
     "normalized_spectral_angle",
     "plot_embedding_pca",
+    "plot_irt_scatter",
+    "plot_labeled_embedding_pca",
     "plot_spectrum_butterflies",
 ]

@@ -127,7 +127,7 @@ predicted CCS to Bruker 1/K0, and writes a streaming DIA-NN TSV accepted by `tim
 ```bash
 pepdistill export-rust --model work/model.ckpt -o work/model.safetensors
 cargo run -q --release -p pepdistill-cli -- \
-  --model work/model.safetensors --fasta proteome.fasta --out library.tsv \
+  library --model work/model.safetensors --fasta proteome.fasta --out library.tsv \
   --ms-context "Lumos::FTMS::HCD::30"
 
 timsseek --raw-inputs sample.d --speclib-uri library.tsv --output-uri search-results
@@ -137,9 +137,21 @@ Single-peptide JSON remains available:
 
 ```bash
 cargo run -q --release -p pepdistill-cli -- \
-  --model work/model.safetensors --peptide PEPTIDER --charge 2 \
+  predict --model work/model.safetensors --peptide PEPTIDER --charge 2 \
   --ms-context "Lumos::FTMS::HCD::30"      # or --nce 30, or omit for base MS2
 ```
+
+Run the built-in model doctor to predict the vendored 11-peptide Biognosys iRT panel. It
+prints an identity-line scatter in the terminal plus slope, intercept, R², and MAE, and writes
+the same diagnostic as `irt-scatter.svg`:
+
+```bash
+cargo run -q --release -p pepdistill-cli -- \
+  run-doctor --model work/model.safetensors --out work/model-doctor
+```
+
+The source tables for that panel and the Thermo Pierce PRTC panel live in
+`data/reference_peptides/` with source URLs and ProForma labeling notes.
 
 It prints one JSON object — precursor m/z, RT, CCS, and the fragment table (struct-of-arrays) —
 to stdout. Transformer presets only; RT is the context-free iRT base unless `--chrom-context

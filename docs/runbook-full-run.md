@@ -221,7 +221,7 @@ the DIA-NN adapter reports ion mobility as Bruker 1/K0.
 ```bash
 pepdistill export-rust --model runs/full/model.ckpt -o runs/full/model.safetensors
 cargo run -q --release -p pepdistill-cli -- \
-  --model runs/full/model.safetensors --fasta proteome.fasta --out library.tsv \
+  library --model runs/full/model.safetensors --fasta proteome.fasta --out library.tsv \
   --ms-context "Lumos::FTMS::HCD::30"
 timsseek --raw-inputs sample.d --speclib-uri library.tsv --output-uri search-results
 ```
@@ -233,7 +233,7 @@ tool); export the checkpoint to a `.safetensors` artifact first:
 
 ```bash
 cargo run -q --release -p pepdistill-cli -- \
-  --model runs/full/model.safetensors --peptide PEPTIDER --charge 2 \
+  predict --model runs/full/model.safetensors --peptide PEPTIDER --charge 2 \
   --ms-context "Lumos::FTMS::HCD::30"     # or --nce 30, or omit for base MS2
 # -> one JSON object: precursor_mz, rt, ccs, fragments{ion, ord, z, mz, rel}
 ```

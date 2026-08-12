@@ -3,11 +3,17 @@ import pytest
 
 from pepdistill.diagnostics import (
     DiagnosticReferencePanel,
+    EmbeddingConnection,
+    IRT_STANDARDS,
+    LabeledEmbedding,
     PcaBasis,
     ReferenceSpectrum,
+    RtObservation,
     SpectrumComparison,
     normalized_spectral_angle,
     plot_embedding_pca,
+    plot_irt_scatter,
+    plot_labeled_embedding_pca,
     plot_spectrum_butterflies,
 )
 
@@ -70,6 +76,35 @@ def test_plot_prototypes_write_pngs(tmp_path):
     )
     assert pca_path.stat().st_size > 0
     assert butterfly_path.stat().st_size > 0
+
+
+def test_labeled_embedding_and_irt_plots_write_pngs(tmp_path):
+    embedding_path, _ = plot_labeled_embedding_pca(
+        [
+            LabeledEmbedding("A", "residue", np.asarray([1.0, 0.0, 0.2])),
+            LabeledEmbedding("B", "residue", np.asarray([0.0, 1.0, 0.1])),
+            LabeledEmbedding("B:mass", "mass", np.asarray([0.1, 0.9, 0.1])),
+        ],
+        tmp_path / "labeled.png",
+        title="tokens",
+        connections=[EmbeddingConnection("B", "B:mass")],
+    )
+    irt_path = plot_irt_scatter(
+        [
+            RtObservation("PEPTIDEK", 0.0, 1.0),
+            RtObservation("SAMPLER", 10.0, 9.0),
+        ],
+        tmp_path / "irt.png",
+    )
+    assert embedding_path.stat().st_size > 0
+    assert irt_path.stat().st_size > 0
+
+
+def test_canonical_irt_panel_is_ordered_and_complete():
+    assert len(IRT_STANDARDS) == 11
+    assert IRT_STANDARDS[0].sequence == "LGGNEQVTR"
+    assert IRT_STANDARDS[0].irt == pytest.approx(-24.916114)
+    assert IRT_STANDARDS[-1].irt == pytest.approx(100.00282166666665)
 
 
 def test_normalized_spectral_angle_matches_identical_and_orthogonal():

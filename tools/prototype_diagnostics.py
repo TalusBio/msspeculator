@@ -11,22 +11,29 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from pepdistill.chem import Peptide, fragment_mz_matrix
+from pepdistill.chem import MOD_DELTA, Peptide, fragment_mz_matrix
 from pepdistill.data.config import DigestConfig
 from pepdistill.data.digest import resolve_fasta
 from pepdistill.data.encode import FRAG_OFFSET, collate
 from pepdistill.data.precursors import Precursor
 from pepdistill.data.sources import enumerate_tryptic_stream
 from pepdistill.diagnostics import (
+    EmbeddingConnection,
+    IRT_STANDARDS,
+    LabeledEmbedding,
     PcaBasis,
+    RtObservation,
     SpectrumComparison,
     plot_embedding_pca,
+    plot_irt_scatter,
+    plot_labeled_embedding_pca,
     plot_spectrum_butterflies,
 )
 from pepdistill.models.context import MSContextEncoder
 from pepdistill.models.registry import load_checkpoint, load_context
 from pepdistill.teacher import get_teacher
 from pepdistill.util import resolve_device
+from pepdistill_rs import mod_element_comp
 
 
 def _reference_precursor(sequence: str) -> Precursor:
@@ -55,6 +62,96 @@ def _butterfly_panel(references: list[Precursor], count: int) -> list[Precursor]
     return selected[:count]
 
 
+def _amino_acid_embeddings(model) -> list[LabeledEmbedding]:
+    families = {
+        **{aa: "hydrophobic" for aa in "AILMFWV"},
+        **{aa: "polar" for aa in "STNQCYG"},
+        **{aa: "positive" for aa in "KRH"},
+        **{aa: "negative" for aa in "DE"},
+        **{aa: "special" for aa in "P"},
+    }
+    weights = model.token_emb.weight.detach().cpu().numpy()
+    return [
+        LabeledEmbedding(aa, families[aa], weights[ord(aa) - ord("A")])
+        for aa in "ACDEFGHIKLMNPQRSTVWY"
+    ]
+
+
+def _modification_embeddings(model) -> tuple[list[LabeledEmbedding], list[EmbeddingConnection]]:
+    points = []
+    connections = []
+    device = next(model.parameters()).device
+    with torch.inference_mode():
+        for name, mass in sorted(MOD_DELTA.items()):
+            composition = torch.tensor(
+                mod_element_comp(name), dtype=torch.float32, device=device
+            ).unsqueeze(0)
+            mass_tensor = torch.tensor([mass], dtype=torch.float32, device=device)
+            atom_label = f"{name}:atoms"
+            mass_label = f"{name}:mass"
+            points.extend(
+                [
+                    LabeledEmbedding(
+                        atom_label,
+                        "composition encoder",
+                        model.comp_enc(composition).squeeze(0).cpu().numpy(),
+                    ),
+                    LabeledEmbedding(
+                        mass_label,
+                        "mass encoder",
+                        model.mass_enc(mass_tensor).squeeze(0).cpu().numpy(),
+                    ),
+                ]
+            )
+            connections.append(EmbeddingConnection(atom_label, mass_label))
+    return points, connections
+
+
+def _context_embeddings(encoder) -> tuple[list[LabeledEmbedding], list[EmbeddingConnection]]:
+    points = []
+    device = next(encoder.parameters()).device
+    with torch.inference_mode():
+        for index, name in enumerate(encoder.instruments[1:], start=1):
+            points.append(
+                LabeledEmbedding(
+                    f"inst:{name}",
+                    "instrument",
+                    encoder.inst_emb.weight[index].detach().cpu().numpy(),
+                )
+            )
+        for index, name in enumerate(encoder.detectors[1:], start=1):
+            points.append(
+                LabeledEmbedding(
+                    f"det:{name}",
+                    "detector",
+                    encoder.det_emb.weight[index].detach().cpu().numpy(),
+                )
+            )
+        for index, name in enumerate(encoder.fragmentations[1:], start=1):
+            points.append(
+                LabeledEmbedding(
+                    f"frag:{name}",
+                    "fragmentation",
+                    encoder.frag_emb.weight[index].detach().cpu().numpy(),
+                )
+            )
+        energies = list(range(20, 41, 4))
+        energy_vectors = (
+            encoder.energy_mlp(
+                torch.tensor(energies, dtype=torch.float32, device=device).unsqueeze(-1)
+            )
+            .cpu()
+            .numpy()
+        )
+        for energy, vector in zip(energies, energy_vectors, strict=True):
+            points.append(LabeledEmbedding(f"NCE:{energy}", "collision energy", vector))
+    connections = [
+        EmbeddingConnection(f"NCE:{first}", f"NCE:{second}")
+        for first, second in zip(energies, energies[1:])
+    ]
+    return points, connections
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", required=True)
@@ -75,9 +172,7 @@ def main() -> None:
     device = resolve_device(args.device)
     fasta = resolve_fasta(args.fasta, log=print)
     digest = DigestConfig(missed_cleavages=2, min_length=7, max_length=30)
-    sequences = list(
-        islice(enumerate_tryptic_stream(fasta, digest, loop=False), args.panel_size)
-    )
+    sequences = list(islice(enumerate_tryptic_stream(fasta, digest, loop=False), args.panel_size))
     references = [_reference_precursor(sequence) for sequence in sequences]
     if len(references) < 2:
         raise SystemExit("reference FASTA produced fewer than two peptides")
@@ -108,6 +203,25 @@ def main() -> None:
         args.out / "embedding-pca.png",
         title="Fixed E. coli reference panel — pooled student embeddings",
         explained_variance_ratio=basis.explained_variance_ratio,
+    )
+    aa_path, _ = plot_labeled_embedding_pca(
+        _amino_acid_embeddings(model),
+        args.out / "amino-acid-embeddings.png",
+        title="Learned amino-acid token embeddings",
+    )
+    mod_points, mod_connections = _modification_embeddings(model)
+    mod_path, _ = plot_labeled_embedding_pca(
+        mod_points,
+        args.out / "modification-encoders.png",
+        title="Modification encoders: composition vs mass",
+        connections=mod_connections,
+    )
+    context_points, context_connections = _context_embeddings(encoder)
+    context_path, _ = plot_labeled_embedding_pca(
+        context_points,
+        args.out / "acquisition-contexts.png",
+        title="Learned acquisition-context components",
+        connections=context_connections,
     )
 
     selected = _butterfly_panel(references, args.butterflies)
@@ -145,7 +259,26 @@ def main() -> None:
         args.out / "reference-butterflies.png",
     )
     print(f"PCA -> {pca_path}")
+    print(f"amino acids -> {aa_path}")
+    print(f"modifications -> {mod_path}")
+    print(f"contexts -> {context_path}")
     print(f"butterflies -> {butterfly_path}")
+    irt_precursors = [
+        Precursor(Peptide(standard.sequence), standard.charge, "diagnostic")
+        for standard in IRT_STANDARDS
+    ]
+    irt_batch = collate(irt_precursors).to(device)
+    with torch.inference_mode():
+        predicted_irt = model.unstandardize_rt(model(irt_batch)["rt"]).cpu().numpy()
+    irt_path = plot_irt_scatter(
+        [
+            RtObservation(standard.sequence, standard.irt, float(predicted), "iRT standards")
+            for standard, predicted in zip(IRT_STANDARDS, predicted_irt, strict=True)
+        ],
+        args.out / "irt-scatter.png",
+        title="Built-in iRT model doctor",
+    )
+    print(f"iRT -> {irt_path}")
 
 
 if __name__ == "__main__":
