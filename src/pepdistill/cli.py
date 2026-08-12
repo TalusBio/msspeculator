@@ -132,6 +132,46 @@ def prepare_status(
     )
 
 
+@app.command(name="curation-report")
+def curation_report(
+    prepared: Path = typer.Argument(..., exists=True, readable=True, help="Prepared shard."),
+    metadata: Path = typer.Argument(
+        ..., exists=True, readable=True, help="Matching PROSPECT metadata Parquet."
+    ),
+    out: Path = typer.Option(..., "--out", "-o", help="Output JSON report."),
+    annotations_out: Optional[Path] = typer.Option(
+        None,
+        "--annotations-out",
+        help="Optional per-spectrum curation annotations Parquet.",
+    ),
+    half_max_fraction: float = typer.Option(
+        0.5, min=0.0, max=1.0, help="Observed apex-intensity fraction to retain."
+    ),
+    cap_per_context: int = typer.Option(
+        8, min=1, help="Maximum retained PSMs per precursor/acquisition context."
+    ),
+) -> None:
+    """Analyze apex-window and replicate-cap curation on one prepared shard."""
+    from .etl.curation import analyze_prepared_curation
+
+    analysis = analyze_prepared_curation(
+        prepared,
+        metadata,
+        half_max_fraction=half_max_fraction,
+        cap_per_context=cap_per_context,
+    )
+    analysis.write(out, annotations_out)
+    selection = analysis.report["selection"]
+    consistency = analysis.report["spectral_consistency"]
+    typer.echo(
+        f"selected {selection['selected_rows']:,}/{analysis.report['input']['rows']:,} PSMs "
+        f"({selection['selected_fraction_of_rows']:.1%}); "
+        f"context-consensus SA all={consistency['all']:.4f}, "
+        f"apex-window={consistency['within_apex_window']:.4f}, "
+        f"selected={consistency['selected']:.4f} -> {out}"
+    )
+
+
 @app.command()
 def run(
     config: Path = typer.Argument(..., exists=True, readable=True, help="Run config (TOML)."),

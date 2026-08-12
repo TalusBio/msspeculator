@@ -152,6 +152,24 @@ render_initial = true
   They are written below `out/diagnostics/<stage>-step-.../`, mirrored without flattening when
   `remote_output_prefix` is set, and logged to the same W&B run when tracking is enabled.
 
+### Evaluate PSM curation on a prepared shard
+
+Before deriving a filtered corpus, compare one prepared shard with its matching source metadata:
+
+```bash
+pepdistill curation-report prepared.parquet source_meta_data.parquet \
+  --out curation-report.json \
+  --annotations-out curation-annotations.parquet \
+  --half-max-fraction 0.5 \
+  --cap-per-context 8
+```
+
+The report estimates one sampled apex interval per raw-file peptidoform and applies the same RT
+window across every charge state and acquisition mode. The cap is applied only afterward, per
+supervised acquisition context. Contexts with no in-window observation retain their highest
+Andromeda-score PSM. The annotation Parquet has an explicit schema and joins back by
+`spectrum_id`; neither command mutates the immutable prepared shard.
+
 ## 3. Run pretrain → train
 
 The checked-in local full-run config streams the prepared corpus from S3 while keeping model
