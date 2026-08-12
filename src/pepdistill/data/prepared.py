@@ -296,7 +296,10 @@ class PreparedStreamingDataset:
                         int(value) in self.manifest.val_winners
                         for value in frame["spectrum_id"].to_list()
                     ]
-                    frame = frame.filter(pl.Series("is_winner", keep))
+                    # An empty split produces ``keep=[]``. Without an explicit dtype Polars
+                    # constructs a Null Series, which is not a valid filter predicate and used
+                    # to crash validation at the first train-only shard after a long epoch.
+                    frame = frame.filter(pl.Series("is_winner", keep, dtype=pl.Boolean))
                 # Transformer cost is set by the longest sequence in each batch. Grouping equal
                 # lengths inside an already-shuffled shard removes padding work without adding
                 # a large row-level shuffle buffer or changing which observations are trained.

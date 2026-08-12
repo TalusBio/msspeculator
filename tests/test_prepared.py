@@ -13,7 +13,7 @@ pytest.importorskip("polars")
 
 import polars as pl
 
-from pepdistill.data.prepared import PreparedManifest, PreparedStreamingDataset
+from pepdistill.data.prepared import PreparedChunk, PreparedManifest, PreparedStreamingDataset
 from pepdistill.data.prepared_schema import (
     PREPARED_SPECTRA_SCHEMA,
     VALIDATION_WINNER_SCHEMA,
@@ -222,6 +222,48 @@ def test_prepared_reader_accepts_int128_spectrum_ids(tmp_path):
     assert manifest.val_winners and max(manifest.val_winners) > 2**63
     val = PreparedStreamingDataset(manifest, MSContextEncoder(context_dim=8), frozenset({"val"}))
     assert len(list(val.iter_examples(0, shuffle=False))) == 1
+
+
+def test_validation_reader_skips_train_only_shard_with_boolean_winner_mask(tmp_path):
+    """An empty per-shard winner list must remain a Boolean predicate, not Polars Null."""
+    root, stem = _source(tmp_path)
+    out = tmp_path / "prepared-empty-val-shard"
+    config = _config(root, stem, out)
+    prepare_range(config, log=None)
+    finalize_catalog(config, log=None)
+    manifest = PreparedManifest.load(str(out))
+
+    original = manifest.chunks[0]
+    train_only_path = out / "train-only.parquet"
+    pl.read_parquet(original.uri).with_columns(pl.lit("train").alias("split")).write_parquet(
+        train_only_path
+    )
+    train_only = PreparedChunk(
+        uri=str(train_only_path),
+        dataset=original.dataset,
+        rows=original.rows,
+        source_shard="train-only",
+    )
+    manifest = PreparedManifest(
+        version=manifest.version,
+        chunks=manifest.chunks + (train_only,),
+        datasets=manifest.datasets,
+        val_winners=manifest.val_winners,
+        irt_stats=manifest.irt_stats,
+        split_rows=manifest.split_rows,
+        split_datasets=manifest.split_datasets,
+    )
+    logs: list[str] = []
+    val = PreparedStreamingDataset(
+        manifest,
+        MSContextEncoder(context_dim=8),
+        frozenset({"val"}),
+        log=logs.append,
+    )
+
+    assert len(list(val.iter_examples(0, shuffle=False))) == 1
+    assert len(logs) == 2
+    assert "rows=0" in logs[1]
 
 
 def test_catalog_status_and_finalize_do_not_head_each_data_object(tmp_path, monkeypatch):
