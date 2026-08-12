@@ -214,9 +214,9 @@ one therefore begins the configured stage again with the saved weights.
 
 ### Launch the five-preset cloud sweep
 
-The staging helper generates one config and one S3 output prefix for each of `flash`, `small-2h`,
-`small`, `base-4h`, and `base`. Upload the immutable stage once, then reuse its S3 prefix for all
-five jobs:
+The staging helper generates one config and one isolated `full-v2-aug1pct` S3 output prefix for
+each of `flash`, `small-2h`, `small`, `base-4h`, and `base`. Upload the immutable stage once, then
+reuse its S3 prefix for all five jobs:
 
 ```bash
 .venv/bin/python tools/prepare_launchpad_full_run.py
