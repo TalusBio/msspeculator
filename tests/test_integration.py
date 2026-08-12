@@ -4,10 +4,19 @@ from pathlib import Path
 import sys
 from types import SimpleNamespace
 
+import pytest
+import torch
 from typer.testing import CliRunner
 
 from pepdistill.cli import app
-from pepdistill.distill.pipeline import RunConfig, TrackingCfg, _wandb_loggers, run_pipeline
+from pepdistill.distill.pipeline import (
+    RunConfig,
+    TrackingCfg,
+    _final_training_metadata,
+    _wandb_loggers,
+    _wandb_metric_namespaces,
+    run_pipeline,
+)
 from pepdistill.models.registry import load_checkpoint
 
 FASTA = """>sp|TEST1|
@@ -145,8 +154,6 @@ def test_wandb_stage_loggers_share_one_run(tmp_path: Path, monkeypatch):
     root, pretrain, train = _wandb_loggers(cfg, tmp_path)
     assert pretrain.experiment is root.experiment
     assert train.experiment is root.experiment
-    assert pretrain.LOGGER_JOIN_CHAR == "/"
-    assert train.LOGGER_JOIN_CHAR == "/"
     assert root.kwargs["log_model"] is False
     assert initialized["config"]["preset"] == "flash"
     assert initialized["mode"] == "offline"
@@ -158,11 +165,61 @@ def test_wandb_stage_loggers_share_one_run(tmp_path: Path, monkeypatch):
     train.log_metrics({"val/data/spectral_angle": 0.6}, step=3)
     train.log_metrics({"train_ms2": 0.1}, step=4)
     assert train.logged == [
-        ({"train_ms2": 0.3}, 1),
-        ({"val/data/spectral_angle": 0.6}, 3),
+        ({"train_metrics/ms2_cosine_loss": 0.3}, 1),
+        ({"val_sa/data": 0.6}, 3),
     ]
     train.finalize("success")
-    assert train.logged[-1] == ({"train_ms2": 0.1}, 4)
+    assert train.logged[-1] == ({"train_metrics/ms2_cosine_loss": 0.1}, 4)
+
+
+def test_wandb_namespaces_split_validation_and_diagnostics_into_panels():
+    metrics = _wandb_metric_namespaces(
+        {
+            "train_ms2": 0.1,
+            "train_spectral_angle": 0.75,
+            "val/pool/spectral_angle": 0.8,
+            "val/pool/irt_mae": 2.0,
+            "val/pool/rawrt_mae": 3.0,
+            "val/pool/n": 10,
+            "diagnostics/train/butterflies": "image",
+        },
+        "train",
+    )
+    assert metrics == {
+        "train_metrics/ms2_cosine_loss": 0.1,
+        "train_metrics/spectral_angle": 0.75,
+        "val_sa/pool": 0.8,
+        "val_irt_mae/pool": 2.0,
+        "val_rawrt_mae/pool": 3.0,
+        "val_n/pool": 10,
+        "train_diagnostics/butterflies": "image",
+    }
+
+
+def test_final_checkpoint_metadata_records_early_stop_inputs_and_step():
+    module = SimpleNamespace(
+        trainer=SimpleNamespace(
+            callback_metrics={
+                "val/b/spectral_angle": torch.tensor(0.7),
+                "val/a/spectral_angle": torch.tensor(0.9),
+                "val/a/irt_mae": torch.tensor(2.0),
+            },
+            global_step=123,
+            current_epoch=4,
+        ),
+        last_validation_step=120,
+    )
+    metadata = _final_training_metadata(module)
+    assert metadata["global_step"] == 123
+    assert metadata["validation"] == {
+        "metric": "mean_per_dataset_spectral_angle",
+        "values": {
+            "val/a/spectral_angle": pytest.approx(0.9),
+            "val/b/spectral_angle": pytest.approx(0.7),
+        },
+        "mean": pytest.approx(0.8),
+        "validated_at_step": 120,
+    }
 
 
 def test_wandb_throttle_merges_metric_families_at_the_same_step(tmp_path: Path, monkeypatch):
@@ -205,13 +262,21 @@ def test_wandb_throttle_merges_metric_families_at_the_same_step(tmp_path: Path, 
 
     assert pretrain.logged == [
         (
-            {"lr-AdamW": 1e-3, "train_ms2": 0.5, "train_total": 0.8},
+            {
+                "pretrain_metrics/lr-AdamW": 1e-3,
+                "pretrain_metrics/ms2_cosine_loss": 0.5,
+                "pretrain_metrics/total_loss": 0.8,
+            },
             50,
         )
     ]
     pretrain.finalize("success")
     assert pretrain.logged[-1] == (
-        {"lr-AdamW": 9e-4, "train_ms2": 0.4, "train_total": 0.7},
+        {
+            "pretrain_metrics/lr-AdamW": 9e-4,
+            "pretrain_metrics/ms2_cosine_loss": 0.4,
+            "pretrain_metrics/total_loss": 0.7,
+        },
         100,
     )
 

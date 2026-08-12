@@ -74,6 +74,7 @@ def save_checkpoint(
     encoder: MSContextEncoder | None = None,
     runbook: ChromRunbook | None = None,
     dataset_index: dict | None = None,
+    training_metadata: dict | None = None,
 ) -> None:
     """Save the student, plus any trained acquisition context so the artifact is complete.
 
@@ -88,6 +89,10 @@ def save_checkpoint(
             "runbook": _runbook_blob(runbook) if runbook is not None else None,
             "dataset_index": dataset_index,
         }
+    if training_metadata is not None:
+        # Plain scalar/container metadata remains inspectable with torch.load and is ignored by
+        # inference loaders. It intentionally does not contain optimizer state.
+        blob["training"] = training_metadata
     torch.save(blob, path)
 
 

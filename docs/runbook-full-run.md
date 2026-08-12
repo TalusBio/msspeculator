@@ -126,14 +126,20 @@ render_initial = true
 - **Validation set**: not a separate shard. The loaded shards are split train/val/test by a
   deterministic hash of the *stripped* sequence (`assign_split`), so every mod-form/charge of a
   peptide stays in one split (no leakage). Val is deduped to best-per-entry; train keeps every
-  observation. Real-data val metrics are reported separately for every configured dataset as
-  `val/<dataset>/spectral_angle`, `val/<dataset>/irt_mae`, `val/<dataset>/rawrt_mae`, and
-  `val/<dataset>/n` (the number of deduplicated validation entries).
+  observation. Real-data validation metrics are reported separately for every configured
+  dataset. W&B groups telemetry into panel-oriented namespaces: `train_metrics/*`,
+  `train_diagnostics/*`, `val_sa/<dataset>`, `val_irt_mae/<dataset>`,
+  `val_rawrt_mae/<dataset>`, and `val_n/<dataset>` (the number of deduplicated validation
+  entries). The local JSONL and Lightning callback keys retain their internal
+  `val/<dataset>/<metric>` names.
 - **Validation cadence**: real-data validation uses Lightning's wall clock rather than corpus
   epochs. It starts after the first batch that crosses `validation_interval_minutes` and repeats
   on that cadence. A final check runs after fitting only when the last optimizer step was not
   already validated. Early-stop patience therefore counts validation checks, not epochs;
   metrics JSONL records both `validation_check` and `global_step`.
+- **Checkpoint evidence**: `latest.ckpt`, `best.ckpt`, and the final `model.ckpt` record the
+  global step plus the per-dataset spectral angles and mean used by validation/early stopping
+  under the checkpoint's `training` metadata. Inference loaders ignore this optional metadata.
 - **Residue augmentation**: for each selected peptide, one residue token is replaced and the
   exact original-minus-replacement C/H/N/O/S/P composition and monoisotopic mass are added at
   that site. The precursor and fragment chemistry—and thus every target—stay unchanged. Sites

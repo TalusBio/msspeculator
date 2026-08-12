@@ -184,6 +184,8 @@ def test_epoch_energy_counters_track_masking_and_reset():
     ds = RealSpeclibDataset(examples)
     gen = torch.Generator().manual_seed(0)
     batch = next(iter(ds.batches(4, False, gen)))
+    logged = []
+    module.log_dict = lambda values, **_kwargs: logged.append(values)
 
     module.on_train_epoch_start()
     assert module._energy_masked == 0
@@ -191,6 +193,7 @@ def test_epoch_energy_counters_track_masking_and_reset():
 
     module.training_step(batch, 0)
     module.training_step(batch, 1)  # a second step in the same epoch: counts accumulate
+    assert all("train_spectral_angle" in values for values in logged)
     assert module._energy_present == 4  # 2 present rows x 2 steps
     assert module._energy_masked == 4  # 2 masked rows x 2 steps
 
@@ -267,6 +270,15 @@ def test_fit_from_prebuilt_datasets_trains_and_reports_metrics(tmp_path, capsys)
     assert "train_metrics.jsonl" in mirrored
     assert module.trainer._val_check_time_interval == 3600.0
     assert module.trainer.check_val_every_n_epoch is None
+    checkpoint = torch.load(tmp_path / "best.ckpt", weights_only=False)
+    assert checkpoint["training"]["global_step"] == 2
+    assert checkpoint["training"]["checkpoint_kind"] == "best"
+    validation = checkpoint["training"]["validation"]
+    assert validation["validated_at_step"] == 2
+    assert validation["values"]["val/pool/spectral_angle"] == pytest.approx(
+        float(metrics["val/pool/spectral_angle"])
+    )
+    assert validation["mean"] == pytest.approx(float(metrics["val/pool/spectral_angle"]))
     records = [
         json.loads(line) for line in (tmp_path / "train_metrics.jsonl").read_text().splitlines()
     ]

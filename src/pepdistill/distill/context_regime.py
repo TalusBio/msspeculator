@@ -222,12 +222,26 @@ class RealSpeclibModule(L.LightningModule):
             out["rt_base"], self.model.standardize_rt(lb.rt_target)
         )
         loss_raw = torch.nn.functional.mse_loss(out["rt"], self.model.standardize_rt(rb.raw_rt))
-        loss = w_ms2 * loss_ms2 + w_irt * loss_irt + w_raw * loss_raw
-        log = {"train_ms2": loss_ms2, "train_irt": loss_irt, "train_rawrt": loss_raw}
+        # This is deliberately the single source of truth for the objective and its loss
+        # telemetry: adding a term to optimization necessarily adds it to logging too.
+        loss_terms = {
+            "train_ms2": (w_ms2, loss_ms2),
+            "train_irt": (w_irt, loss_irt),
+            "train_rawrt": (w_raw, loss_raw),
+        }
         if self.mod_align_weight:
-            align = mod_align_loss(out["mod_g"], out["mod_m"], inputs.mod_named)
-            log["train_mod_align"] = align.detach()
-            loss = loss + self.mod_align_weight * align
+            loss_terms["train_mod_align"] = (
+                self.mod_align_weight,
+                mod_align_loss(out["mod_g"], out["mod_m"], inputs.mod_named),
+            )
+        loss = sum(weight * value for weight, value in loss_terms.values())
+        # Keep the reporting metric beside its optimization surrogate. Spectral angle is only
+        # used for telemetry here: differentiating through arccos is numerically ill-conditioned
+        # near identical spectra, while cosine loss has the same per-spectrum optimum.
+        with torch.no_grad():
+            train_sa = spectral_angle(out["ms2"], lb.ms2_target, lb.inputs.frag_mask).mean()
+        log = {name: value for name, (_, value) in loss_terms.items()}
+        log["train_spectral_angle"] = train_sa
         if self.residue_substitution_probability:
             log["train_residue_augmented_fraction"] = (
                 (inputs.tokens != lb.inputs.tokens).any(dim=1).float().mean()
@@ -468,39 +482,75 @@ class _RealCheckpoint(L.Callback):
         # spectral_angle is normalized agreement: 1.0 = identical, so higher is better.
         self.best = float("-inf")
 
-    def _save(self, name: str, pl_module: RealSpeclibModule) -> None:
+    def _validation_values(self, trainer: L.Trainer) -> dict[str, float]:
+        return {
+            key: float(value.detach().cpu())
+            for key, value in trainer.callback_metrics.items()
+            if key in self.expected_keys and torch.is_tensor(value) and value.numel() == 1
+        }
+
+    def _save(
+        self,
+        name: str,
+        trainer: L.Trainer,
+        pl_module: RealSpeclibModule,
+        values: dict[str, float] | None = None,
+        validated_at_step: int | None = None,
+    ) -> None:
         self.directory.mkdir(parents=True, exist_ok=True)
+        values = self._validation_values(trainer) if values is None else values
+        mean = (
+            sum(values.values()) / len(values) if len(values) == len(self.expected_keys) else None
+        )
+        training_metadata = {
+            "stage": "train",
+            "checkpoint_kind": Path(name).stem,
+            "global_step": int(trainer.global_step),
+            "epoch": int(trainer.current_epoch) + 1,
+            "validation": {
+                "metric": "mean_per_dataset_spectral_angle",
+                "values": dict(sorted(values.items())),
+                "mean": mean,
+                "best_checkpoint_mean": self.best if math.isfinite(self.best) else None,
+                "validated_at_step": (
+                    int(pl_module.last_validation_step)
+                    if validated_at_step is None
+                    else validated_at_step
+                ),
+            },
+        }
         save_checkpoint(
             pl_module.model,
             self.directory / name,
             encoder=pl_module.encoder,
             runbook=pl_module.runbook,
             dataset_index=pl_module.dataset_index,
+            training_metadata=training_metadata,
         )
         if self.artifact_mirror is not None:
             self.artifact_mirror(self.directory / name)
 
     def on_train_epoch_end(self, trainer: L.Trainer, pl_module: RealSpeclibModule) -> None:
         # This snapshot is available even when validation is disabled or crashes afterwards.
-        self._save("latest.ckpt", pl_module)
+        self._save("latest.ckpt", trainer, pl_module)
 
     def on_validation_epoch_end(self, trainer: L.Trainer, pl_module: RealSpeclibModule) -> None:
         if trainer.sanity_checking:
             return
-        self._save("latest.ckpt", pl_module)
         if not self.expected_keys:
+            self._save("latest.ckpt", trainer, pl_module, {}, int(trainer.global_step))
             return
-        metrics = {
-            key: value
-            for key, value in trainer.callback_metrics.items()
-            if key in self.expected_keys and torch.is_tensor(value) and value.numel() == 1
-        }
-        if len(metrics) != len(self.expected_keys):
+        values = self._validation_values(trainer)
+        if len(values) != len(self.expected_keys):
+            self._save("latest.ckpt", trainer, pl_module, values, int(trainer.global_step))
             return  # the early-stop callback below will report the missing keys
-        current = sum(float(value) for value in metrics.values()) / len(metrics)
+        current = sum(values.values()) / len(values)
         if current > self.best:
             self.best = current
-            self._save("best.ckpt", pl_module)
+            self._save("latest.ckpt", trainer, pl_module, values, int(trainer.global_step))
+            self._save("best.ckpt", trainer, pl_module, values, int(trainer.global_step))
+        else:
+            self._save("latest.ckpt", trainer, pl_module, values, int(trainer.global_step))
 
 
 def _build_examples(

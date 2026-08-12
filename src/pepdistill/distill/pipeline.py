@@ -375,8 +375,73 @@ def _artifact_mirror(
     return mirror
 
 
+def _wandb_metric_namespaces(metrics: dict, stage: str) -> dict:
+    """Map Lightning's internal names to W&B panel-oriented top-level namespaces.
+
+    W&B groups charts by the first slash-delimited component. A blanket ``train/`` prefix put
+    every real-data loss, diagnostic, and per-dataset validation series in one enormous panel.
+    Keep internal callback keys stable and translate only at the telemetry boundary.
+    """
+    train_names = {
+        "train_ms2": "ms2_cosine_loss",
+        "train_spectral_angle": "spectral_angle",
+        "train_irt": "irt_loss",
+        "train_rawrt": "rawrt_loss",
+        "train_total": "total_loss",
+        "train_mod_align": "mod_alignment_loss",
+        "train_residue_augmented_fraction": "residue_augmented_fraction",
+    }
+    result = {}
+    for raw_key, value in metrics.items():
+        key = str(raw_key)
+        if stage == "train" and key.startswith("val/"):
+            _, dataset, metric = key.split("/", 2)
+            family = {
+                "spectral_angle": "val_sa",
+                "irt_mae": "val_irt_mae",
+                "rawrt_mae": "val_rawrt_mae",
+                "n": "val_n",
+            }.get(metric, f"val_{metric}")
+            namespaced = f"{family}/{dataset}"
+        elif key.startswith(f"diagnostics/{stage}/"):
+            namespaced = f"{stage}_diagnostics/{key.removeprefix(f'diagnostics/{stage}/')}"
+        elif key in train_names:
+            namespaced = f"{stage}_metrics/{train_names[key]}"
+        elif key.startswith("lr-") or key == "epoch":
+            namespaced = f"{stage}_metrics/{key}"
+        else:
+            namespaced = f"{stage}_metrics/{key}"
+        result[namespaced] = value
+    return result
+
+
+def _final_training_metadata(module) -> dict:
+    """Describe the validation evidence attached to the final inference checkpoint."""
+    trainer = module.trainer
+    values = {
+        key: float(value.detach().cpu())
+        for key, value in trainer.callback_metrics.items()
+        if key.startswith("val/")
+        and key.endswith("/spectral_angle")
+        and torch.is_tensor(value)
+        and value.numel() == 1
+    }
+    return {
+        "stage": "train",
+        "checkpoint_kind": "model",
+        "global_step": int(trainer.global_step),
+        "epoch": int(trainer.current_epoch) + 1,
+        "validation": {
+            "metric": "mean_per_dataset_spectral_angle",
+            "values": dict(sorted(values.items())),
+            "mean": sum(values.values()) / len(values) if values else None,
+            "validated_at_step": int(module.last_validation_step),
+        },
+    }
+
+
 def _wandb_loggers(cfg: RunConfig, out: Path):
-    """Create one W&B run with stage-specific Lightning metric namespaces."""
+    """Create one W&B run with panel-oriented metric namespaces."""
     if not cfg.tracking.enabled:
         return None, None, None
     if cfg.tracking.mode not in {"online", "offline"}:
@@ -412,8 +477,9 @@ def _wandb_loggers(cfg: RunConfig, out: Path):
     class ThrottledWandbLogger(WandbLogger):
         """Limit remote train telemetry by wall time while retaining important boundaries."""
 
-        def __init__(self, *args, **kwargs):
+        def __init__(self, *args, stage: str, **kwargs):
             super().__init__(*args, **kwargs)
+            self._stage = stage
             self._last_remote_log_at: float | None = None
             self._last_remote_step: int | None = None
             self._pending_metrics: tuple[dict, int | None] | None = None
@@ -428,8 +494,9 @@ def _wandb_loggers(cfg: RunConfig, out: Path):
             super().log_metrics(metrics, step)
 
         def log_metrics(self, metrics: dict, step: int | None = None) -> None:
+            metrics = _wandb_metric_namespaces(metrics, self._stage)
             now = time.monotonic()
-            force = any(str(key).startswith("val/") for key in metrics)
+            force = any(str(key).startswith("val_") for key in metrics)
             if self._pending_metrics is not None:
                 pending_metrics, pending_step = self._pending_metrics
                 if pending_step == step:
@@ -466,10 +533,8 @@ def _wandb_loggers(cfg: RunConfig, out: Path):
             super().finalize(status)
 
     root = WandbLogger(experiment=experiment, log_model=False)
-    pretrain = ThrottledWandbLogger(experiment=experiment, prefix="pretrain")
-    train = ThrottledWandbLogger(experiment=experiment, prefix="train")
-    pretrain.LOGGER_JOIN_CHAR = "/"
-    train.LOGGER_JOIN_CHAR = "/"
+    pretrain = ThrottledWandbLogger(experiment=experiment, stage="pretrain")
+    train = ThrottledWandbLogger(experiment=experiment, stage="train")
     return root, pretrain, train
 
 
@@ -602,6 +667,7 @@ def run_pipeline(cfg: RunConfig, log=print) -> dict:
     out.mkdir(parents=True, exist_ok=True)
     acc = _accelerator(cfg.device)
     summary: dict = {}
+    final_training_metadata = None
     tracking, pretrain_logger, train_logger = _wandb_loggers(cfg, out)
 
     def record_artifact(path: Path, uri: str) -> None:
@@ -782,6 +848,7 @@ def run_pipeline(cfg: RunConfig, log=print) -> dict:
         )
         summary["train"] = {k: float(v) for k, v in module.trainer.callback_metrics.items()}
         summary["dataset_index"] = dataset_index
+        final_training_metadata = _final_training_metadata(module)
         log(f"[train] {summary['train']}")
 
     if encoder is not None:
@@ -789,7 +856,14 @@ def run_pipeline(cfg: RunConfig, log=print) -> dict:
 
     ckpt = out / "model.ckpt"
     # Persist the context too, or the artifact can only make base (context-free) predictions.
-    save_checkpoint(model, ckpt, encoder=encoder, runbook=runbook, dataset_index=dataset_index)
+    save_checkpoint(
+        model,
+        ckpt,
+        encoder=encoder,
+        runbook=runbook,
+        dataset_index=dataset_index,
+        training_metadata=final_training_metadata,
+    )
     if mirror is not None:
         mirror(ckpt)
     log(f"saved {ckpt}")
