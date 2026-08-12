@@ -93,9 +93,7 @@ class StreamPretrainCfg:
 
     def __post_init__(self) -> None:
         if (self.onecycle_max_lr is None) != (self.onecycle_total_steps is None):
-            raise ValueError(
-                "onecycle_max_lr and onecycle_total_steps must be provided together"
-            )
+            raise ValueError("onecycle_max_lr and onecycle_total_steps must be provided together")
         if self.onecycle_max_lr is not None:
             if self.onecycle_max_lr <= 0:
                 raise ValueError("onecycle_max_lr must be positive")
@@ -104,7 +102,9 @@ class StreamPretrainCfg:
             if not 0.0 <= self.onecycle_pct_start <= 1.0:
                 raise ValueError("onecycle_pct_start must be between 0 and 1")
             if self.onecycle_div_factor <= 0 or self.onecycle_final_div_factor <= 0:
-                raise ValueError("onecycle_div_factor and onecycle_final_div_factor must be positive")
+                raise ValueError(
+                    "onecycle_div_factor and onecycle_final_div_factor must be positive"
+                )
         if not 0.0 <= self.residue_substitution_probability <= 1.0:
             raise ValueError("residue_substitution_probability must be between 0 and 1")
 
@@ -349,9 +349,7 @@ def fit_stream_pretrain(
     if logger:
         callbacks.append(LearningRateMonitor(logging_interval="step"))
     if checkpoint_every > 0:
-        callbacks.append(
-            _StreamCheckpoint(checkpoint_every, checkpoint_path, artifact_mirror, log)
-        )
+        callbacks.append(_StreamCheckpoint(checkpoint_every, checkpoint_path, artifact_mirror, log))
     if cfg.patience > 0:
         callbacks.append(
             _LossPlateauStop(cfg.patience, cfg.min_delta, cfg.check_every, cfg.warmup_steps, log)

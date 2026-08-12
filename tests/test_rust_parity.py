@@ -163,10 +163,10 @@ def test_rust_fasta_generates_diann_tsv(artifact, tmp_path):
     # independently evaluated single-charge path, not merely produce the expected row count.
     for charge in (2, 3):
         scalar = subprocess.run(
-                [
-                    _binary(),
-                    "predict",
-                    "--model",
+            [
+                _binary(),
+                "predict",
+                "--model",
                 str(artifact["path"]),
                 "--peptide",
                 "PEPTIDEM",

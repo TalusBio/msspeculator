@@ -54,10 +54,24 @@ def _source(tmp_path):
     for scan in (1, 2):
         rows.extend(
             [
-                {"raw_file": "run1", "scan_number": scan, "ion_type": "b", "no": 1,
-                 "charge": 1, "intensity": 1.0, "neutral_loss": None},
-                {"raw_file": "run1", "scan_number": scan, "ion_type": "y", "no": 1,
-                 "charge": 1, "intensity": 0.5, "neutral_loss": None},
+                {
+                    "raw_file": "run1",
+                    "scan_number": scan,
+                    "ion_type": "b",
+                    "no": 1,
+                    "charge": 1,
+                    "intensity": 1.0,
+                    "neutral_loss": None,
+                },
+                {
+                    "raw_file": "run1",
+                    "scan_number": scan,
+                    "ion_type": "y",
+                    "no": 1,
+                    "charge": 1,
+                    "intensity": 0.5,
+                    "neutral_loss": None,
+                },
             ]
         )
     pd.DataFrame(rows).to_parquet(shard_dir / "run1.parquet", index=False)
@@ -68,7 +82,9 @@ def _config(root, stem, out):
     return PrepareConfig(
         source_prefix=str(root),
         output_prefix=str(out),
-        sources=(PrepareSource(id="isoform", dataset="isoform", meta="meta.parquet", archive=stem),),
+        sources=(
+            PrepareSource(id="isoform", dataset="isoform", meta="meta.parquet", archive=stem),
+        ),
     )
 
 
@@ -184,9 +200,7 @@ def test_finalize_and_reader_exclude_nonfinite_rt_rows(tmp_path):
     assert finalized["irt_stats"][0] == 1
     assert finalized["split_rows"] == {"train": 1, "val": 1}
     manifest = PreparedManifest.load(str(out))
-    ds = PreparedStreamingDataset(
-        manifest, MSContextEncoder(context_dim=8), frozenset({"train"})
-    )
+    ds = PreparedStreamingDataset(manifest, MSContextEncoder(context_dim=8), frozenset({"train"}))
     assert len(list(ds.iter_examples(0, shuffle=False))) == 1
 
 
@@ -197,17 +211,16 @@ def test_prepared_reader_accepts_int128_spectrum_ids(tmp_path):
     prepare_range(config, log=None)
     data = out / "shards" / "isoform" / "000000" / "data.parquet"
     frame = pl.read_parquet(data).with_columns(
-        (pl.col("spectrum_id").cast(pl.Int128) + pl.lit(2**63, dtype=pl.Int128))
-        .alias("spectrum_id")
+        (pl.col("spectrum_id").cast(pl.Int128) + pl.lit(2**63, dtype=pl.Int128)).alias(
+            "spectrum_id"
+        )
     )
     frame.write_parquet(data)
 
     finalize_catalog(config, log=None)
     manifest = PreparedManifest.load(str(out))
     assert manifest.val_winners and max(manifest.val_winners) > 2**63
-    val = PreparedStreamingDataset(
-        manifest, MSContextEncoder(context_dim=8), frozenset({"val"})
-    )
+    val = PreparedStreamingDataset(manifest, MSContextEncoder(context_dim=8), frozenset({"val"}))
     assert len(list(val.iter_examples(0, shuffle=False))) == 1
 
 
@@ -281,17 +294,12 @@ def test_group_catalog_v1_is_rebuilt_for_shared_metadata_fix(tmp_path):
 
 def test_balanced_partition_uses_vendored_raw_bytes(monkeypatch):
     catalog = {
-        "tasks": [
-            {"record": "r", "archive": "a", "shard_index": index}
-            for index in range(4)
-        ]
+        "tasks": [{"record": "r", "archive": "a", "shard_index": index} for index in range(4)]
     }
     monkeypatch.setattr(
         "pepdistill.etl.prospect.load_shard_index",
         lambda: {
-            "records": {
-                "r": {"a.zip": [["0", 1, 10], ["1", 1, 10], ["2", 1, 70], ["3", 1, 10]]}
-            }
+            "records": {"r": {"a.zip": [["0", 1, 10], ["1", 1, 10], ["2", 1, 70], ["3", 1, 10]]}}
         },
     )
     assert balanced_partition_range(catalog, 0, 2) == (0, 2, 20)

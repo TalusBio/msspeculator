@@ -59,10 +59,13 @@ def parse_modseq(modseq: str) -> tuple[str, tuple[tuple, ...]]:
             site = "n" if pos < 0 else pos
             mods.append((site, name))
     return "".join(residues), tuple(mods)
+
+
 @dataclass(frozen=True, slots=True)
 class ProspectSchema:
     """Column-name mapping. Defaults follow the documented PROSPECT columns; override per
     file if a variant differs (validated at read time)."""
+
     # Defaults verified against a real test_ptm meta file (columns: modified_sequence,
     # precursor_charge, aligned/orig_collision_energy, mass_analyzer, fragmentation,
     # retention_time, indexed_retention_time, ...). Meta files carry NO stripped `sequence`
@@ -84,12 +87,16 @@ class ProspectSchema:
     ann_intensity: str = "intensity"
     ann_neutral_loss: str = "neutral_loss"
     andromeda_score: str = "andromeda_score"  # val dedup quality
+
     # Columns required to even treat a file as PROSPECT (identity + acquisition context).
     def required(self) -> list[str]:
         return [self.modified_sequence, self.charge, self.collision_energy]
+
     # Columns that define an acquisition "source" for context conditioning.
     def acquisition_factors(self) -> list[str]:
         return [self.mass_analyzer, self.fragmentation]
+
+
 def decode_fragments(
     index: "MetaIndex", frag: pd.DataFrame, schema: ProspectSchema
 ) -> tuple["RealLabels", list[tuple[str, int]]]:
@@ -169,14 +176,13 @@ def decode_fragments(
     if not keep.any():
         return empty, []
     work = frag.assign(
-        _raw=raws, _scan=scans, _site=site, _col=col,
+        _raw=raws,
+        _scan=scans,
+        _site=site,
+        _col=col,
         _inten=frag[s.ann_intensity].to_numpy(dtype=np.float32),
     )[keep]
-    agg = (
-        work.groupby(["_raw", "_scan", "_site", "_col"], sort=False)["_inten"]
-        .max()
-        .reset_index()
-    )
+    agg = work.groupby(["_raw", "_scan", "_site", "_col"], sort=False)["_inten"].max().reset_index()
     precursors: list[Precursor] = []
     labels: list[PrecursorLabels] = []
     raw_rt: list[float] = []
@@ -206,6 +212,8 @@ def decode_fragments(
             },
         )
     return RealLabels(precursors, labels, raw_rt, source_ids, acquisition), out_keys
+
+
 def fragment_filter_mask(ann: pd.DataFrame, schema: ProspectSchema) -> np.ndarray:
     """b/y ions, fragment charge 1-2, no neutral loss. Measured to keep 10-35% by pool.
     ``neutral_loss`` may arrive as ``category`` dtype (the streaming reader reads it
@@ -221,16 +229,26 @@ def fragment_filter_mask(ann: pd.DataFrame, schema: ProspectSchema) -> np.ndarra
         & ann[schema.ann_frag_charge].isin((1, 2)).to_numpy()
         & (no_loss.isna() | (no_loss == "")).to_numpy()
     )
+
+
 @dataclass
 class RealLabels:
     """Decoded real examples. ``labels[i].rt`` is iRT (context-free base target); ``raw_rt``
     is the run-dependent retention time (the ``chrom_context`` target). ``source_ids`` (raw_file) is the
     context stratification key; ``acquisition`` maps raw_file -> analyzer/fragmentation/NCE,
     so per-raw_file context vectors can later be regressed onto those factors."""
+
     precursors: list
     labels: list
     raw_rt: list
     source_ids: list
     acquisition: dict
 
-__all__ = ["ProspectSchema", "parse_modseq", "decode_fragments", "fragment_filter_mask", "RealLabels"]
+
+__all__ = [
+    "ProspectSchema",
+    "parse_modseq",
+    "decode_fragments",
+    "fragment_filter_mask",
+    "RealLabels",
+]

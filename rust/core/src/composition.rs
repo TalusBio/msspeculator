@@ -83,8 +83,9 @@ impl AtomicComposition {
         }
         let mut packed = [0i8; N_ELEMENTS];
         for (i, v) in out.iter().enumerate() {
-            packed[i] = i8::try_from(*v)
-                .map_err(|_| anyhow::anyhow!("element count {v} for {:?} exceeds i8", ELEMENTS[i]))?;
+            packed[i] = i8::try_from(*v).map_err(|_| {
+                anyhow::anyhow!("element count {v} for {:?} exceeds i8", ELEMENTS[i])
+            })?;
         }
         Ok(packed)
     }
@@ -97,10 +98,20 @@ mod tests {
 
     fn masses() -> HashMap<String, f64> {
         // A stand-in for the vendored elements.tsv; the real table is loaded in Task 2.
-        [("C", 12.0), ("13C", 13.00335483507), ("H", 1.00782503207),
-         ("N", 14.0030740048), ("15N", 15.0001088982), ("O", 15.9949146196),
-         ("P", 30.973761998), ("S", 31.97207100), ("Se", 79.9165213)]
-            .iter().map(|(s, m)| (s.to_string(), *m)).collect()
+        [
+            ("C", 12.0),
+            ("13C", 13.00335483507),
+            ("H", 1.00782503207),
+            ("N", 14.0030740048),
+            ("15N", 15.0001088982),
+            ("O", 15.9949146196),
+            ("P", 30.973761998),
+            ("S", 31.97207100),
+            ("Se", 79.9165213),
+        ]
+        .iter()
+        .map(|(s, m)| (s.to_string(), *m))
+        .collect()
     }
 
     #[test]
@@ -141,14 +152,20 @@ mod tests {
     fn out_of_basis_element_errors_naming_it() {
         let c = AtomicComposition::parse("Se C(2)").unwrap();
         let err = c.element_comp().unwrap_err().to_string();
-        assert!(err.contains("Se"), "error must name the element, got: {err}");
+        assert!(
+            err.contains("Se"),
+            "error must name the element, got: {err}"
+        );
     }
 
     #[test]
     fn unknown_nuclide_mass_errors_naming_it() {
         let c = AtomicComposition::parse("Xx(2)").unwrap();
         let err = c.mono_mass(&masses()).unwrap_err().to_string();
-        assert!(err.contains("Xx"), "error must name the nuclide, got: {err}");
+        assert!(
+            err.contains("Xx"),
+            "error must name the nuclide, got: {err}"
+        );
     }
 
     #[test]

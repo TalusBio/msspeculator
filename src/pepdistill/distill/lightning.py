@@ -87,9 +87,7 @@ class DistillModule(L.LightningModule):
         # scalar rather than a 4th slot in loss_weights, which already means (ms2, rt, ccs).
         self.mod_align_weight = mod_align_weight
         if (onecycle_max_lr is None) != (onecycle_total_steps is None):
-            raise ValueError(
-                "onecycle_max_lr and onecycle_total_steps must be provided together"
-            )
+            raise ValueError("onecycle_max_lr and onecycle_total_steps must be provided together")
         if onecycle_max_lr is not None:
             if onecycle_max_lr <= 0:
                 raise ValueError("onecycle_max_lr must be positive")
@@ -98,7 +96,9 @@ class DistillModule(L.LightningModule):
             if not 0.0 <= onecycle_pct_start <= 1.0:
                 raise ValueError("onecycle_pct_start must be between 0 and 1")
             if onecycle_div_factor <= 0 or onecycle_final_div_factor <= 0:
-                raise ValueError("onecycle_div_factor and onecycle_final_div_factor must be positive")
+                raise ValueError(
+                    "onecycle_div_factor and onecycle_final_div_factor must be positive"
+                )
         self.onecycle_max_lr = onecycle_max_lr
         self.onecycle_total_steps = onecycle_total_steps
         self.onecycle_pct_start = onecycle_pct_start
@@ -127,9 +127,7 @@ class DistillModule(L.LightningModule):
         return self.model.forward(inputs, ms_context=ms_context)
 
     def training_step(self, batch: LabeledBatch, batch_idx: int) -> torch.Tensor:
-        inputs = substitute_residues(
-            batch.inputs, self.residue_substitution_probability
-        )
+        inputs = substitute_residues(batch.inputs, self.residue_substitution_probability)
         out = self._predict(batch, inputs)
         rt_t = self.model.standardize_rt(batch.rt_target)
         ccs_t = self.model.standardize_ccs(batch.ccs_target)

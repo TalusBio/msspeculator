@@ -47,6 +47,7 @@ pepdistill = "pepdistill.cli:app"
 
 [dependency-groups]
 dev = [
+    "pre-commit>=4.0",
     "pytest>=8.0",
     "ruff>=0.6",
 ]

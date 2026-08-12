@@ -64,7 +64,7 @@ def test_disabled_train_does_not_require_prepared_prefix(tmp_path: Path):
     config = tmp_path / "run.toml"
     config.write_text(
         f"""
-out = "{tmp_path / 'out'}"
+out = "{tmp_path / "out"}"
 preset = "flash"
 [pretrain]
 enabled = false
@@ -165,9 +165,7 @@ def test_wandb_stage_loggers_share_one_run(tmp_path: Path, monkeypatch):
     assert train.logged[-1] == ({"train_ms2": 0.1}, 4)
 
 
-def test_wandb_throttle_merges_metric_families_at_the_same_step(
-    tmp_path: Path, monkeypatch
-):
+def test_wandb_throttle_merges_metric_families_at_the_same_step(tmp_path: Path, monkeypatch):
     class Experiment:
         pass
 

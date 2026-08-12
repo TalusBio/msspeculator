@@ -40,6 +40,7 @@ from .precursors import Precursor
 # predict/library.py, distill/dataset.py, and the Rust runtime — reads this one constant, so
 # the torch and Rust paths cannot drift into off-by-one disagreement.
 
+
 @dataclass(slots=True)
 class Batch:
     tokens: torch.Tensor  # (B, T) long, T = maxL + 2
@@ -53,10 +54,22 @@ class Batch:
     frag_mask: torch.Tensor  # (B, T-1) bool, True at valid inter-residue fragment sites
 
     def to(self, device: torch.device | str) -> "Batch":
-        return Batch(*(t.to(device) for t in (
-            self.tokens, self.mod_comp, self.mod_mass, self.mod_present, self.mod_named,
-            self.charge, self.lengths, self.pad_mask, self.frag_mask,
-        )))
+        return Batch(
+            *(
+                t.to(device)
+                for t in (
+                    self.tokens,
+                    self.mod_comp,
+                    self.mod_mass,
+                    self.mod_present,
+                    self.mod_named,
+                    self.charge,
+                    self.lengths,
+                    self.pad_mask,
+                    self.frag_mask,
+                )
+            )
+        )
 
 
 def collate(precursors: list[Precursor]) -> Batch:
@@ -71,9 +84,13 @@ def collate(precursors: list[Precursor]) -> Batch:
     charges = [int(p.charge) for p in precursors]
     a = _rs.collate(peptides, charges)
     return Batch(
-        torch.from_numpy(a["tokens"]), torch.from_numpy(a["mod_comp"]),
-        torch.from_numpy(a["mod_mass"]), torch.from_numpy(a["mod_present"]),
-        torch.from_numpy(a["mod_named"]), torch.from_numpy(a["charge"]),
-        torch.from_numpy(a["lengths"]), torch.from_numpy(a["pad_mask"]),
+        torch.from_numpy(a["tokens"]),
+        torch.from_numpy(a["mod_comp"]),
+        torch.from_numpy(a["mod_mass"]),
+        torch.from_numpy(a["mod_present"]),
+        torch.from_numpy(a["mod_named"]),
+        torch.from_numpy(a["charge"]),
+        torch.from_numpy(a["lengths"]),
+        torch.from_numpy(a["pad_mask"]),
         torch.from_numpy(a["frag_mask"]),
     )

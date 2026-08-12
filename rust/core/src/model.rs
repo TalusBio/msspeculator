@@ -26,7 +26,13 @@ fn gelu_tanh(x: f32) -> f32 {
 fn act_scalar(v: f32, act: &str) -> f32 {
     match act {
         "relu" => v.max(0.0),
-        "leaky_relu" => if v < 0.0 { 0.01 * v } else { v },
+        "leaky_relu" => {
+            if v < 0.0 {
+                0.01 * v
+            } else {
+                v
+            }
+        }
         "gelu_tanh" => gelu_tanh(v),
         _ => gelu(v),
     }
@@ -532,11 +538,11 @@ impl<'a> Predictor<'a> {
 
         // --- pooled peptide and adjacent-pool fragment representations ---
         let pooled = x.mean_axis(ndarray::Axis(0)).unwrap(); // [d]
-        // Adjacent-pool row p covers tokens (p, p+1). With the mandatory N-term token at column
-        // 0, the first inter-RESIDUE site is row 1 (residues 1 and 2), so the L-1 real fragment
-        // sites are rows [1, L). Rows 0 and L (the N-/C-term pools) are dropped, exactly as
-        // `predict_library_fast` slices them off with the same `FRAG_OFFSET`, re-exported to
-        // Python by the pyo3 ext so the two runtimes cannot drift.
+                                                             // Adjacent-pool row p covers tokens (p, p+1). With the mandatory N-term token at column
+                                                             // 0, the first inter-RESIDUE site is row 1 (residues 1 and 2), so the L-1 real fragment
+                                                             // sites are rows [1, L). Rows 0 and L (the N-/C-term pools) are dropped, exactly as
+                                                             // `predict_library_fast` slices them off with the same `FRAG_OFFSET`, re-exported to
+                                                             // Python by the pyo3 ext so the two runtimes cannot drift.
         let frag_pos = seq.len() - 1;
         let mut frag = Array2::<f32>::zeros((frag_pos, d));
         for i in 0..frag_pos {
@@ -555,7 +561,9 @@ impl<'a> Predictor<'a> {
             .ok_or_else(|| anyhow!("cannot encode an empty peptide batch"))?;
         let seq_len = first.sequence.len();
         if seq_len < 2 {
-            return Err(anyhow!("peptide batch contains a sequence shorter than 2 residues"));
+            return Err(anyhow!(
+                "peptide batch contains a sequence shorter than 2 residues"
+            ));
         }
         if peptides.iter().any(|pep| pep.sequence.len() != seq_len) {
             return Err(anyhow!("encode_batch requires one shared peptide length"));
@@ -609,14 +617,15 @@ impl<'a> Predictor<'a> {
         let frag_pos = seq_len - 1;
         let mut frag = Array3::<f32>::zeros((batch, frag_pos, d));
         for batch_i in 0..batch {
-            pooled
-                .row_mut(batch_i)
-                .assign(&x.slice(s![batch_i, .., ..]).mean_axis(ndarray::Axis(0)).unwrap());
+            pooled.row_mut(batch_i).assign(
+                &x.slice(s![batch_i, .., ..])
+                    .mean_axis(ndarray::Axis(0))
+                    .unwrap(),
+            );
             for i in 0..frag_pos {
                 let p = FRAG_OFFSET + i;
                 for j in 0..d {
-                    frag[[batch_i, i, j]] =
-                        0.5 * (x[[batch_i, p, j]] + x[[batch_i, p + 1, j]]);
+                    frag[[batch_i, i, j]] = 0.5 * (x[[batch_i, p, j]] + x[[batch_i, p + 1, j]]);
                 }
             }
         }
@@ -631,7 +640,9 @@ impl<'a> Predictor<'a> {
         ms_shift: Option<&Array1<f32>>,
     ) -> Result<(Array2<f32>, f32)> {
         let mut outputs = self.predict_charges(encoded, &[charge], ms_shift)?;
-        Ok(outputs.pop().expect("one requested charge yields one output"))
+        Ok(outputs
+            .pop()
+            .expect("one requested charge yields one output"))
     }
 
     /// Run all requested charge heads in two larger matrix multiplications. Rows remain grouped
@@ -679,9 +690,7 @@ impl<'a> Predictor<'a> {
         // --- CCS head: concat[pooled, charge] ---
         let mut ccs_in = Array2::<f32>::zeros((charges.len(), 2 * d));
         for charge_i in 0..charges.len() {
-            ccs_in
-                .slice_mut(s![charge_i, 0..d])
-                .assign(&encoded.pooled);
+            ccs_in.slice_mut(s![charge_i, 0..d]).assign(&encoded.pooled);
             ccs_in
                 .slice_mut(s![charge_i, d..2 * d])
                 .assign(&ce.row(charge_i));
@@ -693,8 +702,8 @@ impl<'a> Predictor<'a> {
             let spectrum = ms2
                 .slice(s![charge_i * frag_pos..(charge_i + 1) * frag_pos, ..])
                 .to_owned();
-            let ccs = ccs_out[[charge_i, 0]] * self.art.meta.norm.ccs_std
-                + self.art.meta.norm.ccs_mean;
+            let ccs =
+                ccs_out[[charge_i, 0]] * self.art.meta.norm.ccs_std + self.art.meta.norm.ccs_mean;
             outputs.push((spectrum, ccs));
         }
         Ok(outputs)
@@ -759,8 +768,8 @@ impl<'a> Predictor<'a> {
                 let spectrum = ms2
                     .slice(s![pair_i * frag_pos..(pair_i + 1) * frag_pos, ..])
                     .to_owned();
-                let ccs = ccs_out[[pair_i, 0]] * self.art.meta.norm.ccs_std
-                    + self.art.meta.norm.ccs_mean;
+                let ccs =
+                    ccs_out[[pair_i, 0]] * self.art.meta.norm.ccs_std + self.art.meta.norm.ccs_mean;
                 peptide_outputs.push((spectrum, ccs));
             }
             outputs.push(peptide_outputs);

@@ -28,9 +28,9 @@ def test_substitution_preserves_effective_composition_and_mass():
     old = _amino_acid(int(original.tokens[row, column]))
     new = _amino_acid(int(augmented.tokens[row, column]))
     expected_comp = torch.tensor(RESIDUE_COMP[old], dtype=torch.float32)
-    effective_comp = torch.tensor(RESIDUE_COMP[new], dtype=torch.float32) + augmented.mod_comp[
-        row, column
-    ]
+    effective_comp = (
+        torch.tensor(RESIDUE_COMP[new], dtype=torch.float32) + augmented.mod_comp[row, column]
+    )
     assert torch.equal(effective_comp, expected_comp)
     assert float(RESIDUE_MASS[new] + augmented.mod_mass[row, column]) == pytest.approx(
         RESIDUE_MASS[old], abs=1e-5
@@ -47,9 +47,9 @@ def test_named_modification_accumulates_with_compensating_delta():
     new = _amino_acid(int(augmented.tokens[0, 1]))
 
     effective = torch.tensor(RESIDUE_COMP[new], dtype=torch.float32) + augmented.mod_comp[0, 1]
-    original_effective = torch.tensor(RESIDUE_COMP["C"], dtype=torch.float32) + original.mod_comp[
-        0, 1
-    ]
+    original_effective = (
+        torch.tensor(RESIDUE_COMP["C"], dtype=torch.float32) + original.mod_comp[0, 1]
+    )
     assert torch.equal(effective, original_effective)
     assert float(RESIDUE_MASS[new] + augmented.mod_mass[0, 1]) == pytest.approx(
         RESIDUE_MASS["C"] + float(original.mod_mass[0, 1]), abs=1e-5

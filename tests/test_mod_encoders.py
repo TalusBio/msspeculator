@@ -9,10 +9,12 @@ from pepdistill.models.registry import build_student
 
 
 def _batch():
-    return collate([
-        Precursor(Peptide("ACDEK", ((1, "Carbamidomethyl@C"),)), 2, "t"),
-        Precursor(Peptide("PEPTK", ((2, 42.010565),)), 2, "t"),
-    ])
+    return collate(
+        [
+            Precursor(Peptide("ACDEK", ((1, "Carbamidomethyl@C"),)), 2, "t"),
+            Precursor(Peptide("PEPTK", ((2, 42.010565),)), 2, "t"),
+        ]
+    )
 
 
 def test_fourier_features_shape_and_range():
@@ -135,7 +137,9 @@ def test_mod_align_does_not_train_the_comp_encoder():
     b = _batch()
     out = model(b)
     mod_align_loss(out["mod_g"], out["mod_m"], b.mod_named).backward()
-    assert model.comp_enc.weight.grad is None or float(model.comp_enc.weight.grad.abs().max()) == 0.0
+    assert (
+        model.comp_enc.weight.grad is None or float(model.comp_enc.weight.grad.abs().max()) == 0.0
+    )
     assert float(model.mass_enc[-1].weight.grad.abs().max()) > 0.0
 
 

@@ -309,9 +309,7 @@ class TrainingDiagnosticRenderer:
             )
             assert mod_path is not None
             paths["modifications"] = mod_path
-            context_points, context_connections = _context_trajectories(
-                encoder, *self.nce_range
-            )
+            context_points, context_connections = _context_trajectories(encoder, *self.nce_range)
             context_path = self._embedding_plot(
                 "acquisition_contexts",
                 context_points,
@@ -340,9 +338,7 @@ class TrainingDiagnosticRenderer:
                         proforma_sequence=proforma_sequence(precursor.peptide),
                         charge=precursor.charge,
                         fragment_mz=np.asarray(
-                            fragment_mz_matrix(
-                                precursor.peptide.sequence, precursor.peptide.mods
-                            ),
+                            fragment_mz_matrix(precursor.peptide.sequence, precursor.peptide.mods),
                             dtype=np.float64,
                         ),
                         student_intensity=student,
@@ -439,8 +435,7 @@ class TrainingDiagnosticCallback(L.Callback):
             import wandb
 
             payload = {
-                f"diagnostics/{self.stage}/{name}": value
-                for name, value in result.metrics.items()
+                f"diagnostics/{self.stage}/{name}": value for name, value in result.metrics.items()
             }
             payload.update(
                 {
@@ -464,12 +459,13 @@ class TrainingDiagnosticCallback(L.Callback):
     def on_train_batch_end(
         self, trainer: L.Trainer, pl_module: L.LightningModule, outputs, batch, batch_idx
     ) -> None:
-        if self.interval_seconds and time.monotonic() - self._last_render_at >= self.interval_seconds:
+        if (
+            self.interval_seconds
+            and time.monotonic() - self._last_render_at >= self.interval_seconds
+        ):
             self._render(trainer, pl_module, "interval")
 
-    def on_validation_epoch_end(
-        self, trainer: L.Trainer, pl_module: L.LightningModule
-    ) -> None:
+    def on_validation_epoch_end(self, trainer: L.Trainer, pl_module: L.LightningModule) -> None:
         if trainer.sanity_checking:
             return
         epoch = int(trainer.current_epoch) + 1

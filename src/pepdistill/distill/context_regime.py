@@ -191,9 +191,7 @@ class RealSpeclibModule(L.LightningModule):
     ) -> RealBatch:
         return batch.to(device)
 
-    def _forward(
-        self, rb: RealBatch, inputs: Batch | None = None
-    ) -> dict[str, torch.Tensor]:
+    def _forward(self, rb: RealBatch, inputs: Batch | None = None) -> dict[str, torch.Tensor]:
         ms_context = self.encoder(
             rb.ms_factors.instrument_id,
             rb.ms_factors.detector_id,
@@ -343,8 +341,7 @@ class _RealTrainProgress(L.Callback):
             else ""
         )
         trainer.print(
-            f"[train] epoch {trainer.current_epoch + 1}/{trainer.max_epochs} started"
-            f"{denominator}"
+            f"[train] epoch {trainer.current_epoch + 1}/{trainer.max_epochs} started{denominator}"
         )
 
     def on_train_batch_end(
@@ -393,9 +390,7 @@ class _RealTrainProgress(L.Callback):
             # Keep the line compact; the full per-dataset values remain in callback_metrics and
             # are written to summary.json at the end of the run.
             preview = ", ".join(
-                f"{k}={float(trainer.callback_metrics[k]):.4f}"
-                for k in names
-                if "/n" not in k
+                f"{k}={float(trainer.callback_metrics[k]):.4f}" for k in names if "/n" not in k
             )
             trainer.print(
                 f"[val] check {self._validation_check}, epoch {trainer.current_epoch + 1}, "
@@ -463,7 +458,9 @@ class _RealValidationEarlyStop(L.Callback):
 class _RealCheckpoint(L.Callback):
     """Persist inference-ready latest/best snapshots during real-data training."""
 
-    def __init__(self, directory: str | Path, expected_keys: set[str], artifact_mirror=None) -> None:
+    def __init__(
+        self, directory: str | Path, expected_keys: set[str], artifact_mirror=None
+    ) -> None:
         super().__init__()
         self.directory = Path(directory)
         self.expected_keys = expected_keys
@@ -658,7 +655,9 @@ def fit_realspeclib_datasets(
     val_dataset_ids = (
         val_ds.dataset_ids_present
         if hasattr(val_ds, "dataset_ids_present")
-        else set(np.unique(val_ds.dataset_id)) if val_ds is not None and len(val_ds) else set()
+        else set(np.unique(val_ds.dataset_id))
+        if val_ds is not None and len(val_ds)
+        else set()
     )
     if progress_log_every > 0:
         estimated_batches = math.ceil(len(train_ds) / batch_size) if len(train_ds) else None
@@ -675,20 +674,16 @@ def fit_realspeclib_datasets(
     if early_stop_min_delta < 0:
         raise ValueError("early_stop_min_delta must be non-negative")
     if early_stop_patience > 0 and val_ds is not None and val_dataset_ids:
-        expected_names = {
-            module.dataset_names[int(dataset_id)] for dataset_id in val_dataset_ids
-        }
+        expected_names = {module.dataset_names[int(dataset_id)] for dataset_id in val_dataset_ids}
         expected_keys = {f"val/{name}/spectral_angle" for name in expected_names}
         callbacks.append(
             _RealValidationEarlyStop(early_stop_patience, early_stop_min_delta, expected_keys)
         )
     if checkpoint_dir is not None:
-        checkpoint_keys = (
-            {
-                f"val/{module.dataset_names[int(dataset_id)]}/spectral_angle"
-                for dataset_id in val_dataset_ids
-            }
-        )
+        checkpoint_keys = {
+            f"val/{module.dataset_names[int(dataset_id)]}/spectral_angle"
+            for dataset_id in val_dataset_ids
+        }
         callbacks.insert(0, _RealCheckpoint(checkpoint_dir, checkpoint_keys, artifact_mirror))
     trainer = build_trainer(epochs, accelerator, grad_clip, callbacks=callbacks, **trainer_kwargs)
     train_loader = loader(train_ds, True)

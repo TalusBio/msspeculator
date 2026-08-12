@@ -107,9 +107,7 @@ def _serialize_mods(mods: tuple) -> str:
 
 
 def _spectrum_id(dataset: str, raw_file: str, scan: int) -> int:
-    digest = hashlib.blake2b(
-        f"{dataset}\0{raw_file}\0{scan}".encode(), digest_size=8
-    ).digest()
+    digest = hashlib.blake2b(f"{dataset}\0{raw_file}\0{scan}".encode(), digest_size=8).digest()
     return int.from_bytes(digest, "big", signed=False)
 
 
@@ -232,9 +230,7 @@ def _val_winners(chunks: list[str], out_uri: str) -> list[int]:
     values = (
         canonical_prepared_scan(chunks)
         .filter(
-            (pl.col("split") == "val")
-            & pl.col("irt").is_finite()
-            & pl.col("raw_rt").is_finite()
+            (pl.col("split") == "val") & pl.col("irt").is_finite() & pl.col("raw_rt").is_finite()
         )
         .sort(
             ["dataset", "sequence", "charge", "andromeda_score", "spectrum_id"],
@@ -255,9 +251,7 @@ def _irt_stats(chunks: list[str]) -> tuple[int, float, float]:
     row = (
         canonical_prepared_scan(chunks)
         .filter(
-            (pl.col("split") == "train")
-            & pl.col("irt").is_finite()
-            & pl.col("raw_rt").is_finite()
+            (pl.col("split") == "train") & pl.col("irt").is_finite() & pl.col("raw_rt").is_finite()
         )
         .select(
             pl.len().alias("n"),
@@ -358,7 +352,9 @@ def _sources_from_groups(config: PrepareConfig) -> tuple[PrepareSource, ...]:
         if group.record not in catalog:
             raise ValueError(f"unknown PROSPECT record {group.record!r}; known: {sorted(catalog)}")
         record = catalog[group.record]
-        prefix = group.cache_prefix or group.source_prefix or config.cache_prefix or config.source_prefix
+        prefix = (
+            group.cache_prefix or group.source_prefix or config.cache_prefix or config.source_prefix
+        )
         for archive_filename, entry in sorted(record["files"].items()):
             if not archive_filename.endswith(".zip"):
                 continue
@@ -428,7 +424,9 @@ def _resolve_meta(task: dict[str, Any]) -> str:
     if not url:
         raise FileNotFoundError(f"metadata unavailable for {task['source_id']}")
     record = str(task.get("record") or "local")
-    local = str(Path(tempfile.gettempdir()) / "pepdistill-origin" / record / Path(cached or url).name)
+    local = str(
+        Path(tempfile.gettempdir()) / "pepdistill-origin" / record / Path(cached or url).name
+    )
     if not Path(local).exists():
         _download_origin(url, local)
     if cached:
@@ -443,7 +441,9 @@ def _resolve_shard(task: dict[str, Any]) -> tuple[str, str | None]:
         return cached, None
     prefix = str(task.get("cache_prefix", ""))
     if prefix and task.get("record"):
-        legacy = _uri_join(prefix, f"{task['archive']}/{task['archive']}/{Path(task['shard_name']).name}")
+        legacy = _uri_join(
+            prefix, f"{task['archive']}/{task['archive']}/{Path(task['shard_name']).name}"
+        )
         if _uri_exists(legacy):
             return legacy, None
     url = str(task.get("archive_url", ""))
@@ -470,7 +470,9 @@ def discover_catalog(config: PrepareConfig) -> dict[str, Any]:
     for source in sources:
         prefix = _source_prefix(config, source)
         if source.record is not None:
-            indexed = load_shard_index()["records"].get(source.record, {}).get(f"{source.archive}.zip")
+            indexed = (
+                load_shard_index()["records"].get(source.record, {}).get(f"{source.archive}.zip")
+            )
             if not isinstance(indexed, list):
                 raise ValueError(
                     f"no vendored shard index for {source.record}/{source.archive}.zip; "
@@ -640,7 +642,9 @@ def prepare_task(
         if temporary_dir is not None:
             shutil.rmtree(temporary_dir, ignore_errors=True)
     if not rows:
-        raise ValueError(f"task {task['source_id']}/{task['shard_index']} produced no usable spectra")
+        raise ValueError(
+            f"task {task['source_id']}/{task['shard_index']} produced no usable spectra"
+        )
     frame = prepared_frame(rows)
     _write_parquet(frame, data_uri)
     emit(f"wrote {frame.height:,} spectra in {time.perf_counter() - started:.1f}s")
@@ -670,7 +674,9 @@ def prepare_range(
         raise ValueError(f"range {start}:{stop} outside catalog of {len(tasks)} shard task(s)")
     if log is not None:
         log(f"[prepare] catalog has {len(tasks):,} shard task(s); processing [{start}:{stop})")
-    return [prepare_task(config.output_prefix, task, force=force, log=log) for task in tasks[start:stop]]
+    return [
+        prepare_task(config.output_prefix, task, force=force, log=log) for task in tasks[start:stop]
+    ]
 
 
 def balanced_partition_range(
@@ -689,9 +695,7 @@ def balanced_partition_range(
     shard_index = load_shard_index()["records"]
     weights: list[int] = []
     for task in tasks:
-        rows = shard_index.get(str(task.get("record")), {}).get(
-            f"{task.get('archive')}.zip", []
-        )
+        rows = shard_index.get(str(task.get("record")), {}).get(f"{task.get('archive')}.zip", [])
         shard_ordinal = int(task.get("shard_index", -1))
         row = (
             rows[shard_ordinal]

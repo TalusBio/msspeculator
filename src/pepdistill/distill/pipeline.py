@@ -179,16 +179,14 @@ def _train_cfg(raw: dict) -> TrainCfg:
     if "sources" in d or any(key in d for key in ("record", "meta", "zip", "shards")):
         raise ValueError(
             "[train.sources] was removed; run the prepared ETL first and set "
-            "[train] prepared_prefix = \"...\""
+            '[train] prepared_prefix = "..."'
         )
     prepared_prefix = d.pop("prepared_prefix", None)
     if "loss_weights" in d:
         d["loss_weights"] = tuple(d["loss_weights"])
     cfg = TrainCfg(prepared_prefix=prepared_prefix, **d)
     if cfg.enabled and not cfg.prepared_prefix:
-        raise ValueError(
-            "[train] requires prepared_prefix; run the prepared ETL before training"
-        )
+        raise ValueError("[train] requires prepared_prefix; run the prepared ETL before training")
     return cfg
 
 
@@ -551,9 +549,7 @@ def _run_pretrain(
         onecycle_pct_start=p.onecycle_pct_start,
         onecycle_div_factor=p.onecycle_div_factor,
         onecycle_final_div_factor=p.onecycle_final_div_factor,
-        residue_substitution_probability=(
-            cfg.augmentation.residue_substitution_probability
-        ),
+        residue_substitution_probability=(cfg.augmentation.residue_substitution_probability),
     )
     log(
         f"[pretrain] stream: {[m.name for m in spc.mixes]}, NCE {spc.nce_range}, "
@@ -687,10 +683,18 @@ def run_pipeline(cfg: RunConfig, log=print) -> dict:
         prepared_manifest = PreparedManifest.load(cfg.train.prepared_prefix)
         dataset_index = prepared_manifest.datasets
         train_ds = PreparedStreamingDataset(
-            prepared_manifest, encoder, frozenset({"train"}), seed=cfg.seed, log=log,
+            prepared_manifest,
+            encoder,
+            frozenset({"train"}),
+            seed=cfg.seed,
+            log=log,
         )
         val_ds = PreparedStreamingDataset(
-            prepared_manifest, encoder, frozenset({"val"}), seed=cfg.seed, log=log,
+            prepared_manifest,
+            encoder,
+            frozenset({"val"}),
+            seed=cfg.seed,
+            log=log,
         )
         log(
             f"[train] prepared prefix: {cfg.train.prepared_prefix}; "
@@ -700,8 +704,10 @@ def run_pipeline(cfg: RunConfig, log=print) -> dict:
         # Whether the affine was set here or inherited is the difference between a cold start
         # and a continued curriculum, for a value that is permanent once set — so say which.
         if establish_rt_norm(model, [prepared_manifest.irt_stats]):
-            log(f"[train] RT affine set: mean {float(model.rt_mean):.4g}, "
-                f"std {float(model.rt_std):.4g}")
+            log(
+                f"[train] RT affine set: mean {float(model.rt_mean):.4g}, "
+                f"std {float(model.rt_std):.4g}"
+            )
         else:
             log("[train] RT affine inherited from an earlier stage; not recalibrated")
         # Size by the HIGHEST row, not the count: rows are contiguous from 1 only when the
@@ -743,9 +749,7 @@ def run_pipeline(cfg: RunConfig, log=print) -> dict:
             mod_align_weight=cfg.train.mod_align_weight,
             early_stop_patience=cfg.train.early_stop_patience,
             early_stop_min_delta=cfg.train.early_stop_min_delta,
-            residue_substitution_probability=(
-                cfg.augmentation.residue_substitution_probability
-            ),
+            residue_substitution_probability=(cfg.augmentation.residue_substitution_probability),
             val_check_interval=timedelta(minutes=cfg.train.validation_interval_minutes),
             check_val_every_n_epoch=None,
             # A sanity pass delays the first training batch and is redundant with the first

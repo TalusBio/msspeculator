@@ -37,8 +37,8 @@ pub struct CollateArrays {
 }
 
 pub struct ModArrays {
-    pub mod_comp: Array3<f32>,   // (B, T, N_ELEMENTS)
-    pub mod_mass: Array2<f32>,   // (B, T), Daltons, unscaled
+    pub mod_comp: Array3<f32>, // (B, T, N_ELEMENTS)
+    pub mod_mass: Array2<f32>, // (B, T), Daltons, unscaled
     pub mod_present: Array2<bool>,
     pub mod_named: Array2<bool>,
 }
@@ -98,7 +98,12 @@ pub fn mod_arrays(peptides: &[Peptide], tok_len: usize) -> anyhow::Result<ModArr
             }
         }
     }
-    Ok(ModArrays { mod_comp, mod_mass, mod_present, mod_named })
+    Ok(ModArrays {
+        mod_comp,
+        mod_mass,
+        mod_present,
+        mod_named,
+    })
 }
 
 /// Pack precursors into `Batch` arrays. `peptides[i].mods` sites are mapped onto the token
@@ -156,7 +161,10 @@ mod tests {
     #[test]
     fn collate_shapes_and_tokens() {
         let a = collate(
-            &[Peptide::new("PEP".into(), vec![]), Peptide::new("AC".into(), vec![])],
+            &[
+                Peptide::new("PEP".into(), vec![]),
+                Peptide::new("AC".into(), vec![]),
+            ],
             &[2, 3],
         )
         .unwrap();
@@ -172,7 +180,10 @@ mod tests {
         let a = collate(
             &[Peptide::new(
                 "AC".into(),
-                vec![(Site::Residue(1), ModSpec::Named("Carbamidomethyl@C".to_string()))],
+                vec![(
+                    Site::Residue(1),
+                    ModSpec::Named("Carbamidomethyl@C".to_string()),
+                )],
             )],
             &[2],
         )
@@ -195,7 +206,10 @@ mod tests {
     #[test]
     fn mod_arrays_mass_only_is_present_but_not_named() {
         let a = collate(
-            &[Peptide::new("PEPTIDE".into(), vec![(Site::Residue(2), ModSpec::MassOnly(42.010565))])],
+            &[Peptide::new(
+                "PEPTIDE".into(),
+                vec![(Site::Residue(2), ModSpec::MassOnly(42.010565))],
+            )],
             &[2],
         )
         .unwrap();
@@ -216,12 +230,18 @@ mod tests {
         // of erroring.
         let res = collate(
             &[
-                Peptide::new("AC".into(), vec![(Site::Residue(3), ModSpec::MassOnly(1.0))]),
+                Peptide::new(
+                    "AC".into(),
+                    vec![(Site::Residue(3), ModSpec::MassOnly(1.0))],
+                ),
                 Peptide::new("PEPTIDE".into(), vec![]),
             ],
             &[2, 2],
         );
-        assert!(res.is_err(), "mod site out of range for its own peptide must error");
+        assert!(
+            res.is_err(),
+            "mod site out of range for its own peptide must error"
+        );
     }
 
     #[test]
@@ -241,11 +261,23 @@ mod tests {
             Ok(_) => panic!("a co-sited Named + MassOnly must be refused"),
             Err(e) => e.to_string(),
         };
-        assert!(err.contains("Residue(3)"), "error must name the site: {err}");
-        assert!(err.contains("Carbamidomethyl@C"), "error must name the named mod: {err}");
-        assert!(err.contains("15.994915"), "error must name the mass delta: {err}");
+        assert!(
+            err.contains("Residue(3)"),
+            "error must name the site: {err}"
+        );
+        assert!(
+            err.contains("Carbamidomethyl@C"),
+            "error must name the named mod: {err}"
+        );
+        assert!(
+            err.contains("15.994915"),
+            "error must name the mass delta: {err}"
+        );
         // The mass path must agree: a peptide collate refuses is not silently mass-computable.
-        assert!(p.mono_mass().is_err(), "residue_masses must refuse the same peptide");
+        assert!(
+            p.mono_mass().is_err(),
+            "residue_masses must refuse the same peptide"
+        );
     }
 
     #[test]
@@ -258,8 +290,14 @@ mod tests {
                     (site, ModSpec::MassOnly(1.5)),
                 ],
             );
-            assert!(collate(std::slice::from_ref(&p), &[2]).is_err(), "{site:?} must be refused");
-            assert!(p.residue_masses().is_err(), "{site:?} must be refused for mass too");
+            assert!(
+                collate(std::slice::from_ref(&p), &[2]).is_err(),
+                "{site:?} must be refused"
+            );
+            assert!(
+                p.residue_masses().is_err(),
+                "{site:?} must be refused for mass too"
+            );
         }
     }
 

@@ -1,0 +1,45 @@
+version: "3"
+
+vars:
+  VENV_PYTHON: "{{.ROOT_DIR}}/.venv/bin/python"
+
+tasks:
+  default:
+    desc: Format and lint the complete repository
+    cmds:
+      - task: check
+
+  format:
+    desc: Apply Python and Rust formatting
+    cmds:
+      - uv run python -m ruff format .
+      - cargo fmt --manifest-path rust/Cargo.toml --all
+
+  lint:
+    desc: Run Python and Rust static checks
+    cmds:
+      - uv run python -m ruff check .
+      - PYO3_PYTHON="{{.VENV_PYTHON}}" cargo clippy --manifest-path rust/Cargo.toml --workspace --all-targets -- -D warnings
+
+  check:
+    desc: Apply formatting, then run every static check
+    cmds:
+      - task: format
+      - task: lint
+
+  sync-rust:
+    desc: Rebuild and reinstall the local PyO3 extension after Rust source changes
+    cmds:
+      - uv sync --extra teacher --extra etl --extra tracking --reinstall-package pepdistill-rs
+
+  test:
+    desc: Run the Python and Rust test suites
+    cmds:
+      - task: sync-rust
+      - uv run python -m pytest -q
+      - PYO3_PYTHON="{{.VENV_PYTHON}}" cargo test --manifest-path rust/Cargo.toml --workspace
+
+  pre-commit:
+    desc: Run every local pre-commit hook against the repository
+    cmds:
+      - uv run pre-commit run --all-files

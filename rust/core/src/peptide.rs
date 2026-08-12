@@ -130,13 +130,14 @@ impl Peptide {
                 if !closed {
                     anyhow::bail!("unclosed '[' in peptide {s:?}");
                 }
-                let spec = if body.starts_with('+') || body.starts_with('-') {
-                    ModSpec::MassOnly(body.parse().map_err(|_| {
-                        anyhow::anyhow!("bad mass delta {body:?} in peptide {s:?}")
-                    })?)
-                } else {
-                    ModSpec::Named(body)
-                };
+                let spec =
+                    if body.starts_with('+') || body.starts_with('-') {
+                        ModSpec::MassOnly(body.parse().map_err(|_| {
+                            anyhow::anyhow!("bad mass delta {body:?} in peptide {s:?}")
+                        })?)
+                    } else {
+                        ModSpec::Named(body)
+                    };
                 let site = if sequence.is_empty() {
                     Site::NTerm
                 } else if chars.peek().is_none() {
@@ -295,8 +296,14 @@ mod tests {
     fn mass_only_peptide_equals_itself() {
         // Reflexivity: in particular this must hold for NaN, where derived (IEEE) PartialEq
         // would report NaN != NaN and break the Eq contract.
-        let p = Peptide::new("PEPTIDE".into(), vec![(Site::Residue(0), ModSpec::MassOnly(f64::NAN))]);
-        let q = Peptide::new("PEPTIDE".into(), vec![(Site::Residue(0), ModSpec::MassOnly(f64::NAN))]);
+        let p = Peptide::new(
+            "PEPTIDE".into(),
+            vec![(Site::Residue(0), ModSpec::MassOnly(f64::NAN))],
+        );
+        let q = Peptide::new(
+            "PEPTIDE".into(),
+            vec![(Site::Residue(0), ModSpec::MassOnly(f64::NAN))],
+        );
         assert_eq!(p, p);
         assert_eq!(p, q);
         assert_eq!(hash_of(&p), hash_of(&q));
@@ -306,7 +313,10 @@ mod tests {
     fn sites_sort_nterm_first_cterm_last() {
         let mut v = vec![Site::CTerm, Site::Residue(3), Site::NTerm, Site::Residue(1)];
         v.sort();
-        assert_eq!(v, vec![Site::NTerm, Site::Residue(1), Site::Residue(3), Site::CTerm]);
+        assert_eq!(
+            v,
+            vec![Site::NTerm, Site::Residue(1), Site::Residue(3), Site::CTerm]
+        );
     }
 
     #[test]
@@ -326,7 +336,10 @@ mod tests {
         );
         assert_eq!(q.modified_sequence(), "P[+79.96633]EPTIDE");
 
-        let r = Peptide::new("PEK".into(), vec![(Site::CTerm, ModSpec::Named("Phospho".into()))]);
+        let r = Peptide::new(
+            "PEK".into(),
+            vec![(Site::CTerm, ModSpec::Named("Phospho".into()))],
+        );
         assert_eq!(r.modified_sequence(), "PEK[Phospho]");
     }
 
@@ -357,7 +370,10 @@ mod tests {
 
     #[test]
     fn unknown_named_mod_errors() {
-        let p = Peptide::new("PEK".into(), vec![(Site::Residue(0), ModSpec::Named("Nope".into()))]);
+        let p = Peptide::new(
+            "PEK".into(),
+            vec![(Site::Residue(0), ModSpec::Named("Nope".into()))],
+        );
         assert!(p.mono_mass().is_err());
     }
 
@@ -398,7 +414,10 @@ mod tests {
         // same. Pin the documented choice explicitly, because they occupy different embedding
         // columns.
         let p = Peptide::parse("PEK[Phospho]").unwrap();
-        assert_eq!(p.mods, vec![(Site::CTerm, ModSpec::Named("Phospho".into()))]);
+        assert_eq!(
+            p.mods,
+            vec![(Site::CTerm, ModSpec::Named("Phospho".into()))]
+        );
         let q = Peptide::parse("[TMT6plex]PEPC[Carbamidomethyl@C]IDER").unwrap();
         assert_eq!(
             q.mods,
@@ -438,14 +457,20 @@ mod tests {
 
     #[test]
     fn mods_sorted_canonical_for_eq_hash() {
-        let a = Peptide::new("ACDEMK".into(), vec![
-            (Site::Residue(4), ModSpec::Named("Oxidation@M".into())),
-            (Site::NTerm, ModSpec::Named("TMT6plex".into())),
-        ]);
-        let b = Peptide::new("ACDEMK".into(), vec![
-            (Site::NTerm, ModSpec::Named("TMT6plex".into())),
-            (Site::Residue(4), ModSpec::Named("Oxidation@M".into())),
-        ]);
+        let a = Peptide::new(
+            "ACDEMK".into(),
+            vec![
+                (Site::Residue(4), ModSpec::Named("Oxidation@M".into())),
+                (Site::NTerm, ModSpec::Named("TMT6plex".into())),
+            ],
+        );
+        let b = Peptide::new(
+            "ACDEMK".into(),
+            vec![
+                (Site::NTerm, ModSpec::Named("TMT6plex".into())),
+                (Site::Residue(4), ModSpec::Named("Oxidation@M".into())),
+            ],
+        );
         assert_eq!(a, b);
     }
 }

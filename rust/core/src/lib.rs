@@ -127,7 +127,9 @@ pub fn predict_peptide_prepared(
 ) -> Result<Prediction> {
     let mut predictions =
         predict_peptide_charges_prepared(art, pep, &[charge], context, min_intensity)?;
-    Ok(predictions.pop().expect("one requested charge yields one prediction"))
+    Ok(predictions
+        .pop()
+        .expect("one requested charge yields one prediction"))
 }
 
 /// Encode a peptide once and run its charge-dependent heads for every requested charge.
@@ -148,18 +150,13 @@ pub fn predict_peptide_charges_prepared(
 
     let predictor = Predictor::new(art);
     let encoded = predictor.encode(pep)?;
-    let rt = predictor.predict_rt(
-        &encoded,
-        context.chrom_shift.as_ref(),
-        context.chrom_affine,
-    )?;
+    let rt = predictor.predict_rt(&encoded, context.chrom_shift.as_ref(), context.chrom_affine)?;
     let mz = chem::fragment_mz_matrix(&rm); // [L-1, n_ion]
     let frag_pos = pep.sequence.len() - 1;
     let modified_sequence = pep.modified_sequence();
     let mut predictions = Vec::with_capacity(charges.len());
 
-    let charge_outputs =
-        predictor.predict_charges(&encoded, charges, context.ms_shift.as_ref())?;
+    let charge_outputs = predictor.predict_charges(&encoded, charges, context.ms_shift.as_ref())?;
     for (&charge, (ms2, ccs)) in charges.iter().zip(charge_outputs) {
         predictions.push(assemble_prediction(
             &modified_sequence,
@@ -207,11 +204,8 @@ pub fn predict_peptide_batch_charges_prepared(
 
     let predictor = Predictor::new(art);
     let encoded = predictor.encode_batch(peptides)?;
-    let rt = predictor.predict_rt_batch(
-        &encoded,
-        context.chrom_shift.as_ref(),
-        context.chrom_affine,
-    )?;
+    let rt =
+        predictor.predict_rt_batch(&encoded, context.chrom_shift.as_ref(), context.chrom_affine)?;
     let charge_outputs =
         predictor.predict_batch_charges(&encoded, charges, context.ms_shift.as_ref())?;
     let frag_pos = seq_len - 1;

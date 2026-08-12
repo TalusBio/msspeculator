@@ -104,9 +104,7 @@ def test_normalized_spectral_angle_matches_identical_and_orthogonal():
 
 
 def test_irt_regression_metrics_are_reusable_without_plotting():
-    metrics = irt_regression_metrics(
-        [RtObservation("A", 0.0, 1.0), RtObservation("B", 10.0, 9.0)]
-    )
+    metrics = irt_regression_metrics([RtObservation("A", 0.0, 1.0), RtObservation("B", 10.0, 9.0)])
     assert metrics.slope == pytest.approx(0.8)
     assert metrics.intercept == pytest.approx(1.0)
     assert metrics.r_squared == pytest.approx(1.0)

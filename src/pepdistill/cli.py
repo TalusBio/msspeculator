@@ -63,7 +63,9 @@ def prepare(
         help="Byte-balanced zero-based array partition INDEX/TOTAL, such as 1/10.",
     ),
     force: bool = typer.Option(False, "--force", help="Rebuild completed shard assets."),
-    dry_run: bool = typer.Option(False, "--dry-run", help="Discover and report tasks without processing."),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Discover and report tasks without processing."
+    ),
 ) -> None:
     """Discover the global shard catalog and prepare one optional range of shards."""
     from .etl.config import PrepareConfig
@@ -107,7 +109,9 @@ def prepare_finalize(
     from .etl.prospect import finalize_catalog
 
     manifest = finalize_catalog(PrepareConfig.load(config), log=typer.echo)
-    typer.echo(f"manifest ready -> {manifest['catalog_uri'].removesuffix('/catalog.json')}/manifest.json")
+    typer.echo(
+        f"manifest ready -> {manifest['catalog_uri'].removesuffix('/catalog.json')}/manifest.json"
+    )
 
 
 @app.command(name="prepare-status")

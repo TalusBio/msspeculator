@@ -55,10 +55,7 @@ def resolve_fasta(
 
     target.parent.mkdir(parents=True, exist_ok=True)
     temporary = target.with_suffix(".fasta.part")
-    url = (
-        "https://rest.uniprot.org/uniprotkb/stream?format=fasta&query="
-        f"proteome%3A{accession}"
-    )
+    url = f"https://rest.uniprot.org/uniprotkb/stream?format=fasta&query=proteome%3A{accession}"
     if log is not None:
         log(f"[fasta] downloading {accession} from UniProt -> {target}")
     started = time.perf_counter()

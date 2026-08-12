@@ -45,7 +45,9 @@ fn parse_spec(obj: &Bound<'_, PyAny>) -> PyResult<ModSpec> {
 }
 
 fn parse_mods(mods: &[(Bound<'_, PyAny>, Bound<'_, PyAny>)]) -> PyResult<Vec<(Site, ModSpec)>> {
-    mods.iter().map(|(s, m)| Ok((parse_site(s)?, parse_spec(m)?))).collect()
+    mods.iter()
+        .map(|(s, m)| Ok((parse_site(s)?, parse_spec(m)?)))
+        .collect()
 }
 
 /// Parse the compact prepared-Parquet representation (`site:spec;...`) without constructing
@@ -58,17 +60,20 @@ fn parse_prepared_peptide(sequence: String, serialized: &str) -> anyhow::Result<
             let (site_raw, spec_raw) = pair
                 .split_once(':')
                 .ok_or_else(|| anyhow::anyhow!("bad prepared modification {pair:?}"))?;
-            let site = match site_raw {
-                "n" => Site::NTerm,
-                "c" => Site::CTerm,
-                value => Site::Residue(value.parse().map_err(|_| {
-                    anyhow::anyhow!("bad prepared modification site {value:?}")
-                })?),
-            };
+            let site =
+                match site_raw {
+                    "n" => Site::NTerm,
+                    "c" => Site::CTerm,
+                    value => Site::Residue(value.parse().map_err(|_| {
+                        anyhow::anyhow!("bad prepared modification site {value:?}")
+                    })?),
+                };
             let spec = if spec_raw.starts_with('+') || spec_raw.starts_with('-') {
-                ModSpec::MassOnly(spec_raw.parse().map_err(|_| {
-                    anyhow::anyhow!("bad prepared mass delta {spec_raw:?}")
-                })?)
+                ModSpec::MassOnly(
+                    spec_raw
+                        .parse()
+                        .map_err(|_| anyhow::anyhow!("bad prepared mass delta {spec_raw:?}"))?,
+                )
             } else {
                 ModSpec::Named(spec_raw.to_string())
             };
@@ -96,7 +101,9 @@ fn spec_to_py(spec: &ModSpec, py: Python<'_>) -> PyObject {
 }
 
 fn mods_to_py(mods: &[(Site, ModSpec)], py: Python<'_>) -> Vec<(PyObject, PyObject)> {
-    mods.iter().map(|(s, m)| (site_to_py(s, py), spec_to_py(m, py))).collect()
+    mods.iter()
+        .map(|(s, m)| (site_to_py(s, py), spec_to_py(m, py)))
+        .collect()
 }
 
 /// `__reduce__` state: (class, (sequence, mods)) — kept as a named alias to satisfy
@@ -113,18 +120,34 @@ impl Peptide {
     #[new]
     #[pyo3(signature = (sequence, mods=Vec::new()))]
     fn new(sequence: String, mods: Vec<(Bound<'_, PyAny>, Bound<'_, PyAny>)>) -> PyResult<Self> {
-        Ok(Self { inner: CorePeptide::new(sequence, parse_mods(&mods)?) })
+        Ok(Self {
+            inner: CorePeptide::new(sequence, parse_mods(&mods)?),
+        })
     }
     #[getter]
-    fn sequence(&self) -> &str { &self.inner.sequence }
+    fn sequence(&self) -> &str {
+        &self.inner.sequence
+    }
     #[getter]
-    fn mods(&self, py: Python<'_>) -> Vec<(PyObject, PyObject)> { mods_to_py(&self.inner.mods, py) }
+    fn mods(&self, py: Python<'_>) -> Vec<(PyObject, PyObject)> {
+        mods_to_py(&self.inner.mods, py)
+    }
     #[getter]
-    fn length(&self) -> usize { self.inner.length() }
-    fn residue_masses(&self) -> PyResult<Vec<f64>> { self.inner.residue_masses().map_err(to_pyerr) }
-    fn mono_mass(&self) -> PyResult<f64> { self.inner.mono_mass().map_err(to_pyerr) }
-    fn precursor_mz(&self, charge: i64) -> PyResult<f64> { self.inner.precursor_mz(charge).map_err(to_pyerr) }
-    fn modified_sequence(&self) -> String { self.inner.modified_sequence() }
+    fn length(&self) -> usize {
+        self.inner.length()
+    }
+    fn residue_masses(&self) -> PyResult<Vec<f64>> {
+        self.inner.residue_masses().map_err(to_pyerr)
+    }
+    fn mono_mass(&self) -> PyResult<f64> {
+        self.inner.mono_mass().map_err(to_pyerr)
+    }
+    fn precursor_mz(&self, charge: i64) -> PyResult<f64> {
+        self.inner.precursor_mz(charge).map_err(to_pyerr)
+    }
+    fn modified_sequence(&self) -> String {
+        self.inner.modified_sequence()
+    }
 
     fn __hash__(&self) -> u64 {
         let mut h = DefaultHasher::new();
@@ -194,7 +217,8 @@ fn mod_element_comp(name: &str) -> PyResult<[i8; pepdistill_core::composition::N
 #[pyfunction]
 fn collate<'py>(
     py: Python<'py>,
-    peptides: Vec<PyRef<'py, Peptide>>, charges: Vec<i64>,
+    peptides: Vec<PyRef<'py, Peptide>>,
+    charges: Vec<i64>,
 ) -> PyResult<Bound<'py, PyDict>> {
     let core_peptides: Vec<CorePeptide> = peptides.iter().map(|p| p.inner.clone()).collect();
     let a = tokenize::collate(&core_peptides, &charges).map_err(to_pyerr)?;
@@ -222,7 +246,9 @@ fn collate_prepared<'py>(
     if sequences.len() != serialized_mods.len() || sequences.len() != charges.len() {
         return Err(pyo3::exceptions::PyValueError::new_err(format!(
             "prepared columns have unequal lengths: sequences={}, mods={}, charges={}",
-            sequences.len(), serialized_mods.len(), charges.len()
+            sequences.len(),
+            serialized_mods.len(),
+            charges.len()
         )));
     }
     let peptides = sequences
@@ -248,7 +274,9 @@ fn collate_prepared<'py>(
 #[pyfunction]
 fn bucket_arrays<'py>(
     py: Python<'py>,
-    peptides: Vec<PyRef<'py, Peptide>>, charges: Vec<i64>, length: usize,
+    peptides: Vec<PyRef<'py, Peptide>>,
+    charges: Vec<i64>,
+    length: usize,
 ) -> PyResult<Bound<'py, PyDict>> {
     let core_peptides: Vec<CorePeptide> = peptides.iter().map(|p| p.inner.clone()).collect();
     let a = bucket::bucket_arrays(&core_peptides, &charges, length).map_err(to_pyerr)?;
@@ -265,7 +293,10 @@ fn bucket_arrays<'py>(
 
 /// (fragment m/z tensor, precursor m/z vector) — named alias to satisfy clippy's
 /// `type_complexity` lint.
-type FragmentMzResult<'py> = (Bound<'py, numpy::PyArray3<f64>>, Bound<'py, numpy::PyArray1<f64>>);
+type FragmentMzResult<'py> = (
+    Bound<'py, numpy::PyArray3<f64>>,
+    Bound<'py, numpy::PyArray1<f64>>,
+);
 
 #[pyfunction]
 fn bucket_fragment_mz<'py>(

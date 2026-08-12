@@ -75,12 +75,10 @@ def substitute_residues(batch: Batch, probability: float) -> Batch:
     original_index = standard_index[rows, columns]
     # Choose uniformly among residues with a different elemental composition. In particular,
     # this excludes I<->L: a zero-delta token swap would carry no compensating modification.
-    replacement_priorities = torch.rand(
-        (rows.numel(), len(_AMINO_ACIDS)), device=device
+    replacement_priorities = torch.rand((rows.numel(), len(_AMINO_ACIDS)), device=device)
+    same_composition = (compositions.unsqueeze(0) == compositions[original_index].unsqueeze(1)).all(
+        dim=2
     )
-    same_composition = (
-        compositions.unsqueeze(0) == compositions[original_index].unsqueeze(1)
-    ).all(dim=2)
     replacement_index = replacement_priorities.masked_fill(same_composition, 2.0).argmin(dim=1)
 
     tokens = batch.tokens.clone()

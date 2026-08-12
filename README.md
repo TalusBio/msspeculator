@@ -40,6 +40,20 @@ manually into the venv instead:
 uv run maturin develop -m rust/Cargo.toml --release
 ```
 
+Repository maintenance is centralized in `Taskfile.yml`:
+
+```bash
+task format       # ruff format, then cargo fmt
+task lint         # ruff check, then workspace clippy
+task check        # format followed by lint
+task sync-rust    # rebuild the editable PyO3 extension after Rust changes
+task test         # sync the extension, then run Python and Rust suites
+uv run pre-commit install
+```
+
+The pre-commit configuration uses local hooks that call `task format` and `task lint`; no remote
+hook repository or independently pinned formatter configuration is involved.
+
 The `fake` teacher (deterministic, dependency-free) is always available for
 development and tests; the real `alphapeptdeep` teacher needs the `teacher` extra.
 

@@ -42,7 +42,9 @@ def build_catalog(out_path: str = "src/pepdistill/data/prospect_catalog.json") -
 
     result: dict = {"_note": "Generated from Zenodo record metadata.", "records": {}}
     for name, record_id in RECORDS.items():
-        with urllib.request.urlopen(f"https://zenodo.org/api/records/{record_id}", timeout=60) as stream:
+        with urllib.request.urlopen(
+            f"https://zenodo.org/api/records/{record_id}", timeout=60
+        ) as stream:
             metadata = json.load(stream)
         result["records"][name] = {
             "record_id": record_id,
@@ -77,7 +79,10 @@ def build_shard_index(
             if not filename.endswith(".zip"):
                 continue
             try:
-                with fsspec.open(entry["url"], "rb").open() as stream, zipfile.ZipFile(stream) as archive:
+                with (
+                    fsspec.open(entry["url"], "rb").open() as stream,
+                    zipfile.ZipFile(stream) as archive,
+                ):
                     result["records"][record][filename] = [
                         [info.filename, info.compress_size, info.file_size]
                         for info in archive.infolist()

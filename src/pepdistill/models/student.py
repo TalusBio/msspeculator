@@ -85,9 +85,7 @@ class FourierFeatures(nn.Module):
 
     def __init__(self, k: int) -> None:
         super().__init__()
-        lam = torch.logspace(
-            math.log10(self.WAVELENGTH_MAX), math.log10(self.WAVELENGTH_MIN), k
-        )
+        lam = torch.logspace(math.log10(self.WAVELENGTH_MAX), math.log10(self.WAVELENGTH_MIN), k)
         # Buffer, not a parameter: the ladder is fixed, and it must travel with the module
         # into checkpoints and ONNX exports.
         self.register_buffer("freq", 2.0 * math.pi / lam)
@@ -256,8 +254,10 @@ class StudentModel(nn.Module):
                 "calibration of an already-trained head."
             )
         for name, value in (
-            ("rt_mean", rt_mean), ("rt_std", rt_std),
-            ("ccs_mean", ccs_mean), ("ccs_std", ccs_std),
+            ("rt_mean", rt_mean),
+            ("rt_std", rt_std),
+            ("ccs_mean", ccs_mean),
+            ("ccs_std", ccs_std),
         ):
             if value is None:
                 continue
@@ -361,7 +361,11 @@ class StudentModel(nn.Module):
 
     def _embed(self, batch: Batch) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         return self._embed_tensors(
-            batch.tokens, batch.mod_comp, batch.mod_mass, batch.mod_present, batch.mod_named,
+            batch.tokens,
+            batch.mod_comp,
+            batch.mod_mass,
+            batch.mod_present,
+            batch.mod_named,
         )
 
     def forward_dense(

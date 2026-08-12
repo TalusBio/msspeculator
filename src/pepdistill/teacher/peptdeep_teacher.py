@@ -42,6 +42,7 @@ def _mod_site(pep, site) -> int:
         )
     return site + 1
 
+
 # peptdeep fragment-intensity columns matching our ION_TYPES, in order.
 _PEPTDEEP_ION_COLS = tuple(f"{ion}_z{z}" for ion, z in ION_TYPES)
 

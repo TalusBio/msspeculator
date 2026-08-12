@@ -267,7 +267,9 @@ def test_fit_from_prebuilt_datasets_trains_and_reports_metrics(tmp_path, capsys)
     assert "train_metrics.jsonl" in mirrored
     assert module.trainer._val_check_time_interval == 3600.0
     assert module.trainer.check_val_every_n_epoch is None
-    records = [json.loads(line) for line in (tmp_path / "train_metrics.jsonl").read_text().splitlines()]
+    records = [
+        json.loads(line) for line in (tmp_path / "train_metrics.jsonl").read_text().splitlines()
+    ]
     assert records[-1]["validation_check"] == 1
     assert records[-1]["global_step"] == 2
     progress = capsys.readouterr().out

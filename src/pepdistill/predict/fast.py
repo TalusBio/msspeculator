@@ -85,8 +85,13 @@ def _bucket_arrays(precs: list[Precursor], length: int):
     charges = [int(p.charge) for p in precs]
     a = _rs.bucket_arrays(peptides, charges, length)
     return (
-        a["tokens"], a["mod_comp"], a["mod_mass"], a["mod_present"], a["mod_named"],
-        a["charge"], a["residue_mass"],
+        a["tokens"],
+        a["mod_comp"],
+        a["mod_mass"],
+        a["mod_present"],
+        a["mod_named"],
+        a["charge"],
+        a["residue_mass"],
     )
 
 

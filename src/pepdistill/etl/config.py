@@ -36,9 +36,13 @@ class PrepareSource:
             if not isinstance(selected, list) or not all(
                 isinstance(value, int) and not isinstance(value, bool) for value in selected
             ):
-                raise ValueError(f"source {values.get('id', '<unknown>')!r}: shards must be 'all' or integers")
+                raise ValueError(
+                    f"source {values.get('id', '<unknown>')!r}: shards must be 'all' or integers"
+                )
             if len(set(selected)) != len(selected) or any(value < 0 for value in selected):
-                raise ValueError(f"source {values.get('id', '<unknown>')!r}: shards must be unique non-negative integers")
+                raise ValueError(
+                    f"source {values.get('id', '<unknown>')!r}: shards must be unique non-negative integers"
+                )
             selected = tuple(selected)
         values["shards"] = selected
         return cls(**values)
@@ -74,7 +78,9 @@ class PrepareGroup:
             value = values.get(key, ("*",) if key == "include" else ())
             if isinstance(value, str):
                 value = (value,)
-            if not isinstance(value, (list, tuple)) or not all(isinstance(item, str) for item in value):
+            if not isinstance(value, (list, tuple)) or not all(
+                isinstance(item, str) for item in value
+            ):
                 raise ValueError(f"prepare group {values['record']!r}: {key} must be a string list")
             values[key] = tuple(value)
         return cls(**values)

@@ -242,8 +242,7 @@ fn write_prediction<W: Write>(
         );
     }
     stats.precursors += 1;
-    let mobility =
-        ccs_to_bruker_mobility(prediction.ccs as f64, charge, prediction.precursor_mz);
+    let mobility = ccs_to_bruker_mobility(prediction.ccs as f64, charge, prediction.precursor_mz);
     if !mobility.is_finite() || mobility <= 0.0 {
         bail!(
             "non-physical mobility for {} charge {}: {}",
@@ -406,8 +405,8 @@ pub fn write_diann_tsv(opts: &LibraryOptions<'_>) -> Result<LibraryStats> {
         mpsc::sync_channel::<Result<Vec<PredictedPeptide>>>(queue_capacity);
     let artifact = Arc::new(artifact);
 
-    let writer_file = File::create(opts.out)
-        .with_context(|| format!("creating library {}", opts.out))?;
+    let writer_file =
+        File::create(opts.out).with_context(|| format!("creating library {}", opts.out))?;
     let writer_handle = thread::spawn(move || -> Result<LibraryStats> {
         let mut writer = BufWriter::new(writer_file);
         writeln!(writer, "ModifiedPeptide\tStrippedPeptide\tPrecursorMz\tPrecursorCharge\tTr_recalibrated\tIonMobility\tProteinID\tDecoy\tFragmentMz\tFragmentType\tFragmentNumber\tFragmentCharge\tFragmentLossType\tRelativeIntensity")?;
@@ -427,24 +426,16 @@ pub fn write_diann_tsv(opts: &LibraryOptions<'_>) -> Result<LibraryStats> {
         let context = context.clone();
         let charges = charges.clone();
         let min_intensity = opts.min_intensity;
-        worker_handles.push(thread::spawn(move || {
-            loop {
-                let work = work_rx.lock().expect("work queue mutex poisoned").recv();
-                match work {
-                    Ok(Some(batch)) => {
-                        let result = predict_batch(
-                            &artifact,
-                            &context,
-                            &charges,
-                            min_intensity,
-                            batch,
-                        );
-                        if result_tx.send(result).is_err() {
-                            break;
-                        }
+        worker_handles.push(thread::spawn(move || loop {
+            let work = work_rx.lock().expect("work queue mutex poisoned").recv();
+            match work {
+                Ok(Some(batch)) => {
+                    let result = predict_batch(&artifact, &context, &charges, min_intensity, batch);
+                    if result_tx.send(result).is_err() {
+                        break;
                     }
-                    Ok(None) | Err(_) => break,
                 }
+                Ok(None) | Err(_) => break,
             }
         }));
     }
@@ -467,19 +458,25 @@ pub fn write_diann_tsv(opts: &LibraryOptions<'_>) -> Result<LibraryStats> {
                 (bucket.len() >= INFERENCE_BATCH_SIZE).then(|| std::mem::take(bucket))
             };
             if let Some(batch) = ready {
-                work_tx.send(Some(batch)).context("sending inference batch")?;
+                work_tx
+                    .send(Some(batch))
+                    .context("sending inference batch")?;
             }
         }
     }
     for batch in pending.into_values().filter(|batch| !batch.is_empty()) {
-        work_tx.send(Some(batch)).context("sending inference batch")?;
+        work_tx
+            .send(Some(batch))
+            .context("sending inference batch")?;
     }
     for _ in 0..worker_count {
         work_tx.send(None).context("stopping inference worker")?;
     }
     drop(work_tx);
     for handle in worker_handles {
-        handle.join().map_err(|_| anyhow::anyhow!("inference worker panicked"))?;
+        handle
+            .join()
+            .map_err(|_| anyhow::anyhow!("inference worker panicked"))?;
     }
     drop(result_tx);
     writer_handle

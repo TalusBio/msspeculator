@@ -43,9 +43,7 @@ pub fn residue_mass(aa: u8) -> Option<f64> {
 /// These are residue formulas (free amino acid minus H2O), in the model's frozen
 /// C,H,N,O,S,P basis. Keeping them beside [`residue_mass`] makes residue substitutions and
 /// their compensating composition deltas use the same chemistry authority as m/z arithmetic.
-pub fn residue_element_comp(
-    aa: u8,
-) -> Option<[i8; crate::composition::N_ELEMENTS]> {
+pub fn residue_element_comp(aa: u8) -> Option<[i8; crate::composition::N_ELEMENTS]> {
     Some(match aa {
         b'A' => [3, 5, 1, 1, 0, 0],
         b'R' => [6, 12, 4, 1, 0, 0],
@@ -160,7 +158,9 @@ pub fn ms2_target_shape(length: usize) -> (usize, usize) {
 mod tests {
     use super::*;
 
-    fn approx(a: f64, b: f64, tol: f64) { assert!((a - b).abs() < tol, "{a} vs {b}"); }
+    fn approx(a: f64, b: f64, tol: f64) {
+        assert!((a - b).abs() < tol, "{a} vs {b}");
+    }
 
     #[test]
     fn mono_mass_peptide() {
@@ -171,7 +171,11 @@ mod tests {
     #[test]
     fn y1_c_terminal_lysine() {
         let rm = residue_masses(b"SAMPLEK").unwrap();
-        approx(fragment_mz(&rm, "y", 1, 1).unwrap(), 128.094963 + H2O + PROTON, 0.001);
+        approx(
+            fragment_mz(&rm, "y", 1, 1).unwrap(),
+            128.094963 + H2O + PROTON,
+            0.001,
+        );
     }
 
     #[test]
@@ -207,7 +211,9 @@ mod tests {
     fn residue_compositions_match_residue_masses() {
         let masses = crate::unimod::nuclide_masses();
         for aa in b'A'..=b'Z' {
-            let Some(expected) = residue_mass(aa) else { continue };
+            let Some(expected) = residue_mass(aa) else {
+                continue;
+            };
             let comp = residue_element_comp(aa).expect("mass-bearing residue needs composition");
             let computed = comp[0] as f64 * masses["C"]
                 + comp[1] as f64 * masses["H"]
@@ -243,7 +249,10 @@ mod tests {
         assert!(unknown.contains("unknown modification"), "{unknown}");
 
         let comp = crate::composition::AtomicComposition::parse("Xx(1)").unwrap();
-        let err = comp.mono_mass(crate::unimod::nuclide_masses()).unwrap_err().to_string();
+        let err = comp
+            .mono_mass(crate::unimod::nuclide_masses())
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("no monoisotopic mass for nuclide"), "{err}");
         assert!(!err.contains("unknown modification"), "{err}");
     }

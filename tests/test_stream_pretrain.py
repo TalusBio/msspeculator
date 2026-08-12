@@ -198,9 +198,7 @@ def test_all_charge_states_keeps_a_peptide_together_at_every_charge():
 
     cfg = DigestConfig(min_charge=2, max_charge=4, max_variable_mods=1)
     seqs = ["SAMPLER", "PEPTIDEMK", "ACDEFGHIK"]
-    out = precursors_from_sequences(
-        seqs, cfg, np.random.default_rng(0), all_charge_states=True
-    )
+    out = precursors_from_sequences(seqs, cfg, np.random.default_rng(0), all_charge_states=True)
 
     assert len(out) == len(seqs) * 3, "expected every charge per sequence"
     for i, seq in enumerate(seqs):

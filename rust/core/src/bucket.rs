@@ -79,7 +79,10 @@ pub fn bucket_arrays(
 /// Vectorized fragment m/z and precursor m/z for a same-length bucket.
 ///
 /// Returns `(mz [B, L-1, n_ion], precursor_mz [B])`.
-pub fn bucket_fragment_mz(residue_mass: &Array2<f64>, charge: &Array1<i64>) -> (Array3<f64>, Array1<f64>) {
+pub fn bucket_fragment_mz(
+    residue_mass: &Array2<f64>,
+    charge: &Array1<i64>,
+) -> (Array3<f64>, Array1<f64>) {
     let b = residue_mass.nrows();
     let l = residue_mass.ncols();
     let n_ion = ION_TYPES.len();
@@ -129,7 +132,10 @@ mod tests {
         let ba = bucket_arrays(
             &[Peptide::new(
                 "AC".into(),
-                vec![(Site::Residue(1), ModSpec::Named("Carbamidomethyl@C".to_string()))],
+                vec![(
+                    Site::Residue(1),
+                    ModSpec::Named("Carbamidomethyl@C".to_string()),
+                )],
             )],
             &[2],
             2,

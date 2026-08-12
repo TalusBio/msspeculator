@@ -1,0 +1,17 @@
+repos:
+  - repo: local
+    hooks:
+      - id: format
+        name: format Python and Rust
+        entry: task format
+        language: system
+        pass_filenames: false
+        always_run: true
+        require_serial: true
+      - id: lint
+        name: lint Python and Rust
+        entry: task lint
+        language: system
+        pass_filenames: false
+        always_run: true
+        require_serial: true

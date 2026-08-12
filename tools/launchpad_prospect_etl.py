@@ -41,7 +41,17 @@ def main() -> None:
     args = parser.parse_args()
     if not Path("pyproject.toml").exists():
         raise SystemExit("stage is incomplete; run tools/prepare_launchpad_full_run.py first")
-    command = ["uv", "run", "--project", ".", "--extra", "etl", "pepdistill", "prepare", str(args.config)]
+    command = [
+        "uv",
+        "run",
+        "--project",
+        ".",
+        "--extra",
+        "etl",
+        "pepdistill",
+        "prepare",
+        str(args.config),
+    ]
     range_spec = args.range_spec or os.environ.get("PEPDISTILL_PREPARE_RANGE")
     if range_spec:
         command.extend(["--range", range_spec])

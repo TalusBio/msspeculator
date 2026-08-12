@@ -16,9 +16,7 @@ def _precs():
 
 def test_preset_sweep_contract():
     assert set(PRESETS) == {"flash", "small-2h", "small", "base-4h", "base"}
-    dimensions = {
-        name: (cfg.d_model, cfg.n_layers, cfg.n_heads) for name, cfg in PRESETS.items()
-    }
+    dimensions = {name: (cfg.d_model, cfg.n_layers, cfg.n_heads) for name, cfg in PRESETS.items()}
     assert dimensions["small-2h"] == (64, 2, 2)
     assert dimensions["small"] == (64, 2, 4)
     assert dimensions["base-4h"] == (128, 4, 4)
@@ -121,9 +119,21 @@ def test_set_norm_leaves_unspecified_stats_untouched():
     assert float(model.ccs_mean) == 400.0, "CCS calibration was clobbered"
     assert float(model.ccs_std) == 25.0, "CCS calibration was clobbered"
     # And the round trip still lands in native units.
-    assert abs(float(model.denormalize(
-        {"ms2": torch.zeros(1, 1, 1), "rt": torch.tensor([0.0]), "ccs": torch.tensor([1.0])}
-    )["ccs"]) - 425.0) < 1e-4
+    assert (
+        abs(
+            float(
+                model.denormalize(
+                    {
+                        "ms2": torch.zeros(1, 1, 1),
+                        "rt": torch.tensor([0.0]),
+                        "ccs": torch.tensor([1.0]),
+                    }
+                )["ccs"]
+            )
+            - 425.0
+        )
+        < 1e-4
+    )
 
 
 def test_set_norm_rejects_non_finite():

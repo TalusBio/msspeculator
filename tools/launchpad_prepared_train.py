@@ -37,7 +37,9 @@ def _selected_preset() -> str:
         return explicit
     presets = tuple(
         value.strip()
-        for value in os.environ.get("PEPDISTILL_TRAIN_PRESETS", ",".join(DEFAULT_PRESETS)).split(",")
+        for value in os.environ.get("PEPDISTILL_TRAIN_PRESETS", ",".join(DEFAULT_PRESETS)).split(
+            ","
+        )
         if value.strip()
     )
     index_raw = os.environ.get("AWS_BATCH_JOB_ARRAY_INDEX")
@@ -55,9 +57,21 @@ def main() -> None:
     if not config.exists():
         raise SystemExit("stage is incomplete; run tools/prepare_launchpad_full_run.py first")
     command = [
-        "uv", "run", "--project", ".", "--extra", "teacher", "--extra", "etl",
-        "--extra", "tracking",
-        "pepdistill", "run", str(config), "--device", "cpu",
+        "uv",
+        "run",
+        "--project",
+        ".",
+        "--extra",
+        "teacher",
+        "--extra",
+        "etl",
+        "--extra",
+        "tracking",
+        "pepdistill",
+        "run",
+        str(config),
+        "--device",
+        "cpu",
     ]
     if checkpoint := os.environ.get("PEPDISTILL_MODEL_IN"):
         command.extend(["--model-in", checkpoint])

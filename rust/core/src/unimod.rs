@@ -76,9 +76,22 @@ fn tables() -> &'static Tables {
             });
         }
 
-        let by_acc = entries.iter().enumerate().map(|(i, e)| (e.accession, i)).collect();
-        let by_title = entries.iter().enumerate().map(|(i, e)| (e.title.clone(), i)).collect();
-        Tables { masses, entries, by_acc, by_title }
+        let by_acc = entries
+            .iter()
+            .enumerate()
+            .map(|(i, e)| (e.accession, i))
+            .collect();
+        let by_title = entries
+            .iter()
+            .enumerate()
+            .map(|(i, e)| (e.title.clone(), i))
+            .collect();
+        Tables {
+            masses,
+            entries,
+            by_acc,
+            by_title,
+        }
     })
 }
 
@@ -129,7 +142,10 @@ mod tests {
             assert!(
                 (computed - e.mono_mass).abs() < 1e-5,
                 "accession {} ({}): computed {} vs vendored {}",
-                e.accession, e.title, computed, e.mono_mass
+                e.accession,
+                e.title,
+                computed,
+                e.mono_mass
             );
         }
     }
@@ -144,10 +160,14 @@ mod tests {
         assert!(ELEMENTS_TSV.lines().next().unwrap().starts_with('#'));
         assert!(UNIMOD_TSV.lines().next().unwrap().starts_with('#'));
 
-        let elements_data_lines =
-            ELEMENTS_TSV.lines().filter(|l| !l.is_empty() && !l.starts_with('#')).count();
-        let unimod_data_lines =
-            UNIMOD_TSV.lines().filter(|l| !l.is_empty() && !l.starts_with('#')).count();
+        let elements_data_lines = ELEMENTS_TSV
+            .lines()
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .count();
+        let unimod_data_lines = UNIMOD_TSV
+            .lines()
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .count();
         assert_eq!(nuclide_masses().len(), elements_data_lines);
         assert_eq!(all_entries().len(), unimod_data_lines);
     }

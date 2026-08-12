@@ -34,9 +34,7 @@ def test_prepared_prefix_parses(tmp_path):
 
 
 def test_prepared_loader_workers_parse(tmp_path):
-    cfg = RunConfig.from_toml(
-        _write(tmp_path, BASE + "\nnum_workers = 2\nmodel_threads = 3\n")
-    )
+    cfg = RunConfig.from_toml(_write(tmp_path, BASE + "\nnum_workers = 2\nmodel_threads = 3\n"))
     assert cfg.train.num_workers == 2
     assert cfg.train.model_threads == 3
 
@@ -48,13 +46,16 @@ def test_enabled_train_requires_prepared_prefix(tmp_path):
 
 
 def test_removed_raw_sources_fail_loudly(tmp_path):
-    text = BASE.replace('prepared_prefix = "s3://bucket/prepared/v1"', "") + """
+    text = (
+        BASE.replace('prepared_prefix = "s3://bucket/prepared/v1"', "")
+        + """
 [[train.sources]]
 record = "prospect"
 meta = "pool_meta.parquet"
 zip = "pool.zip"
 shards = "all"
 """
+    )
     with pytest.raises(ValueError, match=r"\[train.sources\] was removed"):
         RunConfig.from_toml(_write(tmp_path, text))
 
@@ -85,7 +86,9 @@ def test_remote_output_and_pretrain_checkpoint_interval_parse(tmp_path):
 
 
 def test_wandb_tracking_config_parses(tmp_path):
-    text = BASE + '''
+    text = (
+        BASE
+        + """
 [tracking]
 enabled = true
 project = "spectra"
@@ -93,7 +96,8 @@ group = "full-v1"
 tags = ["base", "non-test"]
 mode = "offline"
 min_log_interval_seconds = 12.5
-'''
+"""
+    )
     cfg = RunConfig.from_toml(_write(tmp_path, text))
     assert cfg.tracking.enabled
     assert cfg.tracking.project == "spectra"
@@ -108,7 +112,7 @@ def test_training_diagnostics_config_parses(tmp_path):
         _write(
             tmp_path,
             BASE
-            + '''
+            + """
 [diagnostics]
 enabled = true
 teacher = "fake"
@@ -116,7 +120,7 @@ butterflies = 5
 every_n_epochs = 2
 interval_minutes = 30
 render_initial = false
-''',
+""",
         )
     )
     assert cfg.diagnostics.enabled
@@ -129,23 +133,19 @@ render_initial = false
 
 def test_training_diagnostics_config_rejects_invalid_frequency(tmp_path):
     with pytest.raises(ValueError, match="interval_minutes"):
-        RunConfig.from_toml(
-            _write(tmp_path, BASE + "\n[diagnostics]\ninterval_minutes = -1\n")
-        )
+        RunConfig.from_toml(_write(tmp_path, BASE + "\n[diagnostics]\ninterval_minutes = -1\n"))
 
 
 def test_augmentation_and_wall_clock_validation_config_parse(tmp_path):
-    text = BASE.replace(
-        "epochs = 5", "epochs = 5\nvalidation_interval_minutes = 30"
-    )
+    text = BASE.replace("epochs = 5", "epochs = 5\nvalidation_interval_minutes = 30")
     cfg = RunConfig.from_toml(
         _write(
             tmp_path,
             text
-            + '''
+            + """
 [augmentation]
 residue_substitution_probability = 0.01
-''',
+""",
         )
     )
     assert cfg.augmentation.residue_substitution_probability == pytest.approx(0.01)
@@ -162,5 +162,7 @@ def test_invalid_augmentation_probability_and_validation_interval_fail(tmp_path)
         )
     with pytest.raises(ValueError, match="validation_interval_minutes"):
         RunConfig.from_toml(
-            _write(tmp_path, BASE.replace("epochs = 5", "epochs = 5\nvalidation_interval_minutes = 0"))
+            _write(
+                tmp_path, BASE.replace("epochs = 5", "epochs = 5\nvalidation_interval_minutes = 0")
+            )
         )

@@ -184,17 +184,14 @@ def _frame_batch(frame: pl.DataFrame, encoder) -> RealBatch:
     # Equal-length buckets also have equal-length fragment vectors. Convert the Arrow list
     # column directly to one dense array, avoiding a Python list per spectrum.
     flat_ms2 = (
-        frame["ms2"].list.to_array(sites * len(ION_TYPES)).to_numpy()
-        .astype(np.float32, copy=True)
+        frame["ms2"].list.to_array(sites * len(ION_TYPES)).to_numpy().astype(np.float32, copy=True)
     )
     expected_shape = (frame.height, sites * len(ION_TYPES))
     if flat_ms2.shape != expected_shape:
         raise ValueError(
             f"prepared batch has ms2 shape {flat_ms2.shape}; expected {expected_shape}"
         )
-    ms2 = torch.zeros(
-        frame.height, inputs.frag_mask.shape[1], len(ION_TYPES), dtype=torch.float32
-    )
+    ms2 = torch.zeros(frame.height, inputs.frag_mask.shape[1], len(ION_TYPES), dtype=torch.float32)
     ms2[:, FRAG_OFFSET : FRAG_OFFSET + sites] = torch.from_numpy(
         flat_ms2.reshape((frame.height, sites, len(ION_TYPES)))
     )
@@ -210,9 +207,7 @@ def _frame_batch(frame: pl.DataFrame, encoder) -> RealBatch:
     factors = MSFactors(
         instrument_id=id_tensor([encoder.instrument_id(x) for x in frame["instrument"]]),
         detector_id=id_tensor([encoder.detector_id(x) for x in frame["detector"]]),
-        fragmentation_id=id_tensor(
-            [encoder.fragmentation_id(x) for x in frame["fragmentation"]]
-        ),
+        fragmentation_id=id_tensor([encoder.fragmentation_id(x) for x in frame["fragmentation"]]),
         energy=float_tensor("energy"),
     )
     labeled = LabeledBatch(
@@ -224,9 +219,7 @@ def _frame_batch(frame: pl.DataFrame, encoder) -> RealBatch:
     return RealBatch(
         base=labeled,
         raw_rt=float_tensor("raw_rt"),
-        dataset_id=torch.from_numpy(
-            frame["_dataset_id"].to_numpy().astype(np.int64, copy=True)
-        ),
+        dataset_id=torch.from_numpy(frame["_dataset_id"].to_numpy().astype(np.int64, copy=True)),
         ms_factors=factors,
     )
 
@@ -325,9 +318,7 @@ class PreparedStreamingDataset:
                         f"rows={frame.height:,}, open={open_seconds:.3f}s, "
                         f"read_decode={read_seconds:.3f}s{transfer}"
                     )
-                frame = frame.with_columns(
-                    pl.lit(dataset_id, dtype=pl.Int64).alias("_dataset_id")
-                )
+                frame = frame.with_columns(pl.lit(dataset_id, dtype=pl.Int64).alias("_dataset_id"))
                 for offset in range(0, frame.height, self.row_group_size):
                     yield frame.slice(offset, self.row_group_size)
             finally:
@@ -343,11 +334,7 @@ class PreparedStreamingDataset:
     def batches(
         self, batch_size: int, shuffle: bool, generator: torch.Generator
     ) -> Iterator[RealBatch]:
-        epoch = (
-            int(torch.randint(0, 2**31 - 1, (1,), generator=generator).item())
-            if shuffle
-            else 0
-        )
+        epoch = int(torch.randint(0, 2**31 - 1, (1,), generator=generator).item()) if shuffle else 0
         pending: dict[int, pl.DataFrame] = {}
         for frame in self._iter_frames(epoch, shuffle):
             for group in frame.partition_by("_sequence_length", maintain_order=True):
