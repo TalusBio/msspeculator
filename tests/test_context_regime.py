@@ -5,7 +5,9 @@ base RT head (context-free) should track iRT; the runbook's dataset row should a
 per-dataset offset.
 """
 
+import json
 import math
+from datetime import timedelta
 
 import pytest
 import torch
@@ -250,6 +252,8 @@ def test_fit_from_prebuilt_datasets_trains_and_reports_metrics(tmp_path, capsys)
         progress_metrics_path=tmp_path / "train_metrics.jsonl",
         checkpoint_dir=tmp_path,
         artifact_mirror=lambda path: mirrored.append(path.name),
+        val_check_interval=timedelta(hours=1),
+        check_val_every_n_epoch=None,
     )
     assert module.dataset_index == {"pool": 1}
     metrics = module.trainer.callback_metrics
@@ -261,6 +265,11 @@ def test_fit_from_prebuilt_datasets_trains_and_reports_metrics(tmp_path, capsys)
     assert "latest.ckpt" in mirrored
     assert "best.ckpt" in mirrored
     assert "train_metrics.jsonl" in mirrored
+    assert module.trainer._val_check_time_interval == 3600.0
+    assert module.trainer.check_val_every_n_epoch is None
+    records = [json.loads(line) for line in (tmp_path / "train_metrics.jsonl").read_text().splitlines()]
+    assert records[-1]["validation_check"] == 1
+    assert records[-1]["global_step"] == 2
     progress = capsys.readouterr().out
     assert "approximately 2 batches" in progress
     assert "batch 1/~2 (50.0%)" in progress
@@ -292,13 +301,14 @@ def test_validation_early_stop_ignores_sanity_check_missing_keys():
     assert callback.bad == 0
 
 
-def test_validation_early_stop_reports_current_and_best_each_epoch():
+def test_validation_early_stop_reports_current_and_best_each_check():
     lines = []
 
     class Trainer:
         callback_metrics = {"val/pool/spectral_angle": torch.tensor(0.5)}
         sanity_checking = False
         current_epoch = 2
+        global_step = 123
         print = lines.append
         should_stop = False
 
@@ -307,7 +317,7 @@ def test_validation_early_stop_reports_current_and_best_each_epoch():
     )
     callback.on_validation_epoch_end(Trainer(), None)
     assert lines == [
-        "[early-stop] epoch 3: mean spectral agreement current=0.5000, "
+        "[early-stop] validation check at epoch 3, step 123: mean spectral agreement current=0.5000, "
         "best=0.5000, bad=0/5 (new best)"
     ]
 
@@ -319,6 +329,7 @@ def test_validation_early_stop_treats_higher_agreement_as_better():
         callback_metrics = {"val/pool/spectral_angle": torch.tensor(0.5)}
         sanity_checking = False
         current_epoch = 0
+        global_step = 1
         print = lines.append
         should_stop = False
 

@@ -27,6 +27,7 @@ import time
 import tomllib
 import warnings
 from dataclasses import asdict, dataclass, field, replace
+from datetime import timedelta
 from pathlib import Path
 
 import fsspec
@@ -138,9 +139,31 @@ class TrainCfg:
     lr: float = 1e-3
     loss_weights: tuple[float, float, float] = (1.0, 1.0, 1.0)  # ms2, irt, raw_rt
     mod_align_weight: float = 1.0
-    # Validation spectral-angle early stop; 0 disables it. Patience is in real-data epochs.
+    # Validation spectral-angle early stop; 0 disables it. Patience counts validation checks.
     early_stop_patience: int = 0
     early_stop_min_delta: float = 1e-3
+    # Lightning's native wall-clock interval runs validation after the first completed batch
+    # that crosses this duration. Long streaming epochs therefore get useful feedback without
+    # tying validation cadence to corpus size.
+    validation_interval_minutes: float = 60.0
+
+    def __post_init__(self) -> None:
+        if self.validation_interval_minutes <= 0:
+            raise ValueError("[train] validation_interval_minutes must be positive")
+
+
+@dataclass
+class AugmentationCfg:
+    """Chemistry-preserving input augmentation shared by both training stages."""
+
+    # Probability per peptide; selected peptides receive exactly one residue substitution.
+    residue_substitution_probability: float = 0.0
+
+    def __post_init__(self) -> None:
+        if not 0.0 <= self.residue_substitution_probability <= 1.0:
+            raise ValueError(
+                "[augmentation] residue_substitution_probability must be between 0 and 1"
+            )
 
 
 # What the real-data stage trains on — and therefore the population the RT affine is estimated
@@ -237,6 +260,7 @@ class RunConfig:
     bench: BenchCfg = field(default_factory=BenchCfg)
     tracking: TrackingCfg = field(default_factory=TrackingCfg)
     diagnostics: DiagnosticsCfg = field(default_factory=DiagnosticsCfg)
+    augmentation: AugmentationCfg = field(default_factory=AugmentationCfg)
 
     @classmethod
     def from_toml(cls, path: str | Path) -> "RunConfig":
@@ -264,6 +288,7 @@ class RunConfig:
             bench=BenchCfg(**raw.get("bench", {})),
             tracking=TrackingCfg(**raw.get("tracking", {})),
             diagnostics=DiagnosticsCfg(**raw.get("diagnostics", {})),
+            augmentation=AugmentationCfg(**raw.get("augmentation", {})),
         )
 
 
@@ -526,11 +551,15 @@ def _run_pretrain(
         onecycle_pct_start=p.onecycle_pct_start,
         onecycle_div_factor=p.onecycle_div_factor,
         onecycle_final_div_factor=p.onecycle_final_div_factor,
+        residue_substitution_probability=(
+            cfg.augmentation.residue_substitution_probability
+        ),
     )
     log(
         f"[pretrain] stream: {[m.name for m in spc.mixes]}, NCE {spc.nce_range}, "
         f"{spc.passes} pass(es), chunk {spc.chunk_size}, "
-        f"OneCycle max_lr={spc.onecycle_max_lr} over {spc.onecycle_total_steps} step(s)"
+        f"OneCycle max_lr={spc.onecycle_max_lr} over {spc.onecycle_total_steps} step(s), "
+        f"residue augmentation={spc.residue_substitution_probability:.2%} of peptides"
     )
     module = fit_stream_pretrain(
         model,
@@ -687,7 +716,10 @@ def run_pipeline(cfg: RunConfig, log=print) -> dict:
         log(
             f"[train] streaming prepared chunks directly; "
             f"train rows={len(train_ds):,}, val rows={len(val_ds):,}, "
-            f"loader workers={cfg.train.num_workers}, model threads={torch.get_num_threads()}"
+            f"loader workers={cfg.train.num_workers}, model threads={torch.get_num_threads()}, "
+            f"validation every {cfg.train.validation_interval_minutes:g} min, "
+            f"residue augmentation="
+            f"{cfg.augmentation.residue_substitution_probability:.2%} of peptides"
         )
         diagnostic_callbacks = (
             [_diagnostic_callback(cfg, diagnostic_renderer, "train", mirror, tracking)]
@@ -711,8 +743,13 @@ def run_pipeline(cfg: RunConfig, log=print) -> dict:
             mod_align_weight=cfg.train.mod_align_weight,
             early_stop_patience=cfg.train.early_stop_patience,
             early_stop_min_delta=cfg.train.early_stop_min_delta,
-            # A sanity pass delays the first training batch and is redundant with the full
-            # per-epoch validation performed by this streaming regime.
+            residue_substitution_probability=(
+                cfg.augmentation.residue_substitution_probability
+            ),
+            val_check_interval=timedelta(minutes=cfg.train.validation_interval_minutes),
+            check_val_every_n_epoch=None,
+            # A sanity pass delays the first training batch and is redundant with the first
+            # wall-clock validation check.
             num_sanity_val_steps=0,
             enable_progress_bar=False,
             progress_metrics_path=out / "train_metrics.jsonl",

@@ -30,7 +30,8 @@ deferred until it solves a measured deployment need.
   safetensors inference, and DIA-NN library generation.
 - Real-data validation is deduplicated and logged per dataset. Early stopping follows mean
   per-dataset spectral agreement and errors if an expected metric is missing.
-- Real training logs progress and per-epoch metrics, and saves `latest.ckpt` and `best.ckpt`.
+- Real training logs progress and per-validation-check metrics, and saves `latest.ckpt` and
+  `best.ckpt`.
   Pretraining uses OneCycle by default, logs learning rate, and saves `pretrain.ckpt` plus
   periodic warm-start snapshots. All durable artifacts can be mirrored incrementally to a
   per-run object-store prefix; checkpoints can be loaded directly from that prefix.
@@ -44,6 +45,12 @@ deferred until it solves a measured deployment need.
 - CPU training uses exact-length dense batches, direct Polars-to-tensor collation, and disjoint
   persistent shard-loader workers. The cloud launcher now requests 8 vCPUs: four model threads
   plus four single-threaded Polars workers, instead of reserving 31 vCPUs for one trainer.
+- Training optionally applies chemistry-preserving residue substitutions to a configured
+  fraction of peptides. The exact original-minus-replacement elemental composition and mass
+  keep all targets invariant; production full-run configs currently select 1% of peptides.
+- Real-data validation runs on a wall-clock cadence (hourly in full-run configs) rather than
+  waiting for the end of multi-hour streaming epochs, plus one final check if needed. Early-stop
+  patience counts checks.
 - The full preparation config selects all non-test `prospect`, `tmt`, `multi_ptm`, and `tmt_ptm`
   archives. The separately labelled `test_ptm` record is excluded from training.
 
@@ -62,8 +69,8 @@ deferred until it solves a measured deployment need.
 5. **Close checkpoint/data-contract debt.** Serialize dataset names atomically with
    `ChromRunbook` rows, remove obsolete test-only real-data decode paths, and consolidate the
    duplicated RT-normalization implementations.
-6. **Evaluate representation augmentation.** Add residue composition plus a compositional
-   `Delta` modification variant before testing chemically equivalent residue/delta encodings.
+6. **Evaluate representation augmentation.** Compare the 1%-of-peptides chemistry-preserving
+   substitution run against an unaugmented control before changing its rate or policy.
 7. **Regenerate vendored UNIMOD assets reproducibly.** Refresh the generation logic from the
    upstream source and verify the checked-in result.
 8. **Evaluate prepared-data curation.** Materialize chromatographic/identification QC and

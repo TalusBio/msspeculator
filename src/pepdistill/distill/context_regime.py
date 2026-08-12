@@ -39,6 +39,8 @@ import torch
 from lightning.pytorch.callbacks import LearningRateMonitor
 from torch.utils.data import DataLoader
 
+from ..data.augmentation import substitute_residues
+from ..data.encode import Batch
 from ..data.precursors import Precursor
 from ..eval import best_per_key, ms2_intensity, precursor_key
 from ..models.context import ChromRunbook, MSContextEncoder
@@ -147,6 +149,7 @@ class RealSpeclibModule(L.LightningModule):
         dataset_index: dict[str, int] | None = None,
         freeze_backbone: bool = False,
         mod_align_weight: float = 1.0,
+        residue_substitution_probability: float = 0.0,
     ) -> None:
         super().__init__()
         self.model = model
@@ -158,6 +161,10 @@ class RealSpeclibModule(L.LightningModule):
         # Ties mass_enc onto a stop-gradiented comp_enc (see losses.mod_align_loss); a separate
         # scalar rather than a 4th slot in loss_weights, which already means (ms2, irt, raw_rt).
         self.mod_align_weight = mod_align_weight
+        if not 0.0 <= residue_substitution_probability <= 1.0:
+            raise ValueError("residue_substitution_probability must be between 0 and 1")
+        self.residue_substitution_probability = residue_substitution_probability
+        self.last_validation_step: int | None = None
         # dataset name -> chrom_context row; needed to address a trained dataset at inference.
         self.dataset_index = dataset_index
         self.dataset_names = (
@@ -184,7 +191,9 @@ class RealSpeclibModule(L.LightningModule):
     ) -> RealBatch:
         return batch.to(device)
 
-    def _forward(self, rb: RealBatch) -> dict[str, torch.Tensor]:
+    def _forward(
+        self, rb: RealBatch, inputs: Batch | None = None
+    ) -> dict[str, torch.Tensor]:
         ms_context = self.encoder(
             rb.ms_factors.instrument_id,
             rb.ms_factors.detector_id,
@@ -198,7 +207,7 @@ class RealSpeclibModule(L.LightningModule):
         chrom_context = self.runbook(rb.dataset_id)
         chrom_affine = self.runbook.affine(rb.dataset_id)
         return self.model.forward_context(
-            rb.base.inputs,
+            rb.base.inputs if inputs is None else inputs,
             ms_context=ms_context,
             chrom_context=chrom_context,
             chrom_affine=chrom_affine,
@@ -206,8 +215,9 @@ class RealSpeclibModule(L.LightningModule):
 
     def training_step(self, rb: RealBatch, batch_idx: int) -> torch.Tensor:
         w_ms2, w_irt, w_raw = self.loss_weights
-        out = self._forward(rb)
         lb = rb.base
+        inputs = substitute_residues(lb.inputs, self.residue_substitution_probability)
+        out = self._forward(rb, inputs)
         loss_ms2 = ms2_cosine_loss(out["ms2"], lb.ms2_target, lb.inputs.frag_mask)
         # rt_base (context-free) -> iRT; the chrom_context-conditioned rt -> this dataset's raw RT.
         loss_irt = torch.nn.functional.mse_loss(
@@ -217,9 +227,13 @@ class RealSpeclibModule(L.LightningModule):
         loss = w_ms2 * loss_ms2 + w_irt * loss_irt + w_raw * loss_raw
         log = {"train_ms2": loss_ms2, "train_irt": loss_irt, "train_rawrt": loss_raw}
         if self.mod_align_weight:
-            align = mod_align_loss(out["mod_g"], out["mod_m"], lb.inputs.mod_named)
+            align = mod_align_loss(out["mod_g"], out["mod_m"], inputs.mod_named)
             log["train_mod_align"] = align.detach()
             loss = loss + self.mod_align_weight * align
+        if self.residue_substitution_probability:
+            log["train_residue_augmented_fraction"] = (
+                (inputs.tokens != lb.inputs.tokens).any(dim=1).float().mean()
+            )
         e = rb.ms_factors.energy
         if e is not None:
             present = int(torch.isfinite(e).sum())
@@ -260,6 +274,12 @@ class RealSpeclibModule(L.LightningModule):
             )
             self.log(f"{prefix}/n", float(n), reduce_fx="sum")
 
+    def on_validation_epoch_end(self) -> None:
+        # Used by the fit wrapper to guarantee one final validation when a short run finishes
+        # before its first wall-clock check, without repeating a check that already ran after
+        # the last optimizer step.
+        self.last_validation_step = int(self.global_step)
+
     def configure_optimizers(self) -> torch.optim.Optimizer:
         # Optimize every trainable parameter across the registered submodules (model + runbook +
         # encoder); with freeze_backbone the model's are already requires_grad=False, so this
@@ -290,8 +310,9 @@ class _RealTrainProgress(L.Callback):
         self.estimated_batches = estimated_batches
         self._started = 0.0
         self._examples = 0
+        self._validation_check = 0
 
-    def _write_epoch_metrics(self, trainer: L.Trainer) -> None:
+    def _write_validation_metrics(self, trainer: L.Trainer) -> None:
         if self.metrics_path is None:
             return
         values = {}
@@ -300,7 +321,13 @@ class _RealTrainProgress(L.Callback):
                 continue
             values[key] = float(value.detach().cpu())
         lr = float(trainer.optimizers[0].param_groups[0]["lr"])
-        record = {"epoch": trainer.current_epoch + 1, "lr": lr, **values}
+        record = {
+            "validation_check": self._validation_check,
+            "epoch": trainer.current_epoch + 1,
+            "global_step": trainer.global_step,
+            "lr": lr,
+            **values,
+        }
         self.metrics_path.parent.mkdir(parents=True, exist_ok=True)
         with self.metrics_path.open("a") as fh:
             fh.write(json.dumps(record, sort_keys=True) + "\n")
@@ -357,7 +384,10 @@ class _RealTrainProgress(L.Callback):
         )
 
     def on_validation_epoch_end(self, trainer: L.Trainer, pl_module: L.LightningModule) -> None:
-        self._write_epoch_metrics(trainer)
+        if trainer.sanity_checking:
+            return
+        self._validation_check += 1
+        self._write_validation_metrics(trainer)
         names = sorted(k for k in trainer.callback_metrics if k.startswith("val/"))
         if names:
             # Keep the line compact; the full per-dataset values remain in callback_metrics and
@@ -367,7 +397,10 @@ class _RealTrainProgress(L.Callback):
                 for k in names
                 if "/n" not in k
             )
-            trainer.print(f"[val] epoch {trainer.current_epoch + 1}: {preview}")
+            trainer.print(
+                f"[val] check {self._validation_check}, epoch {trainer.current_epoch + 1}, "
+                f"step {trainer.global_step:,}: {preview}"
+            )
 
 
 class _RealValidationEarlyStop(L.Callback):
@@ -413,7 +446,8 @@ class _RealValidationEarlyStop(L.Callback):
             self.bad += 1
         trainer_print = getattr(trainer, "print", print)
         trainer_print(
-            f"[early-stop] epoch {trainer.current_epoch + 1}: mean spectral agreement "
+            f"[early-stop] validation check at epoch {trainer.current_epoch + 1}, "
+            f"step {trainer.global_step:,}: mean spectral agreement "
             f"current={current:.4f}, best={self.best:.4f}, "
             f"bad={self.bad}/{self.patience}"
             f"{' (new best)' if improved else ''}"
@@ -422,7 +456,7 @@ class _RealValidationEarlyStop(L.Callback):
             trainer.should_stop = True
             trainer_print(
                 f"[early-stop] validation spectral agreement plateaued at {current:.4f} "
-                f"(best {self.best:.4f}) -> stopping after epoch {trainer.current_epoch + 1}"
+                f"(best {self.best:.4f}) -> stopping at step {trainer.global_step:,}"
             )
 
 
@@ -568,6 +602,7 @@ def fit_realspeclib_datasets(
     artifact_mirror=None,
     early_stop_patience: int = 0,
     early_stop_min_delta: float = 1e-3,
+    residue_substitution_probability: float = 0.0,
     num_workers: int = 0,
     **trainer_kwargs,
 ) -> RealSpeclibModule:
@@ -595,6 +630,7 @@ def fit_realspeclib_datasets(
         dataset_index=dataset_index,
         freeze_backbone=freeze_backbone,
         mod_align_weight=mod_align_weight,
+        residue_substitution_probability=residue_substitution_probability,
     )
 
     if num_workers < 0:
@@ -655,7 +691,15 @@ def fit_realspeclib_datasets(
         )
         callbacks.insert(0, _RealCheckpoint(checkpoint_dir, checkpoint_keys, artifact_mirror))
     trainer = build_trainer(epochs, accelerator, grad_clip, callbacks=callbacks, **trainer_kwargs)
-    trainer.fit(module, loader(train_ds, True), loader(val_ds, False))
+    train_loader = loader(train_ds, True)
+    val_loader = loader(val_ds, False)
+    trainer.fit(module, train_loader, val_loader)
+    if val_loader is not None and module.last_validation_step != trainer.global_step:
+        trainer.print(
+            f"[val] running final check at step {trainer.global_step:,}; "
+            "the last optimizer step has not been validated"
+        )
+        trainer.validate(module, val_loader, verbose=False)
     return module
 
 

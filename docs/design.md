@@ -39,6 +39,12 @@ transformer padding/masks and allowing Parquet decode and tensor collation to ov
 - Rust (`rust/core`) is the single source of truth for peptide parsing, chemistry, tokenization,
   fragment m/z, tensor packing, and the standalone student forward pass. Python imports these
   contracts through `pepdistill_rs`.
+
+Training can apply chemistry-preserving residue substitution augmentation after collation. A
+residue token is replaced while its original-minus-replacement elemental composition and mass
+are attached at the same site. This leaves precursor/fragment targets invariant and teaches the
+token and compositional-modification paths a shared chemical representation. Residue formulas,
+like residue masses, are exported from the Rust chemistry authority.
 - The production activation is tanh-approximated GELU. All maintained presets are transformers;
   the `small` and `base` families expose controlled head-count variants for training sweeps.
 - The input combines residue/terminus tokens, compositional and mass-only modification features,

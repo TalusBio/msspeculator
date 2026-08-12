@@ -38,6 +38,38 @@ pub fn residue_mass(aa: u8) -> Option<f64> {
     })
 }
 
+/// Isotope-agnostic elemental composition of a polymerized amino-acid residue.
+///
+/// These are residue formulas (free amino acid minus H2O), in the model's frozen
+/// C,H,N,O,S,P basis. Keeping them beside [`residue_mass`] makes residue substitutions and
+/// their compensating composition deltas use the same chemistry authority as m/z arithmetic.
+pub fn residue_element_comp(
+    aa: u8,
+) -> Option<[i8; crate::composition::N_ELEMENTS]> {
+    Some(match aa {
+        b'A' => [3, 5, 1, 1, 0, 0],
+        b'R' => [6, 12, 4, 1, 0, 0],
+        b'N' => [4, 6, 2, 2, 0, 0],
+        b'D' => [4, 5, 1, 3, 0, 0],
+        b'C' => [3, 5, 1, 1, 1, 0],
+        b'E' => [5, 7, 1, 3, 0, 0],
+        b'Q' => [5, 8, 2, 2, 0, 0],
+        b'G' => [2, 3, 1, 1, 0, 0],
+        b'H' => [6, 7, 3, 1, 0, 0],
+        b'I' | b'L' => [6, 11, 1, 1, 0, 0],
+        b'K' => [6, 12, 2, 1, 0, 0],
+        b'M' => [5, 9, 1, 1, 1, 0],
+        b'F' => [9, 9, 1, 1, 0, 0],
+        b'P' => [5, 7, 1, 1, 0, 0],
+        b'S' => [3, 5, 1, 2, 0, 0],
+        b'T' => [4, 7, 1, 2, 0, 0],
+        b'W' => [11, 10, 2, 1, 0, 0],
+        b'Y' => [9, 9, 1, 2, 0, 0],
+        b'V' => [5, 9, 1, 1, 0, 0],
+        _ => return None,
+    })
+}
+
 /// Per-position residue masses for a bare (unmodified) peptide.
 pub fn residue_masses(seq: &[u8]) -> anyhow::Result<Vec<f64>> {
     seq.iter()
@@ -169,6 +201,22 @@ mod tests {
     #[test]
     fn target_shape() {
         assert_eq!(ms2_target_shape(7), (6, ION_TYPES.len()));
+    }
+
+    #[test]
+    fn residue_compositions_match_residue_masses() {
+        let masses = crate::unimod::nuclide_masses();
+        for aa in b'A'..=b'Z' {
+            let Some(expected) = residue_mass(aa) else { continue };
+            let comp = residue_element_comp(aa).expect("mass-bearing residue needs composition");
+            let computed = comp[0] as f64 * masses["C"]
+                + comp[1] as f64 * masses["H"]
+                + comp[2] as f64 * masses["N"]
+                + comp[3] as f64 * masses["O"]
+                + comp[4] as f64 * masses["S"]
+                + comp[5] as f64 * masses["P"];
+            approx(computed, expected, 1e-6);
+        }
     }
 
     #[test]

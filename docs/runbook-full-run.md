@@ -75,6 +75,9 @@ preset = "small"                 # flash | small-2h | small | base-4h | base
 device = "auto"                  # auto -> mps/cpu; "cuda" -> gpu
 seed = 0
 
+[augmentation]
+residue_substitution_probability = 0.01 # one chemistry-preserving substitution in 1% of peptides
+
 [pretrain]                       # online teacher-distill warmup
 enabled = true
 teacher = "alphapeptdeep"        # or "fake" (dependency-free SMOKE only, not a real model)
@@ -101,6 +104,7 @@ epochs = 60
 num_workers = 0                 # Polars decodes in-process; avoids unsafe post-init forks
 model_threads = 4               # intra-op threads in the model process
 loss_weights = [1.0, 1.0, 1.0]   # (ms2, iRT, raw_rt)
+validation_interval_minutes = 60.0 # wall-clock cadence; checked after the crossing batch
 
 [diagnostics]                    # fixed longitudinal panel; optional
 enabled = true
@@ -125,6 +129,16 @@ render_initial = true
   observation. Real-data val metrics are reported separately for every configured dataset as
   `val/<dataset>/spectral_angle`, `val/<dataset>/irt_mae`, `val/<dataset>/rawrt_mae`, and
   `val/<dataset>/n` (the number of deduplicated validation entries).
+- **Validation cadence**: real-data validation uses Lightning's wall clock rather than corpus
+  epochs. It starts after the first batch that crosses `validation_interval_minutes` and repeats
+  on that cadence. A final check runs after fitting only when the last optimizer step was not
+  already validated. Early-stop patience therefore counts validation checks, not epochs;
+  metrics JSONL records both `validation_check` and `global_step`.
+- **Residue augmentation**: for each selected peptide, one residue token is replaced and the
+  exact original-minus-replacement C/H/N/O/S/P composition and monoisotopic mass are added at
+  that site. The precursor and fragment chemistry—and thus every target—stay unchanged. Sites
+  carrying mass-only modifications are skipped because those cannot share a model column with
+  a compositional delta.
 - **Diagnostics**: the teacher reference spectra and PCA bases are fixed once per run. The
   zero-initialized acquisition encoder defers its basis until its first non-degenerate snapshot.
   Initial,

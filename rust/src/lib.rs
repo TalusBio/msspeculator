@@ -318,11 +318,20 @@ fn pepdistill_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("MOD_DELTA", mods)?;
 
     let residues = PyDict::new_bound(py);
+    let residue_compositions = PyDict::new_bound(py);
     for aa in b'A'..=b'Z' {
         if let Some(mass) = chem::residue_mass(aa) {
-            residues.set_item((aa as char).to_string(), mass)?;
+            let name = (aa as char).to_string();
+            residues.set_item(&name, mass)?;
+            let comp = chem::residue_element_comp(aa).ok_or_else(|| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!(
+                    "residue {name} has a mass but no elemental composition"
+                ))
+            })?;
+            residue_compositions.set_item(&name, comp)?;
         }
     }
     m.add("RESIDUE_MASS", residues)?;
+    m.add("RESIDUE_COMP", residue_compositions)?;
     Ok(())
 }

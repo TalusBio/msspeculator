@@ -29,6 +29,8 @@ def test_prepared_prefix_parses(tmp_path):
     assert cfg.train.prepared_prefix == "s3://bucket/prepared/v1"
     assert cfg.train.num_workers == 0
     assert cfg.train.model_threads == 4
+    assert cfg.train.validation_interval_minutes == 60.0
+    assert cfg.augmentation.residue_substitution_probability == 0.0
 
 
 def test_prepared_loader_workers_parse(tmp_path):
@@ -129,4 +131,36 @@ def test_training_diagnostics_config_rejects_invalid_frequency(tmp_path):
     with pytest.raises(ValueError, match="interval_minutes"):
         RunConfig.from_toml(
             _write(tmp_path, BASE + "\n[diagnostics]\ninterval_minutes = -1\n")
+        )
+
+
+def test_augmentation_and_wall_clock_validation_config_parse(tmp_path):
+    text = BASE.replace(
+        "epochs = 5", "epochs = 5\nvalidation_interval_minutes = 30"
+    )
+    cfg = RunConfig.from_toml(
+        _write(
+            tmp_path,
+            text
+            + '''
+[augmentation]
+residue_substitution_probability = 0.01
+''',
+        )
+    )
+    assert cfg.augmentation.residue_substitution_probability == pytest.approx(0.01)
+    assert cfg.train.validation_interval_minutes == 30.0
+
+
+def test_invalid_augmentation_probability_and_validation_interval_fail(tmp_path):
+    with pytest.raises(ValueError, match="residue_substitution_probability"):
+        RunConfig.from_toml(
+            _write(
+                tmp_path,
+                BASE + "\n[augmentation]\nresidue_substitution_probability = 1.1\n",
+            )
+        )
+    with pytest.raises(ValueError, match="validation_interval_minutes"):
+        RunConfig.from_toml(
+            _write(tmp_path, BASE.replace("epochs = 5", "epochs = 5\nvalidation_interval_minutes = 0"))
         )

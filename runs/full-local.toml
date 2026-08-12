@@ -25,6 +25,10 @@ every_n_epochs = 1
 interval_minutes = 60.0
 render_initial = true
 
+[augmentation]
+# Per peptide: mutate one residue and add the exact original-minus-replacement composition.
+residue_substitution_probability = 0.01
+
 [pretrain]
 enabled = true
 teacher = "alphapeptdeep"
@@ -54,3 +58,4 @@ model_threads = 4
 lr = 3e-4
 early_stop_patience = 5
 early_stop_min_delta = 0.001
+validation_interval_minutes = 60.0

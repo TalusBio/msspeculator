@@ -89,6 +89,7 @@ class StreamPretrainCfg:
     # Ties mass_enc onto a stop-gradiented comp_enc (see losses.mod_align_loss); this regime
     # also drives a DistillModule, so it gets the same knob as fit_distill/fit_realspeclib.
     mod_align_weight: float = 1.0
+    residue_substitution_probability: float = 0.0
 
     def __post_init__(self) -> None:
         if (self.onecycle_max_lr is None) != (self.onecycle_total_steps is None):
@@ -104,6 +105,8 @@ class StreamPretrainCfg:
                 raise ValueError("onecycle_pct_start must be between 0 and 1")
             if self.onecycle_div_factor <= 0 or self.onecycle_final_div_factor <= 0:
                 raise ValueError("onecycle_div_factor and onecycle_final_div_factor must be positive")
+        if not 0.0 <= self.residue_substitution_probability <= 1.0:
+            raise ValueError("residue_substitution_probability must be between 0 and 1")
 
 
 def default_mixes(fasta: str) -> list[StreamMix]:
@@ -339,6 +342,7 @@ def fit_stream_pretrain(
         onecycle_pct_start=cfg.onecycle_pct_start,
         onecycle_div_factor=cfg.onecycle_div_factor,
         onecycle_final_div_factor=cfg.onecycle_final_div_factor,
+        residue_substitution_probability=cfg.residue_substitution_probability,
     )
     loader = DataLoader(_StreamingDataset(teacher, encoder, cfg), batch_size=None)
     callbacks = [*(callbacks or ()), _StepLogger(log_every, log)]

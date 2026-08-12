@@ -16,6 +16,8 @@ import lightning as L
 import torch
 from torch.utils.data import DataLoader
 
+from ..data.augmentation import substitute_residues
+from ..data.encode import Batch
 from ..models.context import MSContextEncoder
 from ..models.student import StudentModel
 from .dataset import BatchIterable, DistillDataset, LabeledBatch
@@ -68,6 +70,7 @@ class DistillModule(L.LightningModule):
         onecycle_pct_start: float = 0.3,
         onecycle_div_factor: float = 25.0,
         onecycle_final_div_factor: float = 1e4,
+        residue_substitution_probability: float = 0.0,
     ) -> None:
         super().__init__()
         self.model = model  # shared backbone; NOT a hyperparameter
@@ -101,13 +104,17 @@ class DistillModule(L.LightningModule):
         self.onecycle_pct_start = onecycle_pct_start
         self.onecycle_div_factor = onecycle_div_factor
         self.onecycle_final_div_factor = onecycle_final_div_factor
+        if not 0.0 <= residue_substitution_probability <= 1.0:
+            raise ValueError("residue_substitution_probability must be between 0 and 1")
+        self.residue_substitution_probability = residue_substitution_probability
 
     def transfer_batch_to_device(self, batch: LabeledBatch, device, dataloader_idx: int):
         return batch.to(device)
 
-    def _predict(self, batch: LabeledBatch) -> dict:
+    def _predict(self, batch: LabeledBatch, inputs: Batch | None = None) -> dict:
+        inputs = batch.inputs if inputs is None else inputs
         if self.context_encoder is None:
-            return self.model(batch.inputs)
+            return self.model(inputs)
         f = batch.ms_factors
         if f is None:
             raise ValueError(
@@ -117,19 +124,26 @@ class DistillModule(L.LightningModule):
         ms_context = self.context_encoder(
             f.instrument_id, f.detector_id, f.fragmentation_id, f.energy
         )
-        return self.model.forward(batch.inputs, ms_context=ms_context)
+        return self.model.forward(inputs, ms_context=ms_context)
 
     def training_step(self, batch: LabeledBatch, batch_idx: int) -> torch.Tensor:
-        out = self._predict(batch)
+        inputs = substitute_residues(
+            batch.inputs, self.residue_substitution_probability
+        )
+        out = self._predict(batch, inputs)
         rt_t = self.model.standardize_rt(batch.rt_target)
         ccs_t = self.model.standardize_ccs(batch.ccs_target)
         loss, parts = distill_loss(
             out, batch.ms2_target, rt_t, ccs_t, batch.inputs.frag_mask, self.loss_weights
         )
         if self.mod_align_weight:
-            align = mod_align_loss(out["mod_g"], out["mod_m"], batch.inputs.mod_named)
+            align = mod_align_loss(out["mod_g"], out["mod_m"], inputs.mod_named)
             parts["mod_align"] = float(align.detach())
             loss = loss + self.mod_align_weight * align
+        if self.residue_substitution_probability:
+            parts["residue_augmented_fraction"] = float(
+                (inputs.tokens != batch.inputs.tokens).any(dim=1).float().mean()
+            )
         self.log_dict({f"train_{k}": v for k, v in parts.items()}, prog_bar=False)
         return loss
 
@@ -206,6 +220,7 @@ def fit_distill(
     accelerator: str = "auto",
     context_encoder: MSContextEncoder | None = None,
     mod_align_weight: float = 1.0,
+    residue_substitution_probability: float = 0.0,
     **trainer_kwargs,
 ) -> DistillModule:
     """Set target norm from ``train_ds`` and run a Lightning distillation fit in place.
@@ -223,6 +238,7 @@ def fit_distill(
         loss_weights=loss_weights,
         context_encoder=context_encoder,
         mod_align_weight=mod_align_weight,
+        residue_substitution_probability=residue_substitution_probability,
     )
     dm = DistillDataModule(train_ds, val_ds, batch_size=batch_size, seed=seed)
     trainer = build_trainer(epochs, accelerator, grad_clip, **trainer_kwargs)

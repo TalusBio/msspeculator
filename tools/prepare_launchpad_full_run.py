@@ -95,6 +95,9 @@ every_n_epochs = 1
 interval_minutes = 60.0
 render_initial = true
 
+[augmentation]
+residue_substitution_probability = 0.01
+
 [pretrain]
 enabled = true
 teacher = "alphapeptdeep"
@@ -123,6 +126,7 @@ model_threads = 4
 lr = {learning_rate}
 early_stop_patience = 5
 early_stop_min_delta = 0.001
+validation_interval_minutes = 60.0
 '''
         )
     fasta = ensure_pretrain_fasta()
