@@ -38,6 +38,7 @@ etl = [
 ]
 # Optional experiment tracking. Authentication is supplied through WANDB_API_KEY.
 tracking = [
+    "matplotlib>=3.8",
     "wandb>=0.18",
 ]
 
