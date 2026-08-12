@@ -96,6 +96,7 @@ fn site_to_py(site: &Site, py: Python<'_>) -> PyObject {
 fn spec_to_py(spec: &ModSpec, py: Python<'_>) -> PyObject {
     match spec {
         ModSpec::Named(n) => n.clone().into_py(py),
+        ModSpec::Unimod { .. } | ModSpec::Formula { .. } => spec.render().into_py(py),
         ModSpec::MassOnly(m) => m.into_py(py),
     }
 }

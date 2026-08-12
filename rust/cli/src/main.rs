@@ -108,7 +108,7 @@ impl ContextArgs {
 struct PredictArgs {
     #[command(flatten)]
     artifact: ArtifactArgs,
-    /// Peptide as a modified sequence, for example `PEPC[Carbamidomethyl@C]IDER`.
+    /// Peptide in the supported ProForma subset, for example `PEPC[UNIMOD:4]IDER`.
     #[arg(long)]
     peptide: String,
     /// Precursor charge.
@@ -141,12 +141,18 @@ struct LibraryArgs {
     min_charge: i64,
     #[arg(long, default_value_t = 4)]
     max_charge: i64,
-    /// Maximum number of variable Oxidation@M modifications per peptide.
+    /// Fixed modification rule. Repeat to add rules; defaults to `C[UNIMOD:4]`.
+    #[arg(long, value_name = "TARGETS[MOD]", action = clap::ArgAction::Append)]
+    fixed_mod: Vec<String>,
+    /// Disable the default fixed `C[UNIMOD:4]` rule.
+    #[arg(long, conflicts_with = "fixed_mod")]
+    no_fixed_mods: bool,
+    /// Variable modification rule. Repeat to add rules; defaults to `M[UNIMOD:35]`.
+    #[arg(long, value_name = "TARGETS[MOD]", action = clap::ArgAction::Append)]
+    variable_mod: Vec<String>,
+    /// Maximum total number of variable modification placements per peptide.
     #[arg(long, default_value_t = 1)]
-    max_variable_oxidation: usize,
-    /// Do not apply fixed Carbamidomethyl@C during FASTA library generation.
-    #[arg(long)]
-    no_fixed_carbamidomethyl: bool,
+    max_variable_mods: usize,
     #[command(flatten)]
     context: ContextArgs,
     /// Drop fragments below this base-peak-relative intensity.
@@ -212,6 +218,20 @@ fn run_predict(args: PredictArgs) -> Result<()> {
 
 fn run_library(args: LibraryArgs) -> Result<()> {
     let ms_context = args.context.ms_context();
+    let default_fixed = ["C[UNIMOD:4]".to_string()];
+    let default_variable = ["M[UNIMOD:35]".to_string()];
+    let fixed_mods: &[String] = if args.no_fixed_mods {
+        &[]
+    } else if args.fixed_mod.is_empty() {
+        &default_fixed
+    } else {
+        &args.fixed_mod
+    };
+    let variable_mods: &[String] = if args.variable_mod.is_empty() {
+        &default_variable
+    } else {
+        &args.variable_mod
+    };
     let stats = library::write_diann_tsv(&library::LibraryOptions {
         model: &args.artifact.model,
         fasta: &args.fasta,
@@ -225,8 +245,9 @@ fn run_library(args: LibraryArgs) -> Result<()> {
         max_length: args.max_length,
         min_charge: args.min_charge,
         max_charge: args.max_charge,
-        max_variable_oxidation: args.max_variable_oxidation,
-        no_fixed_carbamidomethyl: args.no_fixed_carbamidomethyl,
+        fixed_mods,
+        variable_mods,
+        max_variable_mods: args.max_variable_mods,
     })?;
     eprintln!(
         "{} proteins -> {} peptides -> {} precursors -> {} fragments -> {}",

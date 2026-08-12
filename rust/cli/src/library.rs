@@ -7,6 +7,7 @@ use std::thread;
 
 use anyhow::{bail, Context, Result};
 use pepdistill_core::peptide::{ModSpec, Peptide, Site};
+use pepdistill_core::proforma::{parse_modification_rule, ModificationRule, ModificationTarget};
 use pepdistill_core::{
     predict_peptide_batch_charges_prepared, Artifact, MsContext, Prediction, PreparedContext,
 };
@@ -29,8 +30,9 @@ pub struct LibraryOptions<'a> {
     pub max_length: usize,
     pub min_charge: i64,
     pub max_charge: i64,
-    pub max_variable_oxidation: usize,
-    pub no_fixed_carbamidomethyl: bool,
+    pub fixed_mods: &'a [String],
+    pub variable_mods: &'a [String],
+    pub max_variable_mods: usize,
 }
 
 /// Apply a runtime activation override used for controlled inference benchmarks.
@@ -144,57 +146,124 @@ fn peptide_proteins(
     peptides
 }
 
-fn oxidation_forms(sequence: &str, max_variable: usize) -> Vec<Vec<usize>> {
-    let sites: Vec<usize> = sequence
-        .bytes()
-        .enumerate()
-        .filter_map(|(i, aa)| (aa == b'M').then_some(i))
-        .collect();
-    let mut forms = vec![Vec::new()];
-    if max_variable == 0 {
-        return forms;
+fn rule_sites(sequence: &str, rule: &ModificationRule) -> Vec<Site> {
+    match &rule.target {
+        ModificationTarget::Residues(targets) => sequence
+            .chars()
+            .enumerate()
+            .filter_map(|(i, aa)| targets.contains(&aa).then_some(Site::Residue(i)))
+            .collect(),
+        ModificationTarget::PeptideNTerm => vec![Site::NTerm],
+        ModificationTarget::PeptideCTerm => vec![Site::CTerm],
     }
+}
+
+fn target_overlap(a: &ModificationTarget, b: &ModificationTarget) -> bool {
+    match (a, b) {
+        (ModificationTarget::Residues(a), ModificationTarget::Residues(b)) => !a.is_disjoint(b),
+        (ModificationTarget::PeptideNTerm, ModificationTarget::PeptideNTerm)
+        | (ModificationTarget::PeptideCTerm, ModificationTarget::PeptideCTerm) => true,
+        _ => false,
+    }
+}
+
+fn annotation(spec: &ModSpec) -> Result<String> {
+    Ok(match spec {
+        ModSpec::Unimod { accession, .. } => format!("(UniMod:{accession})"),
+        ModSpec::MassOnly(mass) => format!("({mass:+})"),
+        ModSpec::Formula { formula, .. } => format!("[Formula:{formula}]"),
+        ModSpec::Named(name) => {
+            let accession = pepdistill_core::unimod::by_name(name)
+                .with_context(|| format!("named modification {name:?} has no UNIMOD accession"))?
+                .accession;
+            format!("(UniMod:{accession})")
+        }
+    })
+}
+
+fn render_diann(sequence: &str, mods: &[(Site, ModSpec)]) -> Result<String> {
+    let mut diann = String::new();
+    for (site, spec) in mods {
+        if *site == Site::NTerm {
+            diann.push_str(&annotation(spec)?);
+        }
+    }
+    for (i, aa) in sequence.chars().enumerate() {
+        diann.push(aa);
+        for (site, spec) in mods {
+            if *site == Site::Residue(i) {
+                diann.push_str(&annotation(spec)?);
+            }
+        }
+    }
+    for (site, spec) in mods {
+        if *site == Site::CTerm {
+            diann.push_str(&annotation(spec)?);
+        }
+    }
+    Ok(diann)
+}
+
+fn modified_forms(
+    sequence: &str,
+    fixed_rules: &[ModificationRule],
+    variable_rules: &[ModificationRule],
+    max_variable: usize,
+) -> Result<Vec<(Peptide, String)>> {
+    let mut fixed = Vec::new();
+    for rule in fixed_rules {
+        fixed.extend(
+            rule_sites(sequence, rule)
+                .into_iter()
+                .map(|site| (site, rule.spec.clone())),
+        );
+    }
+    let candidates: Vec<(Site, ModSpec)> = variable_rules
+        .iter()
+        .flat_map(|rule| {
+            rule_sites(sequence, rule)
+                .into_iter()
+                .map(|site| (site, rule.spec.clone()))
+        })
+        .collect();
+
     fn choose(
-        sites: &[usize],
+        candidates: &[(Site, ModSpec)],
         start: usize,
         left: usize,
-        picked: &mut Vec<usize>,
-        out: &mut Vec<Vec<usize>>,
+        picked: &mut Vec<(Site, ModSpec)>,
+        out: &mut Vec<Vec<(Site, ModSpec)>>,
     ) {
         if left == 0 {
             out.push(picked.clone());
             return;
         }
-        for i in start..=sites.len().saturating_sub(left) {
-            picked.push(sites[i]);
-            choose(sites, i + 1, left - 1, picked, out);
+        for i in start..=candidates.len().saturating_sub(left) {
+            if picked.iter().any(|(site, _)| *site == candidates[i].0) {
+                continue;
+            }
+            picked.push(candidates[i].clone());
+            choose(candidates, i + 1, left - 1, picked, out);
             picked.pop();
         }
     }
-    for n in 1..=max_variable.min(sites.len()) {
-        choose(&sites, 0, n, &mut Vec::new(), &mut forms);
-    }
-    forms
-}
 
-fn modified_peptide(sequence: &str, oxidized: &[usize], fixed_cam: bool) -> (Peptide, String) {
-    let mut mods = Vec::new();
-    let mut diann = String::new();
-    for (i, aa) in sequence.chars().enumerate() {
-        diann.push(aa);
-        if fixed_cam && aa == 'C' {
-            mods.push((
-                Site::Residue(i),
-                ModSpec::Named("Carbamidomethyl@C".to_string()),
-            ));
-            diann.push_str("(UniMod:4)");
-        }
-        if oxidized.contains(&i) {
-            mods.push((Site::Residue(i), ModSpec::Named("Oxidation@M".to_string())));
-            diann.push_str("(UniMod:35)");
-        }
+    let mut variable_forms = vec![Vec::new()];
+    for n in 1..=max_variable.min(candidates.len()) {
+        choose(&candidates, 0, n, &mut Vec::new(), &mut variable_forms);
     }
-    (Peptide::new(sequence.to_string(), mods), diann)
+    variable_forms
+        .into_iter()
+        .map(|variable| {
+            let peptide = Peptide::new(
+                sequence.to_string(),
+                fixed.iter().cloned().chain(variable).collect(),
+            );
+            peptide.validate_mod_specs()?;
+            let diann = render_diann(sequence, &peptide.mods)?;
+            Ok((peptide, diann))
+        })
+        .collect()
 }
 
 fn ccs_to_bruker_mobility(ccs: f64, charge: i64, precursor_mz: f64) -> f64 {
@@ -367,6 +436,28 @@ pub fn write_diann_tsv(opts: &LibraryOptions<'_>) -> Result<LibraryStats> {
             opts.max_length
         );
     }
+    let fixed_rules = opts
+        .fixed_mods
+        .iter()
+        .map(|rule| parse_modification_rule(rule))
+        .collect::<Result<Vec<_>>>()?;
+    let variable_rules = opts
+        .variable_mods
+        .iter()
+        .map(|rule| parse_modification_rule(rule))
+        .collect::<Result<Vec<_>>>()?;
+    for fixed in &fixed_rules {
+        for variable in &variable_rules {
+            if target_overlap(&fixed.target, &variable.target) {
+                bail!(
+                    "fixed and variable modification rules overlap ({:?} and {:?}); \
+                     use --no-fixed-mods or choose disjoint targets",
+                    fixed.target,
+                    variable.target
+                );
+            }
+        }
+    }
     let records = parse_fasta(Path::new(opts.fasta))?;
     let peptides = peptide_proteins(
         &records,
@@ -443,9 +534,12 @@ pub fn write_diann_tsv(opts: &LibraryOptions<'_>) -> Result<LibraryStats> {
     let mut pending: BTreeMap<usize, Vec<PendingPeptide>> = BTreeMap::new();
     for (sequence, proteins) in peptides {
         let protein_group = proteins.into_iter().collect::<Vec<_>>().join(";");
-        for oxidized in oxidation_forms(&sequence, opts.max_variable_oxidation) {
-            let (peptide, diann_sequence) =
-                modified_peptide(&sequence, &oxidized, !opts.no_fixed_carbamidomethyl);
+        for (peptide, diann_sequence) in modified_forms(
+            &sequence,
+            &fixed_rules,
+            &variable_rules,
+            opts.max_variable_mods,
+        )? {
             let length = peptide.sequence.len();
             let ready = {
                 let bucket = pending.entry(length).or_default();
@@ -502,13 +596,36 @@ mod tests {
 
     #[test]
     fn modifications_render_for_model_and_diann() {
-        let (peptide, diann) = modified_peptide("ACDM", &[3], true);
-        assert_eq!(
-            peptide.modified_sequence(),
-            "AC[Carbamidomethyl@C]DM[Oxidation@M]"
-        );
+        let fixed = vec![parse_modification_rule("C[UNIMOD:4]").unwrap()];
+        let variable = vec![parse_modification_rule("M[UNIMOD:35]").unwrap()];
+        let forms = modified_forms("ACDM", &fixed, &variable, 1).unwrap();
+        let (peptide, diann) = &forms[1];
+        assert_eq!(peptide.modified_sequence(), "AC[UNIMOD:4]DM[UNIMOD:35]");
         assert_eq!(diann, "AC(UniMod:4)DM(UniMod:35)");
         assert_eq!(peptide.mods[1].0, Site::Residue(3));
+    }
+
+    #[test]
+    fn enumerates_cyspat_phospho_and_oxidation_with_one_global_cap() {
+        let variable = [
+            parse_modification_rule("C[UNIMOD:2057]").unwrap(),
+            parse_modification_rule("STY[UNIMOD:21]").unwrap(),
+            parse_modification_rule("M[UNIMOD:35]").unwrap(),
+        ];
+        let forms = modified_forms("ACSM", &[], &variable, 3).unwrap();
+        // Three independently eligible sites -> C(3,0)+C(3,1)+C(3,2)+C(3,3).
+        assert_eq!(forms.len(), 8);
+        assert!(forms.iter().any(|(peptide, diann)| {
+            peptide.modified_sequence() == "AC[UNIMOD:2057]S[UNIMOD:21]M[UNIMOD:35]"
+                && diann == "AC(UniMod:2057)S(UniMod:21)M(UniMod:35)"
+        }));
+    }
+
+    #[test]
+    fn overlapping_fixed_and_variable_targets_are_detectable() {
+        let fixed = parse_modification_rule("C[UNIMOD:4]").unwrap();
+        let variable = parse_modification_rule("C[UNIMOD:2057]").unwrap();
+        assert!(target_overlap(&fixed.target, &variable.target));
     }
 
     #[test]

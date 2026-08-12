@@ -20,9 +20,10 @@ implementations.
   generation and the Python-vs-Rust prediction-parity check (`tests/test_rust_parity.py`).
   `library --fasta ... --out library.tsv` digests and enumerates precursors, loads the `.safetensors`
   weights once, predicts in Rust, converts CCS to Bruker 1/K0, and writes DIA-NN TSV.
-  `predict --peptide` takes a
-  **modified sequence** (`[TMT6plex]PEPC[Carbamidomethyl@C]IDER`, or a bare Dalton delta
-  `PEP[+42.010565]TIDER`), parsed by `Peptide::parse` — the inverse of `modified_sequence()`.
+  `predict --peptide` takes a strict ProForma-compatible subset such as
+  `[UNIMOD:737]-PEPC[UNIMOD:4]IDER`, `PEP[Formula:[13C2][12C-2]H2N]TIDER`, or a signed Dalton
+  delta `PEP[+42.010565]TIDER`. Terminal placement requires the ProForma hyphen. Historical
+  names remain internal to prepared training data and are not public parser input.
   The `.safetensors` artifact carries a `format_version`; `core/src/artifact.rs` rejects any
   version it does not read rather than filling in missing tensors.
   `run-doctor --model MODEL --out DIR` predicts the vendored Biognosys iRT standards, renders

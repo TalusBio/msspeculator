@@ -22,7 +22,7 @@ pub fn parent_element(symbol: &str) -> &str {
 }
 
 /// Elemental composition delta, isotopes kept distinct. Counts may be negative (losses).
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 pub struct AtomicComposition {
     pub counts: Vec<(String, i32)>,
 }
@@ -57,9 +57,30 @@ impl AtomicComposition {
     pub fn mono_mass(&self, masses: &HashMap<String, f64>) -> anyhow::Result<f64> {
         let mut total = 0.0;
         for (sym, n) in &self.counts {
-            let m = masses
-                .get(sym)
-                .ok_or_else(|| anyhow::anyhow!("no monoisotopic mass for nuclide {sym:?}"))?;
+            let m = match masses.get(sym) {
+                Some(m) => m,
+                None => {
+                    // UNIMOD's element table names the principal isotope by its bare element
+                    // (`C`, not `12C`), while chemForma permits the explicit spelling `[12C]`.
+                    // Accept that spelling only when its mass number is the rounded principal
+                    // monoisotopic mass; an absent non-principal isotope remains a hard error.
+                    let parent = parent_element(sym);
+                    let isotope = sym
+                        .strip_suffix(parent)
+                        .filter(|prefix| !prefix.is_empty())
+                        .and_then(|prefix| prefix.parse::<u32>().ok());
+                    match (isotope, masses.get(parent)) {
+                        (Some(a), Some(parent_mass)) if a == parent_mass.round() as u32 => {
+                            parent_mass
+                        }
+                        _ => {
+                            return Err(anyhow::anyhow!(
+                                "no monoisotopic mass for nuclide {sym:?}"
+                            ));
+                        }
+                    }
+                }
+            };
             total += m * (*n as f64);
         }
         Ok(total)

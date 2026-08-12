@@ -276,10 +276,14 @@ cargo run -q --release -p pepdistill-cli -- \
 
 Notes:
 - Transformer presets only.
-- `--peptide` takes a **ProForma sequence**: `PEPC[UNIMOD:4]IDER` (side chain),
+- `--peptide` takes a deliberately limited **ProForma sequence**:
+  `PEPC[UNIMOD:4]IDER` (side chain),
   `[UNIMOD:737]-PEPTIDER` (N-term), `PEPTIDER-[UNIMOD:2]` (C-term), or a bare Dalton delta
-  `PEP[+42.010565]TIDER`. Named mods go through the compositional encoder, `+`/`-` deltas
-  through the mass encoder. The `peptide` field of the JSON echoes how the string was read.
+  `PEP[+42.010565]TIDER`. Elemental formulas follow chemForma, for example
+  `PEP[Formula:[13C2][12C-2]H2N]TIDER`. UniMod/formula atoms use the composition encoder;
+  isotopes fold to their parent element there while retaining exact nuclide mass for m/z.
+  Unsupported parent elements warn and fall back to the exact mass encoder. Signed deltas always
+  use the mass encoder. Modification names are not accepted by the public parser.
 - The artifact is versioned: a `.safetensors` exported before the mod-representation-v2 work
   (`format_version` 1) is **rejected**, not read with defaults. Re-export from the checkpoint.
 - `--ms-context INSTRUMENT::DETECTOR::FRAGMENTATION::ENERGY` conditions MS2; `--chrom-context NAME`

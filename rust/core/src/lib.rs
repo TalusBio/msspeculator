@@ -10,6 +10,7 @@ pub mod chem;
 pub mod composition;
 pub mod model;
 pub mod peptide;
+pub mod proforma;
 pub mod tokenize;
 pub mod unimod;
 
@@ -87,7 +88,8 @@ impl PreparedContext {
 }
 
 /// Run one peptide end to end. `peptide` is a modified sequence in the form
-/// [`peptide::Peptide::modified_sequence`] renders, e.g. `"[TMT6plex]PEPC[Carbamidomethyl@C]IDER"`.
+/// [`peptide::Peptide::modified_sequence`] renders, e.g.
+/// `"[UNIMOD:737]-PEPC[UNIMOD:4]IDER"`.
 pub fn predict(
     art: &Artifact,
     peptide: &str,

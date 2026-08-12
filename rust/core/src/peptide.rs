@@ -1,6 +1,6 @@
 //! Modified peptide — data plus mass/rendering behavior.
 
-use crate::chem;
+use crate::{chem, composition::AtomicComposition};
 
 /// Where a modification sits. Ordering is deliberate: `derive(Ord)` uses declaration order, so
 /// sorting a mods vector already produces N-term → residues → C-term without a custom compare.
@@ -11,13 +11,30 @@ pub enum Site {
     CTerm,
 }
 
-/// What the modification is. `Named` resolves to a composition and can drive the compositional
-/// encoder; `MassOnly` carries a bare delta and can only drive the mass encoder. Keeping these
-/// distinct at the type level is what stops a mass-only mod from acquiring a composition it
-/// never had.
+/// Modification identity plus its resolved encoder route. Public input retains an unambiguous
+/// UniMod/formula identity; `Named` exists only for historical prepared data, and `MassOnly`
+/// carries a bare delta with no invented composition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum EncodingRoute {
+    Composition,
+    Mass,
+}
+
 #[derive(Debug, Clone)]
 pub enum ModSpec {
+    /// Historical internal name used by prepared training data.
     Named(String),
+    /// Public controlled-vocabulary identity, retaining its accession through output.
+    Unimod {
+        accession: u32,
+        route: EncodingRoute,
+    },
+    /// Public elemental formula, retaining both its spelling and exact isotope composition.
+    Formula {
+        formula: String,
+        composition: AtomicComposition,
+        route: EncodingRoute,
+    },
     MassOnly(f64),
 }
 
@@ -29,6 +46,28 @@ impl PartialEq for ModSpec {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (ModSpec::Named(a), ModSpec::Named(b)) => a == b,
+            (
+                ModSpec::Unimod {
+                    accession: aa,
+                    route: ar,
+                },
+                ModSpec::Unimod {
+                    accession: ba,
+                    route: br,
+                },
+            ) => aa == ba && ar == br,
+            (
+                ModSpec::Formula {
+                    formula: af,
+                    composition: ac,
+                    route: ar,
+                },
+                ModSpec::Formula {
+                    formula: bf,
+                    composition: bc,
+                    route: br,
+                },
+            ) => af == bf && ac == bc && ar == br,
             (ModSpec::MassOnly(a), ModSpec::MassOnly(b)) => a.to_bits() == b.to_bits(),
             _ => false,
         }
@@ -41,7 +80,13 @@ impl std::hash::Hash for ModSpec {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         match self {
             ModSpec::Named(n) => (0u8, n).hash(state),
-            ModSpec::MassOnly(m) => (1u8, m.to_bits()).hash(state),
+            ModSpec::Unimod { accession, route } => (1u8, accession, route).hash(state),
+            ModSpec::Formula {
+                formula,
+                composition,
+                route,
+            } => (2u8, formula, composition, route).hash(state),
+            ModSpec::MassOnly(m) => (3u8, m.to_bits()).hash(state),
         }
     }
 }
@@ -56,19 +101,88 @@ impl Ord for ModSpec {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         match (self, other) {
             (ModSpec::Named(a), ModSpec::Named(b)) => a.cmp(b),
+            (
+                ModSpec::Unimod {
+                    accession: aa,
+                    route: ar,
+                },
+                ModSpec::Unimod {
+                    accession: ba,
+                    route: br,
+                },
+            ) => (aa, ar).cmp(&(ba, br)),
+            (
+                ModSpec::Formula {
+                    formula: af,
+                    composition: ac,
+                    route: ar,
+                },
+                ModSpec::Formula {
+                    formula: bf,
+                    composition: bc,
+                    route: br,
+                },
+            ) => (af, &ac.counts, ar).cmp(&(bf, &bc.counts, br)),
             (ModSpec::MassOnly(a), ModSpec::MassOnly(b)) => a.to_bits().cmp(&b.to_bits()),
-            (ModSpec::Named(_), ModSpec::MassOnly(_)) => std::cmp::Ordering::Less,
-            (ModSpec::MassOnly(_), ModSpec::Named(_)) => std::cmp::Ordering::Greater,
+            (a, b) => a.variant_order().cmp(&b.variant_order()),
         }
     }
 }
 
 impl ModSpec {
+    fn variant_order(&self) -> u8 {
+        match self {
+            Self::Named(_) => 0,
+            Self::Unimod { .. } => 1,
+            Self::Formula { .. } => 2,
+            Self::MassOnly(_) => 3,
+        }
+    }
+
     /// Monoisotopic delta in Da. Errors on an unresolvable name rather than contributing zero.
     pub fn delta_mass(&self) -> anyhow::Result<f64> {
         match self {
             ModSpec::MassOnly(m) => Ok(*m),
             ModSpec::Named(n) => chem::mod_delta(n),
+            ModSpec::Unimod { accession, .. } => {
+                let entry = crate::unimod::by_accession(*accession)
+                    .ok_or_else(|| anyhow::anyhow!("unknown UNIMOD accession {accession}"))?;
+                entry.comp.mono_mass(crate::unimod::nuclide_masses())
+            }
+            ModSpec::Formula { composition, .. } => {
+                composition.mono_mass(crate::unimod::nuclide_masses())
+            }
+        }
+    }
+
+    /// Composition input for the model, or `None` when this modification explicitly routes
+    /// through the scalar mass encoder.
+    pub fn element_comp(&self) -> anyhow::Result<Option<[i8; crate::composition::N_ELEMENTS]>> {
+        match self {
+            ModSpec::Named(name) => Ok(Some(chem::mod_element_comp(name)?)),
+            ModSpec::Unimod {
+                accession,
+                route: EncodingRoute::Composition,
+            } => Ok(Some(
+                crate::unimod::by_accession(*accession)
+                    .ok_or_else(|| anyhow::anyhow!("unknown UNIMOD accession {accession}"))?
+                    .comp
+                    .element_comp()?,
+            )),
+            ModSpec::Formula {
+                composition,
+                route: EncodingRoute::Composition,
+                ..
+            } => Ok(Some(composition.element_comp()?)),
+            ModSpec::Unimod {
+                route: EncodingRoute::Mass,
+                ..
+            }
+            | ModSpec::Formula {
+                route: EncodingRoute::Mass,
+                ..
+            }
+            | ModSpec::MassOnly(_) => Ok(None),
         }
     }
 
@@ -76,6 +190,8 @@ impl ModSpec {
     pub fn render(&self) -> String {
         match self {
             ModSpec::Named(n) => n.clone(),
+            ModSpec::Unimod { accession, .. } => format!("UNIMOD:{accession}"),
+            ModSpec::Formula { formula, .. } => format!("Formula:{formula}"),
             ModSpec::MassOnly(m) => format!("{m:+}"),
         }
     }
@@ -97,71 +213,10 @@ impl Peptide {
         self.sequence.len()
     }
 
-    /// Parse the form [`Peptide::modified_sequence`] renders: a leading `[mod]` is the
-    /// N-terminus, a `[mod]` after the final residue is the C-terminus, and a body starting
-    /// with `+`/`-` is a bare mass delta rather than a name.
+    /// Reject a site that mixes composition-routed and mass-routed modifications.
     ///
-    /// A trailing `[mod]` becomes [`Site::CTerm`], not a side-chain mod on the last residue —
-    /// that is what makes the round trip exact, since `modified_sequence` renders both the same
-    /// way. A caller wanting a side-chain mod on the final residue must build the `Peptide`
-    /// directly.
-    ///
-    /// Known limitation: a mod NAME containing `]` cannot round-trip. Some UNIMOD titles do
-    /// (e.g. `Xlink:DSS[156]`); `modified_sequence` renders them unquoted and `parse` then
-    /// stops at the inner `]`. It fails loudly — the tail becomes an unexpected character or a
-    /// bad site rather than a silently wrong mod — and no such title is reachable from
-    /// PROSPECT's frozen accession set, so the delimiter stays unescaped. Escaping or quoting
-    /// the body is the fix if a bracketed name ever has to be supported.
-    pub fn parse(s: &str) -> anyhow::Result<Self> {
-        let mut sequence = String::new();
-        let mut mods: Vec<(Site, ModSpec)> = Vec::new();
-        let mut chars = s.chars().peekable();
-        while let Some(c) = chars.next() {
-            if c == '[' {
-                let mut body = String::new();
-                let mut closed = false;
-                for c2 in chars.by_ref() {
-                    if c2 == ']' {
-                        closed = true;
-                        break;
-                    }
-                    body.push(c2);
-                }
-                if !closed {
-                    anyhow::bail!("unclosed '[' in peptide {s:?}");
-                }
-                let spec =
-                    if body.starts_with('+') || body.starts_with('-') {
-                        ModSpec::MassOnly(body.parse().map_err(|_| {
-                            anyhow::anyhow!("bad mass delta {body:?} in peptide {s:?}")
-                        })?)
-                    } else {
-                        ModSpec::Named(body)
-                    };
-                let site = if sequence.is_empty() {
-                    Site::NTerm
-                } else if chars.peek().is_none() {
-                    Site::CTerm
-                } else {
-                    Site::Residue(sequence.len() - 1)
-                };
-                mods.push((site, spec));
-            } else if c.is_ascii_uppercase() {
-                sequence.push(c);
-            } else {
-                anyhow::bail!("unexpected character {c:?} in peptide {s:?}");
-            }
-        }
-        if sequence.is_empty() {
-            anyhow::bail!("peptide {s:?} has no residues");
-        }
-        Ok(Self::new(sequence, mods))
-    }
-
-    /// Reject a site that carries both a `Named` mod and a `MassOnly` delta.
-    ///
-    /// Several `Named` mods on one site are fine (their compositions accumulate) and so are
-    /// several `MassOnly` deltas (their masses sum). One of each is not: the two route to
+    /// Several composition-routed mods on one site are fine (their compositions accumulate),
+    /// as are several mass-routed deltas (their masses sum). Mixing the routes is not: they go to
     /// different encoders, and `tokenize::mod_arrays` has exactly one boolean per column to
     /// choose with. Marking the column "named" would drop the mass-only delta from the model
     /// input while it still moves `mono_mass` and every fragment m/z; folding the delta into
@@ -177,17 +232,12 @@ impl Peptide {
                 if site != other_site {
                     continue;
                 }
-                let mixed = matches!(
-                    (spec, other),
-                    (ModSpec::Named(_), ModSpec::MassOnly(_))
-                        | (ModSpec::MassOnly(_), ModSpec::Named(_))
-                );
+                let mixed = spec.element_comp()?.is_some() != other.element_comp()?.is_some();
                 if mixed {
                     anyhow::bail!(
-                        "site {site:?} of {} carries both a named modification and a mass-only \
-                         delta ([{}] and [{}]); named mods route through the composition \
-                         encoder and mass-only deltas through the mass encoder, so a single \
-                         site cannot carry one of each",
+                        "site {site:?} of {} carries both a composition-routed modification and \
+                         a mass-routed delta ([{}] and [{}]); a single site has one encoder \
+                         route and therefore cannot carry one of each",
                         self.modified_sequence(),
                         spec.render(),
                         other.render()
@@ -237,7 +287,7 @@ impl Peptide {
         Ok((self.mono_mass()? + charge as f64 * chem::PROTON) / charge as f64)
     }
 
-    /// e.g. "[TMT6plex]ET[Phospho]TLHLVLR", or "P[+79.96633]EPTIDE" for a mass-only mod.
+    /// Public rendering is ProForma-shaped and makes terminal placement unambiguous.
     pub fn modified_sequence(&self) -> String {
         let mut out = String::new();
         for (site, spec) in &self.mods {
@@ -245,6 +295,7 @@ impl Peptide {
                 out.push('[');
                 out.push_str(&spec.render());
                 out.push(']');
+                out.push('-');
             }
         }
         for (i, aa) in self.sequence.chars().enumerate() {
@@ -259,12 +310,20 @@ impl Peptide {
         }
         for (site, spec) in &self.mods {
             if *site == Site::CTerm {
+                out.push('-');
                 out.push('[');
                 out.push_str(&spec.render());
                 out.push(']');
             }
         }
         out
+    }
+
+    /// Parse the strict public modification language. Legacy named modifications remain
+    /// constructible through `Peptide::new` for prepared training data, but are not accepted
+    /// as user input.
+    pub fn parse(s: &str) -> anyhow::Result<Self> {
+        crate::proforma::parse_peptide(s)
     }
 }
 
@@ -328,7 +387,7 @@ mod tests {
                 (Site::NTerm, ModSpec::Named("TMT6plex".into())),
             ],
         );
-        assert_eq!(p.modified_sequence(), "[TMT6plex]ET[Phospho]TLHLVLR");
+        assert_eq!(p.modified_sequence(), "[TMT6plex]-ET[Phospho]TLHLVLR");
 
         let q = Peptide::new(
             "PEPTIDE".into(),
@@ -340,7 +399,7 @@ mod tests {
             "PEK".into(),
             vec![(Site::CTerm, ModSpec::Named("Phospho".into()))],
         );
-        assert_eq!(r.modified_sequence(), "PEK[Phospho]");
+        assert_eq!(r.modified_sequence(), "PEK-[Phospho]");
     }
 
     #[test]
@@ -388,10 +447,12 @@ mod tests {
     fn parse_roundtrips_modified_sequence() {
         for s in [
             "PEPTIDE",
-            "AC[Carbamidomethyl@C]DEM[Oxidation@M]K",
-            "[TMT6plex]ET[Phospho]TLHLVLR",
-            "PEK[Phospho]",
+            "AC[UNIMOD:4]DEM[UNIMOD:35]K",
+            "[UNIMOD:737]-ET[UNIMOD:21]TLHLVLR",
+            "PEK[UNIMOD:21]",
+            "PEK-[UNIMOD:2]",
             "P[+79.96633]EPTIDE",
+            "P[Formula:[13C2][12C-2]H2N]EPTIDE",
         ] {
             let p = Peptide::parse(s).unwrap();
             assert_eq!(p.modified_sequence(), s, "roundtrip failed for {s}");
@@ -413,17 +474,35 @@ mod tests {
         // The round-trip test cannot distinguish CTerm from Residue(last) — both render the
         // same. Pin the documented choice explicitly, because they occupy different embedding
         // columns.
-        let p = Peptide::parse("PEK[Phospho]").unwrap();
+        let p = Peptide::parse("PEK-[UNIMOD:21]").unwrap();
         assert_eq!(
             p.mods,
-            vec![(Site::CTerm, ModSpec::Named("Phospho".into()))]
+            vec![(
+                Site::CTerm,
+                ModSpec::Unimod {
+                    accession: 21,
+                    route: EncodingRoute::Composition,
+                },
+            ),]
         );
-        let q = Peptide::parse("[TMT6plex]PEPC[Carbamidomethyl@C]IDER").unwrap();
+        let q = Peptide::parse("[UNIMOD:737]-PEPC[UNIMOD:4]IDER").unwrap();
         assert_eq!(
             q.mods,
             vec![
-                (Site::NTerm, ModSpec::Named("TMT6plex".into())),
-                (Site::Residue(3), ModSpec::Named("Carbamidomethyl@C".into())),
+                (
+                    Site::NTerm,
+                    ModSpec::Unimod {
+                        accession: 737,
+                        route: EncodingRoute::Composition,
+                    },
+                ),
+                (
+                    Site::Residue(3),
+                    ModSpec::Unimod {
+                        accession: 4,
+                        route: EncodingRoute::Composition,
+                    },
+                ),
             ]
         );
     }
@@ -433,15 +512,27 @@ mod tests {
         // Two brackets after one residue are two mods on that residue, not on consecutive
         // ones. The runtime accumulates their compositions into a single encoder call, so the
         // site must be shared.
-        let p = Peptide::parse("PEPC[Oxidation@M][Phospho]IDER").unwrap();
+        let p = Peptide::parse("PEPC[UNIMOD:35][UNIMOD:21]IDER").unwrap();
         assert_eq!(
             p.mods,
             vec![
-                (Site::Residue(3), ModSpec::Named("Oxidation@M".into())),
-                (Site::Residue(3), ModSpec::Named("Phospho".into())),
+                (
+                    Site::Residue(3),
+                    ModSpec::Unimod {
+                        accession: 21,
+                        route: EncodingRoute::Composition,
+                    },
+                ),
+                (
+                    Site::Residue(3),
+                    ModSpec::Unimod {
+                        accession: 35,
+                        route: EncodingRoute::Composition,
+                    },
+                ),
             ]
         );
-        assert_eq!(p.modified_sequence(), "PEPC[Oxidation@M][Phospho]IDER");
+        assert_eq!(p.modified_sequence(), "PEPC[UNIMOD:21][UNIMOD:35]IDER");
     }
 
     #[test]

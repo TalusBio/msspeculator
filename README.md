@@ -135,7 +135,7 @@ MS2 fragment intensities move with `--ms-context`/`--nce`.
 A pure-Rust inference path mirrors the torch `predict` for a single peptide. Export the trained
 checkpoint to a self-contained `.safetensors` artifact (weights + config/vocab/norm in the
 metadata), then run the standalone binary. FASTA mode digests with trypsin, applies fixed
-Carbamidomethyl@C plus up to one variable Oxidation@M by default, predicts charges 2–4, converts
+`C[UNIMOD:4]` plus up to one variable `M[UNIMOD:35]` by default, predicts charges 2–4, converts
 predicted CCS to Bruker 1/K0, and writes a streaming DIA-NN TSV accepted by `timsseek`:
 
 ```bash
@@ -146,6 +146,26 @@ cargo run -q --release -p pepdistill-cli -- \
 
 timsseek --raw-inputs sample.d --speclib-uri library.tsv --output-uri search-results
 ```
+
+Modification rules use a deliberately limited ProForma-compatible grammar: a residue set plus
+`[UNIMOD:<accession>]`, `[Formula:<chemForma formula>]`, or a signed Dalton delta. Repeat
+`--fixed-mod` / `--variable-mod`; variable placements share one `--max-variable-mods` cap. For
+CysPAT, phosphorylation, and methionine oxidation without fixed carbamidomethylation:
+
+```bash
+cargo run -q --release -p pepdistill-cli -- \
+  library --model work/model.safetensors --fasta proteome.fasta --out library.tsv \
+  --no-fixed-mods \
+  --variable-mod 'C[UNIMOD:2057]' \
+  --variable-mod 'STY[UNIMOD:21]' \
+  --variable-mod 'M[UNIMOD:35]' \
+  --max-variable-mods 3
+```
+
+UniMod and formula atoms use the composition encoder whenever they project into CHNOSP.
+Isotopes keep their exact nuclide masses for precursor/fragment m/z while folding onto their
+parent elements for the embedding. Unsupported parent elements warn and fall back to the exact
+calculated mass encoder. Signed deltas always use the mass encoder.
 
 Single-peptide JSON remains available:
 
@@ -172,10 +192,11 @@ to stdout. Transformer presets only; RT is the context-free iRT base unless `--c
 NAME` selects a saved dataset. Parity with the torch path is measured by
 `tests/test_rust_parity.py`.
 
-`--peptide` accepts a modified sequence, not just a bare one — `PEPC[Carbamidomethyl@C]IDER`,
-`[TMT6plex]PEPTIDER`, `PEPTIDER[Amidated]`, or a bare Dalton delta `PEP[+42.010565]TIDER`. A
-named mod is encoded from its element composition, a `+`/`-` delta from its mass; the JSON's
-`peptide` field echoes back how the input was parsed. Artifacts carry a `format_version` and
+`--peptide` accepts a strict modified sequence, not just a bare one — `PEPC[UNIMOD:4]IDER`,
+`[UNIMOD:737]-PEPTIDER`, `PEPTIDER-[UNIMOD:2]`, `PEP[Formula:H2O]TIDER`, or a signed Dalton
+delta `PEP[+42.010565]TIDER`. Public input does not accept modification names; prepared training
+data retains its legacy resolver internally. The JSON's `peptide` field echoes the canonical
+parsed identity. Artifacts carry a `format_version` and
 the reader refuses one it does not understand rather than guessing at missing tensors.
 
 ## Output

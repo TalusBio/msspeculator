@@ -8,7 +8,7 @@
 use ndarray::{Array1, Array2, Array3};
 
 use crate::composition::N_ELEMENTS;
-use crate::peptide::{ModSpec, Peptide, Site};
+use crate::peptide::{Peptide, Site};
 
 // Vocab contract — single home. The pyo3 ext re-exports these.
 pub const AA_OFFSET: i64 = 65; // ord('A')
@@ -59,7 +59,7 @@ fn site_column(site: &Site, seq_len: usize) -> usize {
 /// comparison would silently mislabel a near-zero delta, and a wrong model input is worse than
 /// a loud failure.
 ///
-/// A site carrying both a `Named` mod and a `MassOnly` delta is refused up front — see
+/// A site mixing composition-routed and mass-routed modifications is refused up front — see
 /// [`Peptide::validate_mod_specs`] for why there is no correct silent behavior. `mod_named` is
 /// one boolean per column and both runtimes route the whole column on it, so the loser's
 /// channel would simply never reach the model.
@@ -89,8 +89,7 @@ pub fn mod_arrays(peptides: &[Peptide], tok_len: usize) -> anyhow::Result<ModArr
             }
             mod_mass[[i, col]] += spec.delta_mass()? as f32;
             mod_present[[i, col]] = true;
-            if let ModSpec::Named(name) = spec {
-                let ec = crate::chem::mod_element_comp(name)?;
+            if let Some(ec) = spec.element_comp()? {
                 for (k, v) in ec.iter().enumerate() {
                     mod_comp[[i, col, k]] += *v as f32;
                 }

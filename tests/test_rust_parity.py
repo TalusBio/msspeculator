@@ -6,6 +6,7 @@ max-abs-diff on ms2/rt/ccs/mz is tiny and print the deltas. Skipped without a Ru
 """
 
 import csv
+import functools
 import json
 import shutil
 import subprocess
@@ -43,9 +44,8 @@ def _assert_close(label, actual, expected, *, atol=PRED_ATOL, rtol=PRED_RTOL):
     )
 
 
+@functools.cache
 def _binary() -> str:
-    if BIN.exists():
-        return str(BIN)
     if shutil.which("cargo") is None:
         pytest.skip("no cargo toolchain")
     r = subprocess.run(
@@ -288,14 +288,15 @@ def test_parity_chrom_context(artifact, capsys):
 
 
 @pytest.mark.parametrize(
-    "label,modseq,mods",
+    "label,modseq,canonical,mods",
     [
-        ("side-chain", "PEPC[Carbamidomethyl@C]IDER", ((3, "Carbamidomethyl@C"),)),
-        ("n-terminal", "[TMT6plex]PEPTIDER", (("n", "TMT6plex"),)),
-        ("mass-only", "PEP[+42.010565]TIDER", ((2, 42.010565),)),
+        ("side-chain", "PEPC[UNIMOD:4]IDER", "PEPC[UNIMOD:4]IDER", ((3, "Carbamidomethyl@C"),)),
+        ("n-terminal", "[UNIMOD:737]-PEPTIDER", "[UNIMOD:737]-PEPTIDER", (("n", "TMT6plex"),)),
+        ("mass-only", "PEP[+42.010565]TIDER", "PEP[+42.010565]TIDER", ((2, 42.010565),)),
         (
             "terminal-plus-side-chain",
-            "[TMT6plex]PEPC[Carbamidomethyl@C]IDER",
+            "[UNIMOD:737]-PEPC[UNIMOD:4]IDER",
+            "[UNIMOD:737]-PEPC[UNIMOD:4]IDER",
             (("n", "TMT6plex"), (3, "Carbamidomethyl@C")),
         ),
         # Two named mods on ONE site: torch accumulates the compositions and runs comp_enc
@@ -303,18 +304,18 @@ def test_parity_chrom_context(artifact, capsys):
         # the vectors would add the bias twice — a whole-bias-sized error, not a rounding one.
         (
             "co-sited",
-            "PEPC[Oxidation@M][Phospho]IDER",
+            "PEPC[UNIMOD:35][UNIMOD:21]IDER",
+            "PEPC[UNIMOD:21][UNIMOD:35]IDER",
             ((3, "Oxidation@M"), (3, "Phospho")),
         ),
     ],
 )
-def test_parity_modified_peptides(artifact, capsys, label, modseq, mods):
+def test_parity_modified_peptides(artifact, capsys, label, modseq, canonical, mods):
     """The Rust runtime must encode modifications, not silently predict the bare peptide."""
     binary = _binary()
     model = artifact["model"]
 
     pep = Peptide("PEPCIDER" if "C[" in modseq else "PEPTIDER", mods)
-    assert pep.modified_sequence() == modseq, "test fixture disagrees with the renderer"
 
     lib = predict_library_fast(
         TorchRunner(model, "cpu"),
@@ -322,7 +323,7 @@ def test_parity_modified_peptides(artifact, capsys, label, modseq, mods):
         min_intensity=0.01,
     )
     rj = _rust(binary, artifact["path"], [], peptide=modseq)
-    assert rj["peptide"] == modseq, "the CLI must echo back how it read the input"
+    assert rj["peptide"] == canonical, "the CLI must echo the canonical parsed identity"
 
     py, rs = _frag_map_py(lib), _frag_map_rust(rj)
     assert set(py) == set(rs), f"{label}: fragment sets differ"
@@ -362,7 +363,7 @@ def test_modified_peptide_differs_from_the_bare_one(artifact):
     still agree, and the test would prove nothing."""
     binary = _binary()
     bare = _rust(binary, artifact["path"], [])
-    modded = _rust(binary, artifact["path"], [], peptide="[TMT6plex]PEPTIDER")
+    modded = _rust(binary, artifact["path"], [], peptide="[UNIMOD:737]-PEPTIDER")
     assert abs(bare["rt"] - modded["rt"]) > 1e-4
     assert abs(bare["precursor_mz"] - modded["precursor_mz"]) > 1e-4
 
@@ -388,10 +389,10 @@ def test_rust_rejects_an_out_of_range_charge(artifact):
     assert str(artifact["model"].cfg.max_charge) in r.stderr, r.stderr
 
 
-def test_rust_refuses_a_site_carrying_a_named_and_a_mass_only_mod(artifact):
+def test_rust_refuses_a_site_mixing_composition_and_mass_routes(artifact):
     """`comp_enc`/`mass_enc` routing is per column, so the second mod would vanish from the
     model input while still moving every m/z. Both runtimes must refuse instead."""
-    modseq = "PEPC[Carbamidomethyl@C][+15.994915]IDER"
+    modseq = "PEPC[UNIMOD:4][+15.994915]IDER"
     r = subprocess.run(
         [
             _binary(),
@@ -407,7 +408,7 @@ def test_rust_refuses_a_site_carrying_a_named_and_a_mass_only_mod(artifact):
         text=True,
     )
     assert r.returncode == 1, f"expected a clean error, got rc={r.returncode}: {r.stderr[-400:]}"
-    assert "Carbamidomethyl@C" in r.stderr and "15.994915" in r.stderr, r.stderr
+    assert "UNIMOD:4" in r.stderr and "15.994915" in r.stderr, r.stderr
 
 
 def test_rust_rejects_a_v1_artifact(artifact, tmp_path):
