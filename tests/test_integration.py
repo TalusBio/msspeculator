@@ -214,3 +214,44 @@ def test_wandb_throttle_merges_metric_families_at_the_same_step(tmp_path: Path, 
         {"lr-AdamW": 9e-4, "train_ms2": 0.4, "train_total": 0.7},
         100,
     )
+
+
+def test_wandb_throttle_bounds_fast_stage_step_gaps(tmp_path: Path, monkeypatch):
+    class Experiment:
+        pass
+
+    class Logger:
+        LOGGER_JOIN_CHAR = "-"
+
+        def __init__(self, experiment=None, **kwargs):
+            self.experiment = experiment or Experiment()
+            self.logged = []
+
+        def log_metrics(self, metrics, step=None):
+            self.logged.append((metrics, step))
+
+        def finalize(self, status):
+            pass
+
+    experiment = Experiment()
+    monkeypatch.setitem(sys.modules, "wandb", SimpleNamespace(init=lambda **kwargs: experiment))
+    monkeypatch.setattr("lightning.pytorch.loggers.WandbLogger", Logger)
+    cfg = RunConfig(
+        out=str(tmp_path),
+        preset="flash",
+        tracking=TrackingCfg(
+            enabled=True,
+            project="pepdistill-tests",
+            mode="offline",
+            min_log_interval_seconds=10.0,
+            max_log_interval_steps=3,
+        ),
+    )
+    _, pretrain, _ = _wandb_loggers(cfg, tmp_path)
+    monkeypatch.setattr("pepdistill.distill.pipeline.time.monotonic", lambda: 0.0)
+
+    for step in range(8):
+        pretrain.log_metrics({"lr-AdamW": step / 10}, step=step)
+    pretrain.finalize("success")
+
+    assert [step for _, step in pretrain.logged] == [0, 3, 6, 7]

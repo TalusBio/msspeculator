@@ -391,7 +391,7 @@ class TrainingDiagnosticCallback(L.Callback):
         interval_minutes: float = 60.0,
         render_initial: bool = True,
         artifact_mirror: Callable[[Path], str] | None = None,
-        wandb_run=None,
+        wandb_logger=None,
     ) -> None:
         super().__init__()
         if every_n_epochs < 0:
@@ -404,7 +404,7 @@ class TrainingDiagnosticCallback(L.Callback):
         self.interval_seconds = interval_minutes * 60.0
         self.render_initial = render_initial
         self.artifact_mirror = artifact_mirror
-        self.wandb_run = wandb_run
+        self.wandb_logger = wandb_logger
         self._last_render_at = 0.0
         self._last_step: int | None = None
 
@@ -431,7 +431,7 @@ class TrainingDiagnosticCallback(L.Callback):
         if self.artifact_mirror is not None:
             for path in result.paths.values():
                 self.artifact_mirror(path)
-        if self.wandb_run is not None:
+        if self.wandb_logger is not None:
             import wandb
 
             payload = {
@@ -444,7 +444,9 @@ class TrainingDiagnosticCallback(L.Callback):
                 }
             )
             payload[f"diagnostics/{self.stage}/epoch"] = epoch
-            self.wandb_run.log(payload, step=step)
+            # Keep image and scalar diagnostics on the same ordered logger as training
+            # telemetry. Direct Run.log can advance W&B past an older throttled metric.
+            self.wandb_logger.log_metrics(payload, step=step)
         trainer.print(
             f"[diagnostics] {self.stage} {reason} at step {step:,}: "
             f"teacher agreement={result.metrics['teacher_spectral_angle']:.4f}, "

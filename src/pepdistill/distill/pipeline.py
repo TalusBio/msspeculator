@@ -216,6 +216,15 @@ class TrackingCfg:
     notes: str | None = None
     mode: str = "online"  # online | offline
     min_log_interval_seconds: float = 10.0
+    # Wall-clock throttling alone can collapse a fast stage into two points. Retain a sparse
+    # but bounded trace even when hundreds of optimizer steps fit inside the time interval.
+    max_log_interval_steps: int = 100
+
+    def __post_init__(self) -> None:
+        if self.min_log_interval_seconds < 0:
+            raise ValueError("[tracking] min_log_interval_seconds must be non-negative")
+        if self.max_log_interval_steps < 1:
+            raise ValueError("[tracking] max_log_interval_steps must be positive")
 
 
 @dataclass
@@ -406,6 +415,7 @@ def _wandb_loggers(cfg: RunConfig, out: Path):
         def __init__(self, *args, **kwargs):
             super().__init__(*args, **kwargs)
             self._last_remote_log_at: float | None = None
+            self._last_remote_step: int | None = None
             self._pending_metrics: tuple[dict, int | None] | None = None
 
         def _flush_pending(self, now: float) -> None:
@@ -414,6 +424,7 @@ def _wandb_loggers(cfg: RunConfig, out: Path):
             metrics, step = self._pending_metrics
             self._pending_metrics = None
             self._last_remote_log_at = now
+            self._last_remote_step = step
             super().log_metrics(metrics, step)
 
         def log_metrics(self, metrics: dict, step: int | None = None) -> None:
@@ -433,6 +444,13 @@ def _wandb_loggers(cfg: RunConfig, out: Path):
                 self._last_remote_log_at is None
                 or cfg.tracking.min_log_interval_seconds <= 0
                 or now - self._last_remote_log_at >= cfg.tracking.min_log_interval_seconds
+                or (
+                    step is not None
+                    and self._last_remote_step is not None
+                    # The completed record available to flush is the pending prior step, so
+                    # wait until the incoming step is strictly beyond the configured gap.
+                    and step - self._last_remote_step > cfg.tracking.max_log_interval_steps
+                )
             )
             # A new step proves the pending step is complete. Flush it if the interval is due;
             # otherwise replace it with the newer sample. The current step remains pending so
@@ -494,7 +512,7 @@ def _diagnostic_renderer(cfg: RunConfig, teacher, out: Path):
     )
 
 
-def _diagnostic_callback(cfg, renderer, stage, mirror, tracking):
+def _diagnostic_callback(cfg, renderer, stage, mirror, trainer_logger):
     from ..training_diagnostics import TrainingDiagnosticCallback
 
     return TrainingDiagnosticCallback(
@@ -504,7 +522,7 @@ def _diagnostic_callback(cfg, renderer, stage, mirror, tracking):
         interval_minutes=cfg.diagnostics.interval_minutes,
         render_initial=cfg.diagnostics.render_initial,
         artifact_mirror=mirror,
-        wandb_run=tracking.experiment if tracking is not None else None,
+        wandb_logger=trainer_logger,
     )
 
 
@@ -569,7 +587,7 @@ def _run_pretrain(
         artifact_mirror=mirror,
         logger=trainer_logger or False,
         callbacks=(
-            [_diagnostic_callback(cfg, renderer, "pretrain", mirror, tracking)]
+            [_diagnostic_callback(cfg, renderer, "pretrain", mirror, trainer_logger)]
             if renderer is not None
             else None
         ),
@@ -728,7 +746,7 @@ def run_pipeline(cfg: RunConfig, log=print) -> dict:
             f"{cfg.augmentation.residue_substitution_probability:.2%} of peptides"
         )
         diagnostic_callbacks = (
-            [_diagnostic_callback(cfg, diagnostic_renderer, "train", mirror, tracking)]
+            [_diagnostic_callback(cfg, diagnostic_renderer, "train", mirror, train_logger)]
             if diagnostic_renderer is not None
             else []
         )

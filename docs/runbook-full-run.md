@@ -202,7 +202,13 @@ project = "pepdistill"
 group = "full-v1"
 name = "small"
 tags = ["full-nontest", "small"]
+min_log_interval_seconds = 10.0 # avoid per-step remote telemetry
+max_log_interval_steps = 100    # but never leave a larger optimizer-step gap
 ```
+
+Diagnostics use this same ordered logger. This matters at stage boundaries: a direct W&B image
+write could otherwise advance the run step past an older throttled scalar record and make W&B
+discard that scalar as out-of-order.
 
 Install with `uv sync --extra tracking`. Cloud runs use a short-lived, dedicated W&B
 service-account key passed as `WANDB_API_KEY` in Batch job metadata. Revoke the key after every

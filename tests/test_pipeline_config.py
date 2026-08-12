@@ -96,6 +96,7 @@ group = "full-v1"
 tags = ["base", "non-test"]
 mode = "offline"
 min_log_interval_seconds = 12.5
+max_log_interval_steps = 25
 """
     )
     cfg = RunConfig.from_toml(_write(tmp_path, text))
@@ -105,6 +106,7 @@ min_log_interval_seconds = 12.5
     assert cfg.tracking.tags == ["base", "non-test"]
     assert cfg.tracking.mode == "offline"
     assert cfg.tracking.min_log_interval_seconds == 12.5
+    assert cfg.tracking.max_log_interval_steps == 25
 
 
 def test_training_diagnostics_config_parses(tmp_path):
