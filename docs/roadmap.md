@@ -42,9 +42,9 @@ deferred until it solves a measured deployment need.
   and compressed shard index define the inputs; S3 is only an optional read-through cache.
 - Every source shard produces one immutable prepared asset. Finalization verifies all shards and
   publishes one worker-independent training manifest.
-- CPU training uses exact-length dense batches, direct Polars-to-tensor collation, and disjoint
-  persistent shard-loader workers. The cloud launcher now requests 8 vCPUs: four model threads
-  plus four single-threaded Polars workers, instead of reserving 31 vCPUs for one trainer.
+- CPU training uses exact-length dense batches and direct Polars-to-tensor collation in the
+  trainer process. The cloud training launcher requests 4 vCPUs and 16 GB: four model threads,
+  no separate loader workers, and enough memory for the streamed one-shard-at-a-time workload.
 - Training optionally applies chemistry-preserving residue substitutions to a configured
   fraction of peptides. The exact original-minus-replacement elemental composition and mass
   keep all targets invariant; production full-run configs currently select 1% of peptides.

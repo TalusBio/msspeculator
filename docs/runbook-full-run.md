@@ -224,6 +224,9 @@ The staging helper generates one config and one isolated `full-v2-aug1pct` S3 ou
 each of `flash`, `small-2h`, `small`, `base-4h`, and `base`. Upload the immutable stage once, then
 reuse its S3 prefix for all five jobs:
 
+The training entrypoint requests 4 vCPUs and 16 GB. Its prepared loader stays in-process and the
+model uses four intra-op threads, so requesting additional CPUs does not improve this workload.
+
 ```bash
 .venv/bin/python tools/prepare_launchpad_full_run.py
 aws s3 sync .launchpad/full-run-stage "$STAGE_URI"

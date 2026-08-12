@@ -5,8 +5,8 @@
 # dependencies = []
 #
 # [tool.launchpad]
-# vcpus = 8
-# memory = 30000
+# vcpus = 4
+# memory = 16000
 # job_name = "pepdistill-prepared-train"
 # env = { POLARS_MAX_THREADS = "1" }
 # ///
