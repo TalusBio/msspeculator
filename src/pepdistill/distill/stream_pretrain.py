@@ -307,6 +307,7 @@ def fit_stream_pretrain(
     checkpoint_path=None,
     artifact_mirror=None,
     logger=False,
+    callbacks: list[L.Callback] | None = None,
 ) -> DistillModule:
     """Enumerate-and-chunk online teacher-distill warmup on the shared backbone + MS context
     encoder."""
@@ -340,7 +341,7 @@ def fit_stream_pretrain(
         onecycle_final_div_factor=cfg.onecycle_final_div_factor,
     )
     loader = DataLoader(_StreamingDataset(teacher, encoder, cfg), batch_size=None)
-    callbacks: list[L.Callback] = [_StepLogger(log_every, log)]
+    callbacks = [*(callbacks or ()), _StepLogger(log_every, log)]
     if logger:
         callbacks.append(LearningRateMonitor(logging_interval="step"))
     if checkpoint_every > 0:

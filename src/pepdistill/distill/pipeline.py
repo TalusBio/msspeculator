@@ -198,6 +198,30 @@ class TrackingCfg:
 
 
 @dataclass
+class DiagnosticsCfg:
+    """Low-frequency longitudinal plots for representations, iRT, and reference spectra.
+
+    Disabled by default because plotting and the AlphaPeptDeep reference teacher are optional
+    dependencies. Enable it for production training runs installed with ``tracking,teacher``.
+    """
+
+    enabled: bool = False
+    teacher: str | None = None  # defaults to the pretrain teacher
+    butterflies: int = 3
+    every_n_epochs: int = 1  # 0 disables epoch renders
+    interval_minutes: float = 60.0  # 0 disables wall-clock renders
+    render_initial: bool = True
+
+    def __post_init__(self) -> None:
+        if self.butterflies < 1:
+            raise ValueError("[diagnostics] butterflies must be positive")
+        if self.every_n_epochs < 0:
+            raise ValueError("[diagnostics] every_n_epochs must be non-negative")
+        if self.interval_minutes < 0:
+            raise ValueError("[diagnostics] interval_minutes must be non-negative")
+
+
+@dataclass
 class RunConfig:
     out: str = "runs/exp"
     # Mirror durable artifacts as they are produced while retaining the local output directory.
@@ -212,6 +236,7 @@ class RunConfig:
     export: ExportCfg = field(default_factory=ExportCfg)
     bench: BenchCfg = field(default_factory=BenchCfg)
     tracking: TrackingCfg = field(default_factory=TrackingCfg)
+    diagnostics: DiagnosticsCfg = field(default_factory=DiagnosticsCfg)
 
     @classmethod
     def from_toml(cls, path: str | Path) -> "RunConfig":
@@ -238,6 +263,7 @@ class RunConfig:
             export=ExportCfg(**raw.get("export", {})),
             bench=BenchCfg(**raw.get("bench", {})),
             tracking=TrackingCfg(**raw.get("tracking", {})),
+            diagnostics=DiagnosticsCfg(**raw.get("diagnostics", {})),
         )
 
 
@@ -287,21 +313,29 @@ def _release_accelerator_cache(acc: str) -> None:
         torch.cuda.empty_cache()
 
 
-def _artifact_mirror(prefix: str, log=print, on_mirrored=None):
+def _artifact_mirror(
+    prefix: str, log=print, on_mirrored=None, relative_root: str | Path | None = None
+):
     """Build a synchronous, fail-loud artifact mirror rooted at an fsspec URI."""
     fs, root = fsspec.core.url_to_fs(prefix)
     root = root.rstrip("/")
 
     def mirror(path: str | Path) -> str:
         source = Path(path)
-        target = f"{root}/{source.name}" if root else source.name
+        relative = source.name
+        if relative_root is not None:
+            try:
+                relative = source.resolve().relative_to(Path(relative_root).resolve()).as_posix()
+            except ValueError:
+                pass
+        target = f"{root}/{relative}" if root else relative
         parent = target.rpartition("/")[0]
         if parent:
             fs.makedirs(parent, exist_ok=True)
         with source.open("rb") as src, fs.open(target, "wb") as dst:
             shutil.copyfileobj(src, dst, length=8 * 1024 * 1024)
-        uri = f"{prefix.rstrip('/')}/{source.name}"
-        log(f"[artifact] mirrored {source.name} -> {uri}")
+        uri = f"{prefix.rstrip('/')}/{relative}"
+        log(f"[artifact] mirrored {relative} -> {uri}")
         if on_mirrored is not None:
             on_mirrored(source, uri)
         return uri
@@ -420,12 +454,56 @@ def _runbook_for_index(
     return expanded
 
 
-def _run_pretrain(cfg: RunConfig, model, encoder, acc, out: Path, mirror, trainer_logger, log):
+def _diagnostic_renderer(cfg: RunConfig, teacher, out: Path):
+    from ..training_diagnostics import DiagnosticAcquisition, TrainingDiagnosticRenderer
+
+    return TrainingDiagnosticRenderer(
+        out / "diagnostics",
+        teacher,
+        acquisition=DiagnosticAcquisition(
+            instrument=cfg.pretrain.instrument,
+            detector=cfg.pretrain.detector,
+            fragmentation=cfg.pretrain.fragmentation,
+            nce=(cfg.pretrain.nce_min + cfg.pretrain.nce_max) / 2.0,
+        ),
+        butterflies=cfg.diagnostics.butterflies,
+        nce_range=(cfg.pretrain.nce_min, cfg.pretrain.nce_max),
+    )
+
+
+def _diagnostic_callback(cfg, renderer, stage, mirror, tracking):
+    from ..training_diagnostics import TrainingDiagnosticCallback
+
+    return TrainingDiagnosticCallback(
+        renderer,
+        stage,
+        every_n_epochs=cfg.diagnostics.every_n_epochs,
+        interval_minutes=cfg.diagnostics.interval_minutes,
+        render_initial=cfg.diagnostics.render_initial,
+        artifact_mirror=mirror,
+        wandb_run=tracking.experiment if tracking is not None else None,
+    )
+
+
+def _run_pretrain(
+    cfg: RunConfig, model, encoder, acc, out: Path, mirror, tracking, trainer_logger, log
+):
     p = cfg.pretrain
     assert encoder is not None  # guaranteed by need_encoder in run_pipeline
     mixes = _stream_mixes(p, log)
     kw = {} if p.teacher == "fake" else {"device": p.device, "instrument": p.instrument}
     teacher = get_teacher(p.teacher, **kw)
+    diagnostic_teacher = teacher
+    if cfg.diagnostics.enabled and cfg.diagnostics.teacher not in (None, p.teacher):
+        diagnostic_kw = (
+            {}
+            if cfg.diagnostics.teacher == "fake"
+            else {"device": p.device, "instrument": p.instrument}
+        )
+        diagnostic_teacher = get_teacher(cfg.diagnostics.teacher, **diagnostic_kw)
+    renderer = (
+        _diagnostic_renderer(cfg, diagnostic_teacher, out) if cfg.diagnostics.enabled else None
+    )
     spc = StreamPretrainCfg(
         mixes=mixes,
         nce_range=(p.nce_min, p.nce_max),
@@ -454,7 +532,7 @@ def _run_pretrain(cfg: RunConfig, model, encoder, acc, out: Path, mirror, traine
         f"{spc.passes} pass(es), chunk {spc.chunk_size}, "
         f"OneCycle max_lr={spc.onecycle_max_lr} over {spc.onecycle_total_steps} step(s)"
     )
-    return fit_stream_pretrain(
+    module = fit_stream_pretrain(
         model,
         encoder,
         teacher,
@@ -465,7 +543,13 @@ def _run_pretrain(cfg: RunConfig, model, encoder, acc, out: Path, mirror, traine
         checkpoint_path=out / "pretrain-latest.ckpt",
         artifact_mirror=mirror,
         logger=trainer_logger or False,
+        callbacks=(
+            [_diagnostic_callback(cfg, renderer, "pretrain", mirror, tracking)]
+            if renderer is not None
+            else None
+        ),
     )
+    return module, renderer
 
 
 def run_pipeline(cfg: RunConfig, log=print) -> dict:
@@ -478,12 +562,16 @@ def run_pipeline(cfg: RunConfig, log=print) -> dict:
     tracking, pretrain_logger, train_logger = _wandb_loggers(cfg, out)
 
     def record_artifact(path: Path, uri: str) -> None:
-        summary.setdefault("artifacts", {})[path.name] = uri
+        try:
+            name = path.resolve().relative_to(out.resolve()).as_posix()
+        except ValueError:
+            name = path.name
+        summary.setdefault("artifacts", {})[name] = uri
         if tracking is not None:
-            tracking.experiment.summary[f"artifacts/{path.name}"] = uri
+            tracking.experiment.summary[f"artifacts/{name}"] = uri
 
     mirror = (
-        _artifact_mirror(cfg.remote_output_prefix, log, record_artifact)
+        _artifact_mirror(cfg.remote_output_prefix, log, record_artifact, relative_root=out)
         if cfg.remote_output_prefix
         else None
     )
@@ -520,7 +608,9 @@ def run_pipeline(cfg: RunConfig, log=print) -> dict:
     log(f"student '{cfg.preset}' — {model.num_parameters():,} params (device={cfg.device})")
 
     if cfg.pretrain.enabled:
-        mod = _run_pretrain(cfg, model, encoder, acc, out, mirror, pretrain_logger, log)
+        mod, diagnostic_renderer = _run_pretrain(
+            cfg, model, encoder, acc, out, mirror, tracking, pretrain_logger, log
+        )
         summary["pretrain"] = {k: float(v) for k, v in mod.trainer.callback_metrics.items()}
         log(f"[pretrain] {summary['pretrain']}")
         pretrain_ckpt = out / "pretrain.ckpt"
@@ -539,10 +629,23 @@ def run_pipeline(cfg: RunConfig, log=print) -> dict:
         gc.collect()
         _release_accelerator_cache(acc)
 
+    else:
+        diagnostic_renderer = None
+
     runbook = None
     dataset_index = None
     if cfg.train.enabled:
         assert encoder is not None, "need_encoder covers cfg.train.enabled"
+        if cfg.diagnostics.enabled and diagnostic_renderer is None:
+            teacher_name = cfg.diagnostics.teacher or cfg.pretrain.teacher
+            teacher_kw = (
+                {}
+                if teacher_name == "fake"
+                else {"device": cfg.pretrain.device, "instrument": cfg.pretrain.instrument}
+            )
+            diagnostic_renderer = _diagnostic_renderer(
+                cfg, get_teacher(teacher_name, **teacher_kw), out
+            )
         if not cfg.train.prepared_prefix:
             raise ValueError("[train] requires prepared_prefix; run the prepared ETL first")
         if cfg.train.model_threads < 1:
@@ -586,6 +689,11 @@ def run_pipeline(cfg: RunConfig, log=print) -> dict:
             f"train rows={len(train_ds):,}, val rows={len(val_ds):,}, "
             f"loader workers={cfg.train.num_workers}, model threads={torch.get_num_threads()}"
         )
+        diagnostic_callbacks = (
+            [_diagnostic_callback(cfg, diagnostic_renderer, "train", mirror, tracking)]
+            if diagnostic_renderer is not None
+            else []
+        )
         module = fit_realspeclib_datasets(
             model,
             train_ds,
@@ -611,6 +719,7 @@ def run_pipeline(cfg: RunConfig, log=print) -> dict:
             checkpoint_dir=out,
             artifact_mirror=mirror,
             logger=train_logger or False,
+            callbacks=diagnostic_callbacks,
         )
         summary["train"] = {k: float(v) for k, v in module.trainer.callback_metrics.items()}
         summary["dataset_index"] = dataset_index
@@ -684,5 +793,6 @@ __all__ = [
     "ExportCfg",
     "BenchCfg",
     "TrackingCfg",
+    "DiagnosticsCfg",
     "run_pipeline",
 ]

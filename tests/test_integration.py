@@ -38,6 +38,13 @@ fasta = "{fasta}"
 
 [train]
 enabled = false
+
+[diagnostics]
+enabled = true
+teacher = "fake"
+butterflies = 2
+every_n_epochs = 0
+interval_minutes = 0
 """
     )
     result = CliRunner().invoke(app, ["run", str(config)])
@@ -45,6 +52,9 @@ enabled = false
     assert (workdir / "model.ckpt").exists()
     assert (workdir / "pretrain.ckpt").exists()
     assert (workdir / "summary.json").exists()
+    snapshots = sorted((workdir / "diagnostics").glob("pretrain-step-*"))
+    assert len(snapshots) == 2
+    assert all((snapshot / "reference-butterflies.png").exists() for snapshot in snapshots)
 
     context = load_checkpoint(workdir / "model.ckpt")
     assert context.cfg.d_model > 0
@@ -81,6 +91,22 @@ def test_pipeline_mirrors_durable_outputs(tmp_path: Path):
     assert summary["artifacts"]["model.ckpt"] == f"{remote.as_uri()}/model.ckpt"
     assert (remote / "model.ckpt").exists()
     assert (remote / "summary.json").exists()
+
+
+def test_artifact_mirror_preserves_run_relative_paths(tmp_path: Path):
+    from pepdistill.distill.pipeline import _artifact_mirror
+
+    local = tmp_path / "out"
+    remote = tmp_path / "remote"
+    plot = local / "diagnostics" / "epoch-0001" / "irt.png"
+    plot.parent.mkdir(parents=True)
+    plot.write_bytes(b"png")
+    mirror = _artifact_mirror(remote.as_uri(), relative_root=local, log=lambda *_: None)
+
+    uri = mirror(plot)
+
+    assert uri.endswith("/diagnostics/epoch-0001/irt.png")
+    assert (remote / "diagnostics" / "epoch-0001" / "irt.png").read_bytes() == b"png"
 
 
 def test_wandb_stage_loggers_share_one_run(tmp_path: Path, monkeypatch):

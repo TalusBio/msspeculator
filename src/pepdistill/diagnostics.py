@@ -83,6 +83,16 @@ class RtObservation:
 
 
 @dataclass(frozen=True)
+class RtRegressionMetrics:
+    """Scalar summary shown alongside an observed-vs-predicted iRT panel."""
+
+    slope: float
+    intercept: float
+    r_squared: float
+    mae: float
+
+
+@dataclass(frozen=True)
 class IrtStandard:
     """One immutable peptide in the canonical iRT calibration panel."""
 
@@ -331,10 +341,7 @@ def plot_irt_scatter(
         raise ValueError("at least two iRT observations are required")
     observed = np.asarray([item.observed_irt for item in observations], dtype=np.float64)
     predicted = np.asarray([item.predicted_irt for item in observations], dtype=np.float64)
-    slope, intercept = np.polyfit(observed, predicted, 1)
-    correlation = np.corrcoef(observed, predicted)[0, 1]
-    r_squared = float(correlation**2) if np.isfinite(correlation) else 0.0
-    mae = float(np.mean(np.abs(predicted - observed)))
+    metrics = irt_regression_metrics(observations)
     low = float(min(observed.min(), predicted.min()))
     high = float(max(observed.max(), predicted.max()))
     margin = max((high - low) * 0.04, 1.0)
@@ -355,7 +362,13 @@ def plot_irt_scatter(
             label=dataset,
         )
     ax.plot(axis, axis, linestyle="--", color="0.25", linewidth=1.2, label="identity")
-    ax.plot(axis, slope * axis + intercept, color="#D1495B", linewidth=1.4, label="fit")
+    ax.plot(
+        axis,
+        metrics.slope * axis + metrics.intercept,
+        color="#D1495B",
+        linewidth=1.4,
+        label="fit",
+    )
     ax.set(
         xlim=axis,
         ylim=axis,
@@ -367,7 +380,8 @@ def plot_irt_scatter(
     ax.text(
         0.03,
         0.97,
-        f"slope={slope:.3f}\nintercept={intercept:.3f}\nR²={r_squared:.3f}\nMAE={mae:.3f}",
+        f"slope={metrics.slope:.3f}\nintercept={metrics.intercept:.3f}\n"
+        f"R²={metrics.r_squared:.3f}\nMAE={metrics.mae:.3f}",
         transform=ax.transAxes,
         va="top",
         bbox={"boxstyle": "round", "facecolor": "white", "alpha": 0.85},
@@ -379,6 +393,22 @@ def plot_irt_scatter(
     fig.savefig(target, dpi=160)
     plt.close(fig)
     return target
+
+
+def irt_regression_metrics(observations: Sequence[RtObservation]) -> RtRegressionMetrics:
+    """Compute the regression summary used by both plots and experiment tracking."""
+    if len(observations) < 2:
+        raise ValueError("at least two iRT observations are required")
+    observed = np.asarray([item.observed_irt for item in observations], dtype=np.float64)
+    predicted = np.asarray([item.predicted_irt for item in observations], dtype=np.float64)
+    slope, intercept = np.polyfit(observed, predicted, 1)
+    correlation = np.corrcoef(observed, predicted)[0, 1]
+    return RtRegressionMetrics(
+        slope=float(slope),
+        intercept=float(intercept),
+        r_squared=float(correlation**2) if np.isfinite(correlation) else 0.0,
+        mae=float(np.mean(np.abs(predicted - observed))),
+    )
 
 
 def plot_spectrum_butterflies(
@@ -448,8 +478,10 @@ __all__ = [
     "IrtStandard",
     "ReferenceSpectrum",
     "RtObservation",
+    "RtRegressionMetrics",
     "SpectrumComparison",
     "normalized_spectral_angle",
+    "irt_regression_metrics",
     "plot_irt_scatter",
     "plot_labeled_embedding_pca",
     "plot_spectrum_butterflies",

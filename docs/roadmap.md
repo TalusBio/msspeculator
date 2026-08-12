@@ -1,6 +1,6 @@
 # Roadmap
 
-Updated 2026-08-10. The product milestone is a reproducible path from FASTA and prepared
+Updated 2026-08-11. The product milestone is a reproducible path from FASTA and prepared
 experimental data to a Rust-generated spectral library that produces useful search results.
 Validation is reported per dataset; a pooled score is not an acceptance criterion. ONNX is
 deferred until it solves a measured deployment need.
@@ -34,6 +34,9 @@ deferred until it solves a measured deployment need.
   Pretraining uses OneCycle by default, logs learning rate, and saves `pretrain.ckpt` plus
   periodic warm-start snapshots. All durable artifacts can be mirrored incrementally to a
   per-run object-store prefix; checkpoints can be loaded directly from that prefix.
+- Training can emit fixed-frame amino-acid, modification, and acquisition-context PCA panels,
+  iRT calibration scatterplots, and teacher/student butterflies at low frequency. Snapshots are
+  local artifacts, preserve their epoch paths in object storage, and are also sent to W&B.
 - Real-data preparation is a separate range-addressable Polars ETL. A vendored Zenodo catalog
   and compressed shard index define the inputs; S3 is only an optional read-through cache.
 - Every source shard produces one immutable prepared asset. Finalization verifies all shards and

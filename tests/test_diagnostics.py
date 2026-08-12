@@ -11,6 +11,7 @@ from pepdistill.diagnostics import (
     RtObservation,
     SpectrumComparison,
     normalized_spectral_angle,
+    irt_regression_metrics,
     plot_irt_scatter,
     plot_labeled_embedding_pca,
     plot_spectrum_butterflies,
@@ -51,7 +52,7 @@ def test_reference_panel_roundtrips_and_reports_teacher_yardstick(tmp_path):
     assert loaded.teacher_yardstick() == {"pool": pytest.approx(1.0)}
 
 
-def test_plot_prototypes_write_pngs(tmp_path):
+def test_spectrum_plot_writes_png(tmp_path):
     butterfly_path = plot_spectrum_butterflies(
         [
             SpectrumComparison(
@@ -100,3 +101,13 @@ def test_canonical_irt_panel_is_ordered_and_complete():
 def test_normalized_spectral_angle_matches_identical_and_orthogonal():
     assert normalized_spectral_angle(np.asarray([1.0, 0.0]), np.asarray([1.0, 0.0])) == 1.0
     assert normalized_spectral_angle(np.asarray([1.0, 0.0]), np.asarray([0.0, 1.0])) == 0.0
+
+
+def test_irt_regression_metrics_are_reusable_without_plotting():
+    metrics = irt_regression_metrics(
+        [RtObservation("A", 0.0, 1.0), RtObservation("B", 10.0, 9.0)]
+    )
+    assert metrics.slope == pytest.approx(0.8)
+    assert metrics.intercept == pytest.approx(1.0)
+    assert metrics.r_squared == pytest.approx(1.0)
+    assert metrics.mae == pytest.approx(1.0)

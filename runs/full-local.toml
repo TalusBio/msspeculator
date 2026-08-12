@@ -18,6 +18,13 @@ group = "full-v1-local"
 tags = ["full-nontest", "small", "local"]
 min_log_interval_seconds = 10.0
 
+[diagnostics]
+enabled = true
+butterflies = 3
+every_n_epochs = 1
+interval_minutes = 60.0
+render_initial = true
+
 [pretrain]
 enabled = true
 teacher = "alphapeptdeep"

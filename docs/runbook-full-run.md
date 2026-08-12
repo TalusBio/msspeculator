@@ -1,6 +1,6 @@
 # Runbook — full preparation and training run
 
-**Updated 2026-08-10.** A "full run" = `pepdistill run <toml>` over the `RunConfig` stages
+**Updated 2026-08-11.** A "full run" = `pepdistill run <toml>` over the `RunConfig` stages
 `pretrain → train → export → bench` (each toggleable), then predict. This runbook covers
 pretrain + train (the two on-by-default stages), library generation, and a search-engine smoke
 test.
@@ -8,7 +8,7 @@ test.
 ## 0. Prerequisites
 
 ```bash
-uv sync --extra teacher --extra etl  # teacher + Polars/S3 ETL; builds Rust (needs cargo)
+uv sync --extra teacher --extra etl --extra tracking  # teacher + ETL + W&B/diagnostics
 ```
 
 Inputs:
@@ -102,6 +102,13 @@ num_workers = 0                 # Polars decodes in-process; avoids unsafe post-
 model_threads = 4               # intra-op threads in the model process
 loss_weights = [1.0, 1.0, 1.0]   # (ms2, iRT, raw_rt)
 
+[diagnostics]                    # fixed longitudinal panel; optional
+enabled = true
+butterflies = 3                  # evenly spaced Biognosys iRT standards
+every_n_epochs = 1               # 0 disables epoch snapshots
+interval_minutes = 60.0          # 0 disables wall-clock snapshots
+render_initial = true
+
 # [export] / [bench] left off. ONNX is deferred; use export-rust for production inference.
 ```
 
@@ -118,6 +125,12 @@ loss_weights = [1.0, 1.0, 1.0]   # (ms2, iRT, raw_rt)
   observation. Real-data val metrics are reported separately for every configured dataset as
   `val/<dataset>/spectral_angle`, `val/<dataset>/irt_mae`, `val/<dataset>/rawrt_mae`, and
   `val/<dataset>/n` (the number of deduplicated validation entries).
+- **Diagnostics**: the teacher reference spectra and PCA bases are fixed once per run. The
+  zero-initialized acquisition encoder defers its basis until its first non-degenerate snapshot.
+  Initial,
+  hourly, epoch, and final snapshots therefore share reference targets and coordinate frames.
+  They are written below `out/diagnostics/<stage>-step-.../`, mirrored without flattening when
+  `remote_output_prefix` is set, and logged to the same W&B run when tracking is enabled.
 
 ## 3. Run pretrain → train
 
@@ -240,8 +253,8 @@ cargo run -q --release -p pepdistill-cli -- \
 
 Notes:
 - Transformer presets only.
-- `--peptide` takes a **modified sequence**: `PEPC[Carbamidomethyl@C]IDER` (side chain),
-  `[TMT6plex]PEPTIDER` (N-term), `PEPTIDER[Amidated]` (C-term), or a bare Dalton delta
+- `--peptide` takes a **ProForma sequence**: `PEPC[UNIMOD:4]IDER` (side chain),
+  `[UNIMOD:737]-PEPTIDER` (N-term), `PEPTIDER-[UNIMOD:2]` (C-term), or a bare Dalton delta
   `PEP[+42.010565]TIDER`. Named mods go through the compositional encoder, `+`/`-` deltas
   through the mass encoder. The `peptide` field of the JSON echoes how the string was read.
 - The artifact is versioned: a `.safetensors` exported before the mod-representation-v2 work
@@ -265,5 +278,12 @@ pepdistill predict --model runs/full/model.ckpt --fasta one.fasta -o one.parquet
 - `runs/full/latest.ckpt`, `runs/full/best.ckpt` — rolling real-data checkpoints.
 - `runs/full/pretrain-latest.ckpt` — periodic pretrain warm start, when the interval is reached.
 - `runs/full/summary.json` — per-stage metrics.
+- `runs/full/diagnostics/<stage>-step-.../` — fixed-frame PCA, iRT, and butterfly snapshots.
 - `runs/full/model.safetensors` — Rust-loadable artifact (from `export-rust`).
 - Prediction: JSON on stdout (Rust CLI) or `one.parquet` (torch predict).
+
+Render the same production panel for any checkpoint without starting training:
+
+```bash
+pepdistill diagnose --model runs/full/model.ckpt --out runs/full/manual-diagnostics
+```

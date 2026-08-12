@@ -99,3 +99,34 @@ min_log_interval_seconds = 12.5
     assert cfg.tracking.tags == ["base", "non-test"]
     assert cfg.tracking.mode == "offline"
     assert cfg.tracking.min_log_interval_seconds == 12.5
+
+
+def test_training_diagnostics_config_parses(tmp_path):
+    cfg = RunConfig.from_toml(
+        _write(
+            tmp_path,
+            BASE
+            + '''
+[diagnostics]
+enabled = true
+teacher = "fake"
+butterflies = 5
+every_n_epochs = 2
+interval_minutes = 30
+render_initial = false
+''',
+        )
+    )
+    assert cfg.diagnostics.enabled
+    assert cfg.diagnostics.teacher == "fake"
+    assert cfg.diagnostics.butterflies == 5
+    assert cfg.diagnostics.every_n_epochs == 2
+    assert cfg.diagnostics.interval_minutes == 30
+    assert not cfg.diagnostics.render_initial
+
+
+def test_training_diagnostics_config_rejects_invalid_frequency(tmp_path):
+    with pytest.raises(ValueError, match="interval_minutes"):
+        RunConfig.from_toml(
+            _write(tmp_path, BASE + "\n[diagnostics]\ninterval_minutes = -1\n")
+        )

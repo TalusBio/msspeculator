@@ -49,6 +49,9 @@ transformer padding/masks and allowing Parquet decode and tensor collation to ov
   the same train/validation/test partition.
 - Real-data validation is deduplicated to the best observation per library entry and reported
   per dataset. Early stopping follows the mean of the configured per-dataset spectral angles.
+- Optional longitudinal diagnostics reuse one teacher-labeled iRT reference panel and fixed PCA
+  bases for the whole run. Initial/hourly/epoch/final renders can therefore be compared directly;
+  plots are stored as run artifacts and logged to W&B without entering the hot training loop.
 
 ## Inference and output
 

@@ -88,6 +88,13 @@ name = "{run_name}"
 group = "full-v1"
 tags = ["full-nontest", "{model_preset}", "{run_name}"]
 
+[diagnostics]
+enabled = true
+butterflies = 3
+every_n_epochs = 1
+interval_minutes = 60.0
+render_initial = true
+
 [pretrain]
 enabled = true
 teacher = "alphapeptdeep"
