@@ -46,7 +46,7 @@ class PcaBasis:
 class SpectrumComparison:
     """One reference precursor's aligned fragment axis and two intensity predictions."""
 
-    modified_sequence: str
+    proforma_sequence: str
     charge: int
     fragment_mz: np.ndarray
     student_intensity: np.ndarray
@@ -61,6 +61,7 @@ class LabeledEmbedding:
     label: str
     family: str
     vector: np.ndarray
+    annotation: str | None = None
 
 
 @dataclass(frozen=True)
@@ -229,58 +230,6 @@ def _pyplot():
     return plt
 
 
-def plot_embedding_pca(
-    coordinates: np.ndarray,
-    lengths: Sequence[int],
-    modified: Sequence[bool],
-    path: str | Path,
-    *,
-    title: str,
-    explained_variance_ratio: Sequence[float] | None = None,
-) -> Path:
-    """Plot a fixed reference panel in a two-dimensional latent PCA frame."""
-    xy = np.asarray(coordinates)
-    if xy.ndim != 2 or xy.shape[1] != 2 or xy.shape[0] == 0:
-        raise ValueError("PCA coordinates must have shape (n, 2)")
-    lengths_array = np.asarray(lengths)
-    modified_array = np.asarray(modified, dtype=bool)
-    if len(xy) != len(lengths_array) or len(xy) != len(modified_array):
-        raise ValueError("coordinate metadata lengths do not match")
-
-    plt = _pyplot()
-    fig, ax = plt.subplots(figsize=(8.5, 6.5), constrained_layout=True)
-    for mask, marker, label in (
-        (~modified_array, "o", "unmodified"),
-        (modified_array, "^", "modified"),
-    ):
-        if mask.any():
-            points = ax.scatter(
-                xy[mask, 0],
-                xy[mask, 1],
-                c=lengths_array[mask],
-                cmap="viridis",
-                marker=marker,
-                s=34,
-                alpha=0.78,
-                linewidths=0.25,
-                edgecolors="black",
-                label=label,
-            )
-    ratio = [] if explained_variance_ratio is None else list(explained_variance_ratio)
-    x_label = f"PC1 ({ratio[0]:.1%})" if len(ratio) > 0 else "PC1"
-    y_label = f"PC2 ({ratio[1]:.1%})" if len(ratio) > 1 else "PC2"
-    ax.set(xlabel=x_label, ylabel=y_label, title=title)
-    ax.axhline(0, color="0.88", linewidth=0.8, zorder=0)
-    ax.axvline(0, color="0.88", linewidth=0.8, zorder=0)
-    ax.legend(frameon=False)
-    fig.colorbar(points, ax=ax, label="peptide length")
-    target = Path(path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(target, dpi=160)
-    plt.close(fig)
-    return target
-
-
 def plot_labeled_embedding_pca(
     embeddings: Sequence[LabeledEmbedding],
     path: str | Path,
@@ -301,14 +250,21 @@ def plot_labeled_embedding_pca(
     fig, ax = plt.subplots(figsize=(9, 7), constrained_layout=True)
     families = list(dict.fromkeys(item.family for item in embeddings))
     palette = plt.get_cmap("tab10")
+    family_colors = {
+        family: palette(family_index % 10) for family_index, family in enumerate(families)
+    }
+    family_by_label = {item.label: item.family for item in embeddings}
+    markers = ("o", "s", "^", "D", "P", "X", "v", "<", ">")
+    line_styles = ("-", "--", "-.", ":")
     for family_index, family in enumerate(families):
         mask = np.asarray([item.family == family for item in embeddings])
         ax.scatter(
             xy[mask, 0],
             xy[mask, 1],
-            s=58,
-            alpha=0.85,
-            color=palette(family_index % 10),
+            s=58 + 8 * (len(families) - family_index - 1),
+            marker=markers[family_index % len(markers)],
+            alpha=0.78,
+            color=family_colors[family],
             label=family,
         )
     for connection in connections:
@@ -317,8 +273,12 @@ def plot_labeled_embedding_pca(
         ax.plot(
             [first[0], second[0]],
             [first[1], second[1]],
-            color="0.65",
-            linewidth=1.0,
+            color=family_colors[family_by_label[connection.first_label]],
+            alpha=0.65,
+            linewidth=1.3,
+            linestyle=line_styles[
+                families.index(family_by_label[connection.first_label]) % len(line_styles)
+            ],
             zorder=0,
         )
     annotation_offsets = ((5, 5), (5, -12), (5, 18), (5, -25), (5, 31), (5, -38))
@@ -332,14 +292,16 @@ def plot_labeled_embedding_pca(
             for previous in previous_points
         )
         offset = annotation_offsets[min(neighbor_count, len(annotation_offsets) - 1)]
-        ax.annotate(
-            item.label,
-            point,
-            xytext=offset,
-            textcoords="offset points",
-            fontsize=8,
-            annotation_clip=False,
-        )
+        annotation = item.label if item.annotation is None else item.annotation
+        if annotation:
+            ax.annotate(
+                annotation,
+                point,
+                xytext=offset,
+                textcoords="offset points",
+                fontsize=8,
+                annotation_clip=False,
+            )
         previous_points.append(point)
     ratio = basis.explained_variance_ratio
     ax.set(
@@ -446,7 +408,7 @@ def plot_spectrum_butterflies(
         student = np.asarray(comparison.student_intensity, dtype=float).ravel()
         target = np.asarray(comparison.reference_intensity, dtype=float).ravel()
         if not (mz.shape == student.shape == target.shape):
-            raise ValueError(f"spectrum arrays do not align for {comparison.modified_sequence}")
+            raise ValueError(f"spectrum arrays do not align for {comparison.proforma_sequence}")
         student = student / max(float(student.max()), 1e-12)
         target = target / max(float(target.max()), 1e-12)
         agreement = normalized_spectral_angle(student, target)
@@ -462,7 +424,7 @@ def plot_spectrum_butterflies(
         ax.axhline(0, color="0.2", linewidth=0.8)
         ax.set(
             title=(
-                f"{comparison.modified_sequence}  z={comparison.charge}  "
+                f"{comparison.proforma_sequence}  z={comparison.charge}  "
                 f"spectral agreement={agreement:.3f}"
             ),
             ylabel="normalized intensity",
@@ -488,7 +450,6 @@ __all__ = [
     "RtObservation",
     "SpectrumComparison",
     "normalized_spectral_angle",
-    "plot_embedding_pca",
     "plot_irt_scatter",
     "plot_labeled_embedding_pca",
     "plot_spectrum_butterflies",

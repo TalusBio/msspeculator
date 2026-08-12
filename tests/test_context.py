@@ -121,6 +121,17 @@ def test_ms_context_blank_is_zero():
     assert torch.allclose(out, torch.zeros(4, 8))
 
 
+def test_ms_context_unknown_rows_are_fixed_neutral_even_for_old_checkpoint_weights():
+    enc = MSContextEncoder(context_dim=8)
+    with torch.no_grad():
+        enc.inst_emb.weight[0].fill_(1.0)
+        enc.det_emb.weight[0].fill_(2.0)
+        enc.frag_emb.weight[0].fill_(3.0)
+    unknown = torch.zeros(1, dtype=torch.long)
+    assert torch.equal(enc(unknown, unknown, unknown, None), torch.zeros(1, 8))
+    assert enc.inst_emb.padding_idx == enc.det_emb.padding_idx == enc.frag_emb.padding_idx == 0
+
+
 def test_ms_context_ids_and_unknown_fallback():
     enc = MSContextEncoder(context_dim=8)
     assert enc.instrument_id(DEFAULT_INSTRUMENTS[1]) == 1
@@ -145,6 +156,17 @@ def test_chrom_runbook_neutral_row_zero():
     out = book(torch.tensor([0, 0]))  # index 0 = neutral/iRT
     assert out.shape == (2, 8)
     assert torch.allclose(out, torch.zeros(2, 8))  # zero-init
+
+    # Loading an old checkpoint cannot make the reserved neutral row non-neutral.
+    with torch.no_grad():
+        book.emb.weight[0].fill_(2.0)
+        book.log_scale.weight[0].fill_(3.0)
+        book.shift.weight[0].fill_(4.0)
+    neutral = torch.zeros(2, dtype=torch.long)
+    scale, shift = book.affine(neutral)
+    assert torch.equal(book(neutral), torch.zeros(2, 8))
+    assert torch.equal(scale, torch.ones(2))
+    assert torch.equal(shift, torch.zeros(2))
 
 
 def test_chrom_runbook_rows_learn_independently():
@@ -176,9 +198,9 @@ def test_runbook_affine_is_identity_at_init():
         assert float(scale) == 1.0 and float(shift) == 0.0
         with torch.no_grad():
             base = m.forward_context(batch)["rt"]
-            cond = m.forward_context(
-                batch, chrom_context=rb(ids), chrom_affine=rb.affine(ids)
-            )["rt"]
+            cond = m.forward_context(batch, chrom_context=rb(ids), chrom_affine=rb.affine(ids))[
+                "rt"
+            ]
         assert torch.equal(base, cond), f"row {did} is not exactly identity"
 
 
@@ -247,9 +269,7 @@ def test_affine_never_touches_rt_base():
 
     with torch.no_grad():
         plain = m.forward_context(batch)
-        conditioned = m.forward_context(
-            batch, chrom_context=rb(ids), chrom_affine=rb.affine(ids)
-        )
+        conditioned = m.forward_context(batch, chrom_context=rb(ids), chrom_affine=rb.affine(ids))
     assert torch.equal(plain["rt_base"], conditioned["rt_base"]), "affine leaked into rt_base"
     assert not torch.equal(plain["rt"], conditioned["rt"]), "affine did not affect rt"
 
@@ -282,8 +302,8 @@ def test_mixed_energy_masks_per_example_not_per_batch():
     mixed = enc(ids, ids, ids, energy=torch.tensor([28.0, float("nan")]))
     present = enc(ids, ids, ids, energy=torch.tensor([28.0, 28.0]))
     absent = enc(ids, ids, ids, energy=None)
-    assert torch.allclose(mixed[0], present[0])   # row 0 keeps its energy term
-    assert torch.allclose(mixed[1], absent[1])    # row 1 has none at all
+    assert torch.allclose(mixed[0], present[0])  # row 0 keeps its energy term
+    assert torch.allclose(mixed[1], absent[1])  # row 1 has none at all
     assert torch.isfinite(mixed).all()
 
 

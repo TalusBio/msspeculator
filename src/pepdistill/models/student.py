@@ -405,17 +405,6 @@ class StudentModel(nn.Module):
         h = self.backbone(x, batch.pad_mask)
         return h, self._masked_mean(h, batch.pad_mask)
 
-    def pooled_embeddings(self, batch: Batch) -> torch.Tensor:
-        """Return the backbone's pooled peptide representation before task/context heads.
-
-        This is the stable diagnostics boundary for latent-space projections. Charge and
-        acquisition/chromatography context enter only after this representation, so movement
-        here reflects learned peptide chemistry rather than a selected instrument or run.
-        """
-        x, _, _ = self._embed(batch)
-        _, pooled = self._encode_batch(x, batch)
-        return pooled
-
     def forward(
         self,
         batch: Batch,

@@ -241,9 +241,11 @@ fn run_doctor(args: DoctorArgs) -> Result<()> {
     let report = diagnostics::run_doctor(&artifact, &args.out)?;
     println!("{}", report.terminal_plot);
     eprintln!(
-        "{} iRT standards -> {} (slope={:.4}, intercept={:.4}, R2={:.4}, MAE={:.4})",
+        "{} iRT standards -> {}, {}, {} (slope={:.4}, intercept={:.4}, R2={:.4}, MAE={:.4})",
         report.summary.n,
         report.svg_path.display(),
+        report.report_path.display(),
+        report.predictions_path.display(),
         report.summary.slope,
         report.summary.intercept,
         report.summary.r_squared,

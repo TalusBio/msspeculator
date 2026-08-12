@@ -54,9 +54,9 @@ class MSContextEncoder(nn.Module):
         self._inst_ix = {n: i for i, n in enumerate(self.instruments)}
         self._det_ix = {n: i for i, n in enumerate(self.detectors)}
         self._frag_ix = {n: i for i, n in enumerate(self.fragmentations)}
-        self.inst_emb = nn.Embedding(len(self.instruments), context_dim)
-        self.det_emb = nn.Embedding(len(self.detectors), context_dim)
-        self.frag_emb = nn.Embedding(len(self.fragmentations), context_dim)
+        self.inst_emb = nn.Embedding(len(self.instruments), context_dim, padding_idx=0)
+        self.det_emb = nn.Embedding(len(self.detectors), context_dim, padding_idx=0)
+        self.frag_emb = nn.Embedding(len(self.fragmentations), context_dim, padding_idx=0)
         self.energy_mlp = nn.Sequential(
             nn.Linear(1, context_dim), nn.GELU(), nn.Linear(context_dim, context_dim)
         )
@@ -85,11 +85,13 @@ class MSContextEncoder(nn.Module):
         fragmentation_id: torch.Tensor,
         energy: torch.Tensor | None,
     ) -> torch.Tensor:
-        out = (
-            self.inst_emb(instrument_id)
-            + self.det_emb(detector_id)
-            + self.frag_emb(fragmentation_id)
-        )
+        # `padding_idx=0` keeps the unknown rows gradient-free. Multiplying by the masks also
+        # protects neutrality when loading an older checkpoint whose row 0 learned before that
+        # invariant was enforced (`padding_idx` does not rewrite loaded weights).
+        inst = self.inst_emb(instrument_id) * instrument_id.ne(0).unsqueeze(-1)
+        det = self.det_emb(detector_id) * detector_id.ne(0).unsqueeze(-1)
+        frag = self.frag_emb(fragmentation_id) * fragmentation_id.ne(0).unsqueeze(-1)
+        out = inst + det + frag
         if energy is not None:
             # Per-example masking, not imputation. A NaN energy means the run recorded none,
             # and it must contribute exactly zero rather than a value we invented.
@@ -112,15 +114,17 @@ class ChromRunbook(nn.Module):
 
     def __init__(self, n_datasets: int, context_dim: int = 16) -> None:
         super().__init__()
-        self.emb = nn.Embedding(n_datasets + 1, context_dim)  # +1: index 0 = neutral (iRT)
+        self.emb = nn.Embedding(
+            n_datasets + 1, context_dim, padding_idx=0
+        )  # +1: index 0 = neutral (iRT)
         nn.init.zeros_(self.emb.weight)
         # Per-dataset output affine on the RT head. `emb` above is an ADDITIVE bias in feature
         # space, which can bend the mapping but cannot express a rescale — yet a dataset's raw
         # RT differs from the iRT frame by SCALE as much as offset (gradient length, minutes vs
         # indexed units, dead volume). Both zero-init, so scale=exp(0)=1 and shift=0: the
         # neutral row and an untrained book are exactly identity.
-        self.log_scale = nn.Embedding(n_datasets + 1, 1)
-        self.shift = nn.Embedding(n_datasets + 1, 1)
+        self.log_scale = nn.Embedding(n_datasets + 1, 1, padding_idx=0)
+        self.shift = nn.Embedding(n_datasets + 1, 1, padding_idx=0)
         nn.init.zeros_(self.log_scale.weight)
         nn.init.zeros_(self.shift.weight)
 
@@ -133,7 +137,7 @@ class ChromRunbook(nn.Module):
         return self.emb.num_embeddings - 1
 
     def forward(self, dataset_id: torch.Tensor) -> torch.Tensor:
-        return self.emb(dataset_id)
+        return self.emb(dataset_id) * dataset_id.ne(0).unsqueeze(-1)
 
     def affine(self, dataset_id: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """``(scale, shift)``, each ``(B,)``, for the RT head's output.
@@ -145,8 +149,10 @@ class ChromRunbook(nn.Module):
         Deliberately unclamped — a scale that runs away means the data disagrees with the
         model, and clamping would bury that signal under a value that merely looks poorly fit.
         """
-        scale = torch.exp(self.log_scale(dataset_id).squeeze(-1))
-        return scale, self.shift(dataset_id).squeeze(-1)
+        present = dataset_id.ne(0)
+        log_scale = self.log_scale(dataset_id).squeeze(-1) * present
+        shift = self.shift(dataset_id).squeeze(-1) * present
+        return torch.exp(log_scale), shift
 
     def neutral(self, n: int, device: torch.device | str) -> torch.Tensor:
-        return self.emb(torch.zeros(n, dtype=torch.long, device=device))
+        return self.forward(torch.zeros(n, dtype=torch.long, device=device))

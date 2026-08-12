@@ -11,9 +11,18 @@ from pepdistill_rs import (  # noqa: F401
     fragment_mz,
     fragment_mz_matrix,
     ms2_target_shape,
+    unimod_accession,
 )
 
 __all__ = [
-    "H2O", "ION_TYPES", "MOD_DELTA", "PROTON", "RESIDUE_MASS",
-    "Peptide", "fragment_mz", "fragment_mz_matrix", "ms2_target_shape",
+    "H2O",
+    "ION_TYPES",
+    "MOD_DELTA",
+    "PROTON",
+    "RESIDUE_MASS",
+    "Peptide",
+    "fragment_mz",
+    "fragment_mz_matrix",
+    "ms2_target_shape",
+    "unimod_accession",
 ]

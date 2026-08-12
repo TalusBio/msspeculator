@@ -178,6 +178,12 @@ fn unimod_name(accession: u32) -> Option<String> {
     Some(alias.unwrap_or_else(|| e.title.clone()))
 }
 
+/// UNIMOD accession for one of our aliases or a canonical UNIMOD title.
+#[pyfunction]
+fn unimod_accession(name: &str) -> Option<u32> {
+    unimod::by_name(name).map(|entry| entry.accession)
+}
+
 /// 6-element composition delta for a named modification, in `composition::ELEMENTS` order.
 /// Raises `ValueError` if the name is unknown or needs an element outside that basis.
 #[pyfunction]
@@ -280,6 +286,7 @@ fn pepdistill_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(fragment_mz_matrix, m)?)?;
     m.add_function(wrap_pyfunction!(ms2_target_shape, m)?)?;
     m.add_function(wrap_pyfunction!(unimod_name, m)?)?;
+    m.add_function(wrap_pyfunction!(unimod_accession, m)?)?;
     m.add_function(wrap_pyfunction!(mod_element_comp, m)?)?;
     m.add_function(wrap_pyfunction!(collate, m)?)?;
     m.add_function(wrap_pyfunction!(collate_prepared, m)?)?;

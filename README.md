@@ -142,8 +142,8 @@ cargo run -q --release -p pepdistill-cli -- \
 ```
 
 Run the built-in model doctor to predict the vendored 11-peptide Biognosys iRT panel. It
-prints an identity-line scatter in the terminal plus slope, intercept, R², and MAE, and writes
-the same diagnostic as `irt-scatter.svg`:
+prints an identity-line scatter in the terminal plus slope, intercept, R², and MAE. The output
+directory receives `irt-scatter.svg`, `report.txt`, and peptide-level `irt-predictions.tsv`:
 
 ```bash
 cargo run -q --release -p pepdistill-cli -- \

@@ -330,12 +330,16 @@ impl<'a> Predictor<'a> {
         let inst = self.art.get2("enc.inst_emb.weight")?;
         let det = self.art.get2("enc.det_emb.weight")?;
         let frag = self.art.get2("enc.frag_emb.weight")?;
-        let mut ctx = &inst.row(idx(&vocab.instruments, instrument)).to_owned()
-            + &det.row(idx(&vocab.detectors, detector)).to_owned();
-        ctx = &ctx
-            + &frag
-                .row(idx(&vocab.fragmentations, fragmentation))
-                .to_owned();
+        let mut ctx = Array1::zeros(inst.ncols());
+        for (table, row) in [
+            (&inst, idx(&vocab.instruments, instrument)),
+            (&det, idx(&vocab.detectors, detector)),
+            (&frag, idx(&vocab.fragmentations, fragmentation)),
+        ] {
+            if row != 0 {
+                ctx = &ctx + &table.row(row);
+            }
+        }
         if let Some(e) = energy {
             // energy_mlp: Linear(1,d) -> GELU -> Linear(d,d); always GELU regardless of cfg.
             let w0 = self.art.get2("enc.energy_mlp.0.weight")?; // [d,1]

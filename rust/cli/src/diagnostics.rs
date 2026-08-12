@@ -49,6 +49,8 @@ pub struct DoctorReport {
     pub summary: IrtSummary,
     pub terminal_plot: String,
     pub svg_path: PathBuf,
+    pub report_path: PathBuf,
+    pub predictions_path: PathBuf,
 }
 
 fn summarize(observed: &[f64], predicted: &[f64]) -> IrtSummary {
@@ -248,6 +250,35 @@ fn render_svg(
     Ok(svg)
 }
 
+fn render_predictions(standards: &[IrtStandard<'_>], predicted: &[f64]) -> Result<String> {
+    let mut output = String::from(
+        "proforma_sequence\tprecursor_charge\treference_irt\tpredicted_irt\tresidual\n",
+    );
+    for (standard, prediction) in standards.iter().zip(predicted) {
+        writeln!(
+            output,
+            "{}\t{}\t{:.9}\t{:.9}\t{:.9}",
+            standard.peptide,
+            standard.charge,
+            standard.irt,
+            prediction,
+            prediction - standard.irt,
+        )?;
+    }
+    Ok(output)
+}
+
+fn render_report(plot: &str, summary: &IrtSummary) -> Result<String> {
+    let mut output = plot.to_string();
+    writeln!(output)?;
+    writeln!(
+        output,
+        "n={} slope={:.6} intercept={:.6} R2={:.6} MAE={:.6}",
+        summary.n, summary.slope, summary.intercept, summary.r_squared, summary.mae,
+    )?;
+    Ok(output)
+}
+
 pub fn run_doctor(artifact: &Artifact, output_dir: &str) -> Result<DoctorReport> {
     let standards = irt_standards()?;
     let observed: Vec<f64> = standards.iter().map(|standard| standard.irt).collect();
@@ -261,6 +292,8 @@ pub fn run_doctor(artifact: &Artifact, output_dir: &str) -> Result<DoctorReport>
     let summary = summarize(&observed, &predicted);
     let terminal_plot = render_terminal(&observed, &predicted);
     let svg_path = Path::new(output_dir).join("irt-scatter.svg");
+    let report_path = Path::new(output_dir).join("report.txt");
+    let predictions_path = Path::new(output_dir).join("irt-predictions.tsv");
     std::fs::create_dir_all(output_dir)
         .with_context(|| format!("create model-doctor directory {output_dir}"))?;
     std::fs::write(
@@ -268,10 +301,19 @@ pub fn run_doctor(artifact: &Artifact, output_dir: &str) -> Result<DoctorReport>
         render_svg(&standards, &observed, &predicted, &summary)?,
     )
     .with_context(|| format!("write iRT scatter {}", svg_path.display()))?;
+    std::fs::write(&report_path, render_report(&terminal_plot, &summary)?)
+        .with_context(|| format!("write doctor report {}", report_path.display()))?;
+    std::fs::write(
+        &predictions_path,
+        render_predictions(&standards, &predicted)?,
+    )
+    .with_context(|| format!("write iRT predictions {}", predictions_path.display()))?;
     Ok(DoctorReport {
         summary,
         terminal_plot,
         svg_path,
+        report_path,
+        predictions_path,
     })
 }
 
@@ -308,5 +350,9 @@ mod tests {
         assert_eq!(svg.matches("<circle").count(), 2);
         assert!(svg.contains("reference iRT"));
         assert!(render_terminal(&observed, &predicted).contains("identity"));
+        let predictions = render_predictions(&standards[..2], &predicted).unwrap();
+        assert!(predictions.starts_with("proforma_sequence\tprecursor_charge"));
+        assert!(predictions.contains("LGGNEQVTR\t2"));
+        assert!(render_report("plot", &summary).unwrap().contains("slope="));
     }
 }

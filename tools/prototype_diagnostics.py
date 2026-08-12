@@ -1,65 +1,42 @@
-"""Generate PCA and butterfly diagnostic prototypes from a trained checkpoint."""
+"""Generate learned-representation and model-output diagnostics from a checkpoint."""
 
 from __future__ import annotations
 
 import argparse
 import os
 import tempfile
-from itertools import islice
 from pathlib import Path
 
 import numpy as np
 import torch
 
 from pepdistill.chem import MOD_DELTA, Peptide, fragment_mz_matrix
-from pepdistill.data.config import DigestConfig
-from pepdistill.data.digest import resolve_fasta
 from pepdistill.data.encode import FRAG_OFFSET, collate
 from pepdistill.data.precursors import Precursor
-from pepdistill.data.sources import enumerate_tryptic_stream
 from pepdistill.diagnostics import (
     EmbeddingConnection,
     IRT_STANDARDS,
     LabeledEmbedding,
-    PcaBasis,
     RtObservation,
     SpectrumComparison,
-    plot_embedding_pca,
     plot_irt_scatter,
     plot_labeled_embedding_pca,
     plot_spectrum_butterflies,
 )
 from pepdistill.models.context import MSContextEncoder
 from pepdistill.models.registry import load_checkpoint, load_context
+from pepdistill.proforma import proforma_sequence
 from pepdistill.teacher import get_teacher
 from pepdistill.util import resolve_device
 from pepdistill_rs import mod_element_comp
 
 
-def _reference_precursor(sequence: str) -> Precursor:
-    mods = tuple((i, "Carbamidomethyl@C") for i, aa in enumerate(sequence) if aa == "C")
-    return Precursor(Peptide(sequence, mods), charge=2, split="diagnostic")
-
-
 def _butterfly_panel(references: list[Precursor], count: int) -> list[Precursor]:
-    """Choose readable short/medium examples, preferring a mixture of modified states."""
-    ranked = sorted(
-        (reference for reference in references if 8 <= reference.peptide.length <= 18),
-        key=lambda reference: (
-            not bool(reference.peptide.mods),
-            abs(reference.peptide.length - 13),
-            reference.peptide.sequence,
-        ),
-    )
-    selected: list[Precursor] = []
-    for want_modified in (True, False):
-        candidate = next(
-            (item for item in ranked if bool(item.peptide.mods) == want_modified), None
-        )
-        if candidate is not None and candidate not in selected:
-            selected.append(candidate)
-    selected.extend(item for item in ranked if item not in selected)
-    return selected[:count]
+    """Choose evenly spaced members of the fixed iRT panel."""
+    if count >= len(references):
+        return references
+    indices = np.linspace(0, len(references) - 1, num=count, dtype=int)
+    return [references[index] for index in indices]
 
 
 def _amino_acid_embeddings(model) -> list[LabeledEmbedding]:
@@ -107,48 +84,57 @@ def _modification_embeddings(model) -> tuple[list[LabeledEmbedding], list[Embedd
     return points, connections
 
 
-def _context_embeddings(encoder) -> tuple[list[LabeledEmbedding], list[EmbeddingConnection]]:
-    points = []
-    device = next(encoder.parameters()).device
-    with torch.inference_mode():
-        for index, name in enumerate(encoder.instruments[1:], start=1):
-            points.append(
-                LabeledEmbedding(
-                    f"inst:{name}",
-                    "instrument",
-                    encoder.inst_emb.weight[index].detach().cpu().numpy(),
-                )
-            )
-        for index, name in enumerate(encoder.detectors[1:], start=1):
-            points.append(
-                LabeledEmbedding(
-                    f"det:{name}",
-                    "detector",
-                    encoder.det_emb.weight[index].detach().cpu().numpy(),
-                )
-            )
-        for index, name in enumerate(encoder.fragmentations[1:], start=1):
-            points.append(
-                LabeledEmbedding(
-                    f"frag:{name}",
-                    "fragmentation",
-                    encoder.frag_emb.weight[index].detach().cpu().numpy(),
-                )
-            )
-        energies = list(range(20, 41, 4))
-        energy_vectors = (
-            encoder.energy_mlp(
-                torch.tensor(energies, dtype=torch.float32, device=device).unsqueeze(-1)
-            )
-            .cpu()
-            .numpy()
-        )
-        for energy, vector in zip(energies, energy_vectors, strict=True):
-            points.append(LabeledEmbedding(f"NCE:{energy}", "collision energy", vector))
-    connections = [
-        EmbeddingConnection(f"NCE:{first}", f"NCE:{second}")
-        for first, second in zip(energies, energies[1:])
+def _context_trajectories(encoder) -> tuple[list[LabeledEmbedding], list[EmbeddingConnection]]:
+    """Actual combined acquisition vectors while NCE moves from 20 to 40."""
+    candidates = (
+        ("Lumos", "ITMS", "HCD", "Lumos:ITMS:HCD"),
+        ("Lumos", "FTMS", "HCD", "Lumos:Orbitrap/FTMS:HCD"),
+        ("QExactive", "FTMS", "HCD", "QExactive:Orbitrap/FTMS:HCD"),
+        ("Exploris", "FTMS", "HCD", "Exploris:Orbitrap/FTMS:HCD"),
+        ("timsTOF", "TOF", "HCD", "timsTOF:TOF:HCD"),
+    )
+    combinations = [
+        combination
+        for combination in candidates
+        if combination[0] in encoder.instruments
+        and combination[1] in encoder.detectors
+        and combination[2] in encoder.fragmentations
     ]
+    points: list[LabeledEmbedding] = []
+    connections: list[EmbeddingConnection] = []
+    device = next(encoder.parameters()).device
+    energies = list(range(20, 41, 5))
+    with torch.inference_mode():
+        for instrument, detector, fragmentation, display_name in combinations:
+            n = len(energies)
+            vectors = (
+                encoder(
+                    torch.full(
+                        (n,), encoder.instrument_id(instrument), dtype=torch.long, device=device
+                    ),
+                    torch.full(
+                        (n,), encoder.detector_id(detector), dtype=torch.long, device=device
+                    ),
+                    torch.full(
+                        (n,),
+                        encoder.fragmentation_id(fragmentation),
+                        dtype=torch.long,
+                        device=device,
+                    ),
+                    torch.tensor(energies, dtype=torch.float32, device=device),
+                )
+                .cpu()
+                .numpy()
+            )
+            labels = [f"{display_name}:NCE{energy}" for energy in energies]
+            for index, (label, energy, vector) in enumerate(
+                zip(labels, energies, vectors, strict=True)
+            ):
+                annotation = str(energy) if index in (0, n - 1) else ""
+                points.append(LabeledEmbedding(label, display_name, vector, annotation))
+            connections.extend(
+                EmbeddingConnection(first, second) for first, second in zip(labels, labels[1:])
+            )
     return points, connections
 
 
@@ -156,8 +142,6 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", required=True)
     parser.add_argument("--out", type=Path, default=Path("runs/diagnostics-prototype"))
-    parser.add_argument("--fasta", default="uniprot:UP000000625")
-    parser.add_argument("--panel-size", type=int, default=192)
     parser.add_argument("--butterflies", type=int, default=3)
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--teacher", default="alphapeptdeep")
@@ -170,40 +154,27 @@ def main() -> None:
     )
 
     device = resolve_device(args.device)
-    fasta = resolve_fasta(args.fasta, log=print)
-    digest = DigestConfig(missed_cleavages=2, min_length=7, max_length=30)
-    sequences = list(islice(enumerate_tryptic_stream(fasta, digest, loop=False), args.panel_size))
-    references = [_reference_precursor(sequence) for sequence in sequences]
-    if len(references) < 2:
-        raise SystemExit("reference FASTA produced fewer than two peptides")
-
     model = load_checkpoint(args.model, map_location=str(device)).to(device).eval()
     context = load_context(args.model, map_location=str(device))
     encoder = context.encoder if context is not None else None
     if encoder is None:
         encoder = MSContextEncoder(context_dim=model.cfg.context_dim)
     encoder = encoder.to(device).eval()
+    references = [
+        Precursor(Peptide(standard.sequence), standard.charge, "diagnostic")
+        for standard in IRT_STANDARDS
+    ]
     batch = collate(references).to(device)
     n = len(references)
     with torch.inference_mode():
-        pooled = model.pooled_embeddings(batch).cpu().numpy()
         ms_context = encoder(
             torch.full((n,), encoder.instrument_id("Lumos"), dtype=torch.long, device=device),
             torch.full((n,), encoder.detector_id("FTMS"), dtype=torch.long, device=device),
             torch.full((n,), encoder.fragmentation_id("HCD"), dtype=torch.long, device=device),
             torch.full((n,), 30.0, dtype=torch.float32, device=device),
         )
-        prediction = model(batch, ms_context=ms_context)["ms2"].cpu().numpy()
-
-    basis = PcaBasis.fit(pooled)
-    pca_path = plot_embedding_pca(
-        basis.transform(pooled),
-        [precursor.peptide.length for precursor in references],
-        [bool(precursor.peptide.mods) for precursor in references],
-        args.out / "embedding-pca.png",
-        title="Fixed E. coli reference panel — pooled student embeddings",
-        explained_variance_ratio=basis.explained_variance_ratio,
-    )
+        model_output = model(batch, ms_context=ms_context)
+        prediction = model_output["ms2"].cpu().numpy()
     aa_path, _ = plot_labeled_embedding_pca(
         _amino_acid_embeddings(model),
         args.out / "amino-acid-embeddings.png",
@@ -216,11 +187,11 @@ def main() -> None:
         title="Modification encoders: composition vs mass",
         connections=mod_connections,
     )
-    context_points, context_connections = _context_embeddings(encoder)
+    context_points, context_connections = _context_trajectories(encoder)
     context_path, _ = plot_labeled_embedding_pca(
         context_points,
         args.out / "acquisition-contexts.png",
-        title="Learned acquisition-context components",
+        title="Combined acquisition-context trajectories — NCE 20→40",
         connections=context_connections,
     )
 
@@ -246,7 +217,7 @@ def main() -> None:
         )
         butterflies.append(
             SpectrumComparison(
-                modified_sequence=precursor.peptide.modified_sequence(),
+                proforma_sequence=proforma_sequence(precursor.peptide),
                 charge=precursor.charge,
                 fragment_mz=mz,
                 student_intensity=student,
@@ -258,18 +229,11 @@ def main() -> None:
         butterflies,
         args.out / "reference-butterflies.png",
     )
-    print(f"PCA -> {pca_path}")
     print(f"amino acids -> {aa_path}")
     print(f"modifications -> {mod_path}")
     print(f"contexts -> {context_path}")
     print(f"butterflies -> {butterfly_path}")
-    irt_precursors = [
-        Precursor(Peptide(standard.sequence), standard.charge, "diagnostic")
-        for standard in IRT_STANDARDS
-    ]
-    irt_batch = collate(irt_precursors).to(device)
-    with torch.inference_mode():
-        predicted_irt = model.unstandardize_rt(model(irt_batch)["rt"]).cpu().numpy()
+    predicted_irt = model.unstandardize_rt(model_output["rt"]).cpu().numpy()
     irt_path = plot_irt_scatter(
         [
             RtObservation(standard.sequence, standard.irt, float(predicted), "iRT standards")

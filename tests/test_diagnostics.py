@@ -11,7 +11,6 @@ from pepdistill.diagnostics import (
     RtObservation,
     SpectrumComparison,
     normalized_spectral_angle,
-    plot_embedding_pca,
     plot_irt_scatter,
     plot_labeled_embedding_pca,
     plot_spectrum_butterflies,
@@ -53,18 +52,10 @@ def test_reference_panel_roundtrips_and_reports_teacher_yardstick(tmp_path):
 
 
 def test_plot_prototypes_write_pngs(tmp_path):
-    pca_path = plot_embedding_pca(
-        np.asarray([[-1.0, 0.0], [1.0, 0.0]]),
-        lengths=[8, 10],
-        modified=[False, True],
-        path=tmp_path / "pca.png",
-        title="diagnostic",
-        explained_variance_ratio=[0.8, 0.2],
-    )
     butterfly_path = plot_spectrum_butterflies(
         [
             SpectrumComparison(
-                modified_sequence="PEPTIDEK",
+                proforma_sequence="PEPTIDEK",
                 charge=2,
                 fragment_mz=np.asarray([[100.0, 200.0]]),
                 student_intensity=np.asarray([[1.0, 0.2]]),
@@ -74,7 +65,6 @@ def test_plot_prototypes_write_pngs(tmp_path):
         ],
         tmp_path / "butterfly.png",
     )
-    assert pca_path.stat().st_size > 0
     assert butterfly_path.stat().st_size > 0
 
 
