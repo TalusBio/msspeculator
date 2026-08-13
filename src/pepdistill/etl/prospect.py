@@ -169,6 +169,7 @@ def _rows_for_shard(
     dataset: str,
     instrument: str,
     schema: ProspectSchema,
+    log: Callable[[str], None] | None = None,
 ) -> list[dict[str, Any]]:
     available_meta = _meta_columns(meta_uri, schema)
     meta = (
@@ -176,13 +177,17 @@ def _rows_for_shard(
         .select(available_meta)
         .filter(pl.col(schema.raw_file).is_in(raw_files))
         .collect(engine="streaming")
-        .to_pandas()
     )
-    if meta.empty:
+    if meta.is_empty():
         raise ValueError(
             f"metadata {meta_uri!r} has no rows for shard {shard_uri!r} raw_files={raw_files!r}"
         )
     index = build_meta_index_from_frame(meta, schema=schema)
+    if index.ambiguous_localization_spectra and log is not None:
+        log(
+            f"dropped {index.ambiguous_localization_spectra:,} spectra whose modification "
+            "placement the search engine could not localize"
+        )
 
     s = schema
     fragments = (
@@ -642,6 +647,7 @@ def prepare_task(
             task["dataset"],
             task["instrument"],
             ProspectSchema(),
+            log=emit,
         )
     finally:
         if temporary_dir is not None:

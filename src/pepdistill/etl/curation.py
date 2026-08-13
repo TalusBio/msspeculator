@@ -228,8 +228,11 @@ def curate_prepared_frame(
     )
     raw_files = frame.select("raw_file").unique()
     run_widths = (
-        raw_files.join(run_widths, on="raw_file", how="left")
-        .join(fallbacks, on="raw_file", how="left")
+        # Both sides are one row per raw file by construction (they are group_by aggregates), so a
+        # fan-out here would mean an aggregation upstream stopped collapsing and every later width
+        # would silently duplicate rather than fail.
+        raw_files.join(run_widths, on="raw_file", how="left", validate="1:1")
+        .join(fallbacks, on="raw_file", how="left", validate="1:1")
         .with_columns(
             pl.coalesce("run_width_minutes", "fallback_width_minutes").alias("run_width_minutes"),
             pl.col("width_anchor_peptidoforms").fill_null(0),

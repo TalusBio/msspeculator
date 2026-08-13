@@ -252,3 +252,71 @@ def test_parquet_storage_options_are_explicit_for_remote_targets():
     if not options:
         pytest.skip("no AWS credentials resolvable in this environment")
     assert {"aws_access_key_id", "aws_secret_access_key", "aws_region"} <= set(options)
+
+
+def _meta_rows(rows):
+    import polars as pl
+
+    return pl.DataFrame(
+        [
+            {
+                "raw_file": "run1",
+                "scan_number": scan,
+                "modified_sequence": modseq,
+                "precursor_charge": 2,
+                "retention_time": 10.0,
+                "indexed_retention_time": 20.0,
+                "aligned_collision_energy": 30.0,
+                "mass_analyzer": "FTMS",
+                "fragmentation": "HCD",
+                "andromeda_score": score,
+            }
+            for scan, modseq, score in rows
+        ]
+    )
+
+
+def test_meta_index_keeps_the_best_localization_and_drops_ties():
+    """An unlocalizable modification must be dropped, not resolved by file order.
+
+    PROSPECT reports the same spectrum once per candidate placement. Where the scores differ the
+    engine did localize, so the best one is the label; where they tie it did not, and keeping
+    whichever row came first would teach a site-specific model a coin flip.
+    """
+    from pepdistill.data.meta_index import build_meta_index_from_frame
+
+    index = build_meta_index_from_frame(
+        _meta_rows(
+            [
+                # Scored apart: the better placement wins even though it is second in the file.
+                (1, "S[UNIMOD:21]AMPLER", 10.0),
+                (1, "SAMPLE[UNIMOD:21]R", 90.0),
+                # Score-tied: unlocalizable, so the whole spectrum goes.
+                (2, "T[UNIMOD:21]AMPLER", 50.0),
+                (2, "TAMPLE[UNIMOD:21]R", 50.0),
+                # Reported once: kept.
+                (3, "V[UNIMOD:21]AMPLER", 20.0),
+                # Repeated identically: redundancy, not ambiguity.
+                (4, "W[UNIMOD:21]AMPLER", 20.0),
+                (4, "W[UNIMOD:21]AMPLER", 20.0),
+            ]
+        )
+    )
+
+    assert index.ambiguous_localization_spectra == 1
+    assert sorted(scan for _, scan in index.by_key) == [1, 3, 4]
+    assert list(index.by_key[("run1", 1)].peptide.mods) == [(5, "Phospho")]  # the 90.0 row
+    assert list(index.by_key[("run1", 4)].peptide.mods) == [(0, "Phospho")]
+
+
+def test_meta_index_drops_ties_when_no_score_is_recorded():
+    """With no score to compare, two placements are still two placements."""
+    from pepdistill.data.meta_index import build_meta_index_from_frame
+
+    frame = _meta_rows([(1, "S[UNIMOD:21]AMPLER", 1.0), (1, "SAMPLE[UNIMOD:21]R", 1.0)]).drop(
+        "andromeda_score"
+    )
+    # Every spectrum being unlocalizable is a real property of a source, so it is named rather
+    # than reported as the generic "contains no rows".
+    with pytest.raises(ValueError, match="more than one equally scored"):
+        build_meta_index_from_frame(frame)
