@@ -163,7 +163,7 @@ def test_prepare_curation_keeps_top_psms_per_context_and_reports(tmp_path):
     assert selected["scan_number"].to_list() == [4, 5, 7]
     assert selected["charge"].to_list() == [2, 2, 3]
     # The single-PSM peptidoform cannot meet in-window replication and is dropped entirely.
-    assert "ACDEK" not in selected["sequence"].to_list()
+    assert not any("ACDEK" in value for value in selected["proforma"].to_list())
     assert manifest["rows"] == 3
 
     report = manifest["curation"]
@@ -467,8 +467,14 @@ def test_policy_version_bump_restages_published_shards(tmp_path, monkeypatch):
     root, stem = _source(tmp_path)
     out = tmp_path / "prepared-policy"
     config = _config(root, stem, out)
-    baseline = config.fingerprint
+
+    # Version 1 is encoded as the absence of the field, so it reproduces fingerprints computed
+    # before the field existed. Asserted by pinning the version rather than by reading today's,
+    # which has since moved on.
+    monkeypatch.setattr("pepdistill.etl.config.PREPARE_POLICY_VERSION", 1)
+    monkeypatch.setattr("pepdistill.etl.prospect.PREPARE_POLICY_VERSION", 1)
     assert "policy_version" not in config.canonical()
+    version_one = config.fingerprint
 
     first = prepare_range(config, log=None)
     assert [entry.get("_skipped") for entry in first] == [None]
@@ -478,7 +484,7 @@ def test_policy_version_bump_restages_published_shards(tmp_path, monkeypatch):
     monkeypatch.setattr("pepdistill.etl.config.PREPARE_POLICY_VERSION", 2)
     monkeypatch.setattr("pepdistill.etl.prospect.PREPARE_POLICY_VERSION", 2)
     assert config.canonical()["policy_version"] == 2
-    assert config.fingerprint != baseline
+    assert config.fingerprint != version_one
 
     # The moved fingerprint restages the catalog, which restages the shard: rebuilt, not skipped.
     assert discover_catalog(config)["policy_version"] == 2

@@ -22,12 +22,12 @@ from typing import Any
 #: costs a full re-prep.
 #:
 #: Version 1 is encoded as the absence of the field rather than as ``1``, so it reproduces the
-#: fingerprints of shards published before the field existed. The first real bump is therefore the
-#: first one to move any fingerprint.
+#: fingerprints of shards published before the field existed.
 #:
-#: Annotated ``int`` rather than left to inference so that the comparison below stays live code: a
-#: checker that narrows the constant to ``Literal[1]`` otherwise reports the bump path unreachable.
-PREPARE_POLICY_VERSION: int = 1
+#: 2: rows carry one canonical ProForma column in place of a bare ``sequence`` plus a
+#: ``site:spec;...`` ``mods`` string, and validation winners are deduplicated per peptidoform
+#: rather than per stripped sequence.
+PREPARE_POLICY_VERSION: int = 2
 
 
 @dataclass(frozen=True, slots=True)

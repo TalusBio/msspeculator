@@ -42,7 +42,9 @@ CURATION_ANNOTATION_SCHEMA = pl.Schema(
 )
 
 _SPECTRUM_KEY = ["raw_file", "scan_number"]
-_PEPTIDOFORM_KEY = ["raw_file", "sequence", "mods"]
+# One column identifies the peptidoform now that shards carry canonical ProForma. As a
+# (sequence, mods) pair this key depended on two columns agreeing on a serialization.
+_PEPTIDOFORM_KEY = ["raw_file", "proforma"]
 _CONTEXT_KEY = _PEPTIDOFORM_KEY + [
     "charge",
     "detector",

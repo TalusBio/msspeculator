@@ -103,16 +103,6 @@ def _list_shards(source_prefix: str | Path, archive_stem: str) -> list[str]:
     return sorted(fs.unstrip_protocol(path) for path in fs.glob(pattern))
 
 
-def _serialize_mods(mods: tuple) -> str:
-    def site(value: Any) -> str:
-        return value if isinstance(value, str) else str(value)
-
-    def spec(value: Any) -> str:
-        return value if isinstance(value, str) else f"{float(value):+g}"
-
-    return ";".join(f"{site(pos)}:{spec(name)}" for pos, name in mods)
-
-
 def _spectrum_id(dataset: str, raw_file: str, scan: int) -> int:
     digest = hashlib.blake2b(f"{dataset}\0{raw_file}\0{scan}".encode(), digest_size=8).digest()
     return int.from_bytes(digest, "big", signed=False)
@@ -227,8 +217,7 @@ def _rows_for_shard(
                 "dataset": dataset,
                 "raw_file": key[0],
                 "scan_number": key[1],
-                "sequence": precursor.peptide.sequence,
-                "mods": _serialize_mods(precursor.peptide.mods),
+                "proforma": precursor.peptide.modified_sequence(),
                 "charge": int(precursor.charge),
                 "split": precursor.split,
                 "irt": float(label.rt),
@@ -253,12 +242,17 @@ def _val_winners(chunks: list[str], out_uri: str) -> list[int]:
         .filter(
             (pl.col("split") == "val") & pl.col("irt").is_finite() & pl.col("raw_rt").is_finite()
         )
+        # Keyed on the peptidoform, not the stripped sequence. Keying on the stripped sequence kept
+        # only the best-scoring modform of a peptide at each charge, so a phosphorylated form and
+        # its unmodified counterpart -- different molecules with different spectra -- competed for
+        # one validation slot and the loser left the validation set entirely. That under-reports
+        # exactly the modforms this model exists to predict.
         .sort(
-            ["dataset", "sequence", "charge", "andromeda_score", "spectrum_id"],
+            ["dataset", "proforma", "charge", "andromeda_score", "spectrum_id"],
             descending=[False, False, False, True, False],
             nulls_last=True,
         )
-        .unique(subset=["dataset", "sequence", "charge"], keep="first", maintain_order=True)
+        .unique(subset=["dataset", "proforma", "charge"], keep="first", maintain_order=True)
         .select("spectrum_id")
         .collect(engine="streaming")
     )

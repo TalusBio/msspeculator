@@ -19,10 +19,11 @@ def test_peptide_via_ext():
 
 
 def test_collate_prepared_matches_object_collate():
-    sequences = ["ACDEMK", "PEPTID"]
-    serialized = ["1:Carbamidomethyl@C;4:Oxidation@M", "n:TMT6plex;2:+15.5"]
+    # The prepared column is canonical ProForma, so the collator and the object path must agree
+    # about the same peptide expressed two ways.
+    proforma = ["AC[UNIMOD:4]DEM[UNIMOD:35]K", "[UNIMOD:737]-PEP[+15.5]TID"]
     charges = [2, 3]
-    prepared = rs.collate_prepared(sequences, serialized, charges)
+    prepared = rs.collate_prepared(proforma, charges)
     objects = rs.collate(
         [
             rs.Peptide("ACDEMK", [(1, "Carbamidomethyl@C"), (4, "Oxidation@M")]),

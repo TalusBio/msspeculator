@@ -16,8 +16,13 @@ PREPARED_SPECTRA_SCHEMA = pl.Schema(
         "dataset": pl.String,
         "raw_file": pl.String,
         "scan_number": pl.Int64,
-        "sequence": pl.String,
-        "mods": pl.String,
+        # One canonical ProForma string, e.g. "[UNIMOD:737]-ET[UNIMOD:21]TLHLVLR". This replaced a
+        # bare `sequence` plus a `site:spec;...` `mods` column, which was a second serialization of
+        # the same peptide needing its own parser, and which could not distinguish a modification
+        # on the final residue from one on the C-terminus. We are the only consumer of this schema,
+        # so it holds the canonical form; degenerate spellings are accepted only at ingest, and
+        # emitted only where an external consumer demands one.
+        "proforma": pl.String,
         "charge": pl.Int64,
         "split": pl.String,
         "irt": pl.Float64,

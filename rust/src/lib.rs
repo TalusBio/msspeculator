@@ -16,7 +16,7 @@ use std::hash::{Hash, Hasher};
 
 use pepdistill_core::chem;
 use pepdistill_core::peptide::{ModSpec, Peptide as CorePeptide, Site};
-use pepdistill_core::{bucket, tokenize, unimod};
+use pepdistill_core::{bucket, proforma, tokenize, unimod};
 
 fn to_pyerr(e: anyhow::Error) -> PyErr {
     pyo3::exceptions::PyValueError::new_err(e.to_string())
@@ -48,39 +48,6 @@ fn parse_mods(mods: &[(Bound<'_, PyAny>, Bound<'_, PyAny>)]) -> PyResult<Vec<(Si
     mods.iter()
         .map(|(s, m)| Ok((parse_site(s)?, parse_spec(m)?)))
         .collect()
-}
-
-/// Parse the compact prepared-Parquet representation (`site:spec;...`) without constructing
-/// Python Peptide objects. Modification names may contain `:`, so only the first colon
-/// separates the site from the specification.
-fn parse_prepared_peptide(sequence: String, serialized: &str) -> anyhow::Result<CorePeptide> {
-    let mut mods = Vec::new();
-    if !serialized.is_empty() {
-        for pair in serialized.split(';') {
-            let (site_raw, spec_raw) = pair
-                .split_once(':')
-                .ok_or_else(|| anyhow::anyhow!("bad prepared modification {pair:?}"))?;
-            let site =
-                match site_raw {
-                    "n" => Site::NTerm,
-                    "c" => Site::CTerm,
-                    value => Site::Residue(value.parse().map_err(|_| {
-                        anyhow::anyhow!("bad prepared modification site {value:?}")
-                    })?),
-                };
-            let spec = if spec_raw.starts_with('+') || spec_raw.starts_with('-') {
-                ModSpec::MassOnly(
-                    spec_raw
-                        .parse()
-                        .map_err(|_| anyhow::anyhow!("bad prepared mass delta {spec_raw:?}"))?,
-                )
-            } else {
-                ModSpec::Named(spec_raw.to_string())
-            };
-            mods.push((site, spec));
-        }
-    }
-    Ok(CorePeptide::new(sequence, mods))
 }
 
 /// Inverse of `parse_site`: `Site::NTerm -> "n"`, `CTerm -> "c"`, `Residue(i) -> i`.
@@ -125,6 +92,27 @@ impl Peptide {
             inner: CorePeptide::new(sequence, parse_mods(&mods)?),
         })
     }
+
+    /// Parse a canonical ProForma modified sequence. Refuses anything else, including the
+    /// PROSPECT spelling that omits the N-terminal separator -- use `from_prospect` for that,
+    /// once, at ingest.
+    #[staticmethod]
+    fn from_string(modified_sequence: &str) -> PyResult<Self> {
+        Ok(Self {
+            inner: proforma::parse_peptide(modified_sequence).map_err(to_pyerr)?,
+        })
+    }
+
+    /// Parse a PROSPECT modified sequence, tolerating its one deviation from ProForma. This is the
+    /// only entry point that accepts a degenerate spelling; it exists to be called once, where
+    /// source metadata is read, so that everything downstream holds the canonical form.
+    #[staticmethod]
+    fn from_prospect(modified_sequence: &str) -> PyResult<Self> {
+        Ok(Self {
+            inner: proforma::parse_prospect_peptide(modified_sequence).map_err(to_pyerr)?,
+        })
+    }
+
     #[getter]
     fn sequence(&self) -> &str {
         &self.inner.sequence
@@ -236,26 +224,28 @@ fn collate<'py>(
     Ok(d)
 }
 
-/// Collate prepared string columns directly into NumPy-backed model arrays.
+/// Collate a prepared shard's canonical ProForma column into NumPy-backed model arrays.
+///
+/// One column, parsed by the strict grammar. The previous signature took a bare sequence plus a
+/// `site:spec;...` string, which was a second serialization of the same peptide with its own
+/// parser, its own failure modes, and no way to tell a mod on the last residue from one on the
+/// C-terminus.
 #[pyfunction]
 fn collate_prepared<'py>(
     py: Python<'py>,
-    sequences: Vec<String>,
-    serialized_mods: Vec<String>,
+    proforma: Vec<String>,
     charges: Vec<i64>,
 ) -> PyResult<Bound<'py, PyDict>> {
-    if sequences.len() != serialized_mods.len() || sequences.len() != charges.len() {
+    if proforma.len() != charges.len() {
         return Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "prepared columns have unequal lengths: sequences={}, mods={}, charges={}",
-            sequences.len(),
-            serialized_mods.len(),
+            "prepared columns have unequal lengths: proforma={}, charges={}",
+            proforma.len(),
             charges.len()
         )));
     }
-    let peptides = sequences
-        .into_iter()
-        .zip(serialized_mods.iter())
-        .map(|(sequence, mods)| parse_prepared_peptide(sequence, mods))
+    let peptides = proforma
+        .iter()
+        .map(|sequence| proforma::parse_peptide(sequence))
         .collect::<anyhow::Result<Vec<_>>>()
         .map_err(to_pyerr)?;
     let a = tokenize::collate(&peptides, &charges).map_err(to_pyerr)?;

@@ -177,55 +177,62 @@ def test_digest_refuses_an_empty_result_from_real_proteins():
         digest_records(records, DigestConfig(min_length=200, max_length=300))
 
 
-def test_parse_modseq_refuses_notation_it_cannot_represent():
+def test_two_parsers_one_strict_one_tolerant_of_prospect_only():
     """Unsupported bracket contents must raise, not be reinterpreted as residues.
 
-    The residue alternative matches bare capitals, so text this reader does not understand used to
-    be absorbed into the sequence: `AC[Carbamidomethyl@C]DEK` parsed as `ACCCDEK` with the
-    modification dropped, and a mass delta vanished entirely. Both produced a wrong peptide with
-    plausible fragments and no error, which is the worst possible failure for a training corpus.
+    The grammar's residue alternative matches bare capitals, so text a reader does not understand
+    can be absorbed into the sequence: the hand-rolled parser this replaced read
+    `AC[Carbamidomethyl@C]DEK` as `ACCCDEK` with the modification dropped, and swallowed a mass
+    delta entirely. Both produced a wrong peptide with plausible fragments and no error, which is
+    the worst available failure for a training corpus.
+
+    Two entry points, and the split matters: `from_prospect` tolerates PROSPECT's one deviation and
+    is called once at ingest, `from_string` accepts only canonical ProForma and is what everything
+    downstream uses.
     """
     from pepdistill.chem import Peptide
-    from pepdistill.data.prospect import parse_modseq
 
-    # PROSPECT's own notation, and the compliant form our modified_sequence() emits.
-    assert parse_modseq("[UNIMOD:737]ET[UNIMOD:21]TLHLVLR") == (
-        "ETTLHLVLR",
-        (("n", "TMT6plex"), (1, "Phospho")),
-    )
-    assert parse_modseq("[UNIMOD:737]-ET[UNIMOD:21]TLHLVLR") == (
-        "ETTLHLVLR",
-        (("n", "TMT6plex"), (1, "Phospho")),
-    )
+    # PROSPECT omits the N-terminal separator; both spellings mean the terminus, not residue 0.
+    for spelling in ("[UNIMOD:737]ET[UNIMOD:21]TLHLVLR", "[UNIMOD:737]-ET[UNIMOD:21]TLHLVLR"):
+        peptide = Peptide.from_prospect(spelling)
+        assert peptide.sequence == "ETTLHLVLR"
+        assert peptide.mods == [("n", "UNIMOD:737"), (1, "UNIMOD:21")]
 
-    # A C-terminal modification belongs to the terminus, not to the last residue. Accepting the
-    # separator as a token anywhere silently relocated it and swallowed stray hyphens.
-    assert parse_modseq("PEK-[UNIMOD:21]") == ("PEK", (("c", "Phospho"),))
-    assert parse_modseq("[UNIMOD:737]-PEK-[UNIMOD:21]") == (
-        "PEK",
-        (("n", "TMT6plex"), ("c", "Phospho")),
-    )
+    # Only the tolerant reader accepts the deviation; the strict one refuses it, which is what
+    # keeps the degenerate spelling from leaking past ingest.
+    with pytest.raises(ValueError, match="invalid modified peptide"):
+        Peptide.from_string("[UNIMOD:737]ET[UNIMOD:21]TLHLVLR")
+
+    # A C-terminal modification belongs to the terminus, not to the last residue.
+    assert Peptide.from_string("PEK-[UNIMOD:21]").mods == [("c", "UNIMOD:21")]
+    assert Peptide.from_string("PEK[UNIMOD:21]").mods == [(2, "UNIMOD:21")]
 
     for corrupting in (
-        "AC[Carbamidomethyl@C]DEK",  # was ("ACCCDEK", ())
-        "P[+79.96633]EPTIDE",  # was ("PEPTIDE", ())
-        "AC[Formula:H2O]DEK",
+        "AC[Carbamidomethyl@C]DEK",  # a bare name; was ("ACCCDEK", ())
         "pepTIDE",
-        "PEP-TIDE",  # was ("PEPTIDE", ())
+        "PEP-TIDE",  # a stray separator; was ("PEPTIDE", ())
         "P-E-P",  # was ("PEP", ())
     ):
-        with pytest.raises(ValueError, match="cannot parse"):
-            parse_modseq(corrupting)
+        with pytest.raises(ValueError):
+            Peptide.from_prospect(corrupting)
 
-    # Whatever we emit, we must be able to read back as the same peptide.
+    # Formulas and signed mass deltas are part of the grammar, not corruption, and keep their
+    # spelling through a round trip.
+    for supported in ("AC[Formula:H2O]DEK", "P[+79.96633]EPTIDE"):
+        assert Peptide.from_prospect(supported).modified_sequence() == supported
+
+    # Whatever we emit, the strict reader must read back as the same peptide. This is the property
+    # the prepared schema depends on: it stores exactly this string and nothing else.
     for mods in (
         ((1, "Carbamidomethyl@C"), (4, "Oxidation@M")),
         (("n", "TMT6plex"), (1, "Phospho")),
         (("c", "Phospho"),),
         (("n", "TMT6plex"), (2, "Phospho"), ("c", "Phospho")),
     ):
-        peptide = Peptide("ACDEMK", mods)
-        assert parse_modseq(peptide.modified_sequence()) == ("ACDEMK", mods)
+        canonical = Peptide("ACDEMK", mods).modified_sequence()
+        reread = Peptide.from_string(canonical)
+        assert reread.modified_sequence() == canonical
+        assert reread.sequence == "ACDEMK"
 
 
 def test_parquet_storage_options_are_explicit_for_remote_targets():
@@ -305,8 +312,8 @@ def test_meta_index_keeps_the_best_localization_and_drops_ties():
 
     assert index.ambiguous_localization_spectra == 1
     assert sorted(scan for _, scan in index.by_key) == [1, 3, 4]
-    assert list(index.by_key[("run1", 1)].peptide.mods) == [(5, "Phospho")]  # the 90.0 row
-    assert list(index.by_key[("run1", 4)].peptide.mods) == [(0, "Phospho")]
+    assert list(index.by_key[("run1", 1)].peptide.mods) == [(5, "UNIMOD:21")]  # the 90.0 row
+    assert list(index.by_key[("run1", 4)].peptide.mods) == [(0, "UNIMOD:21")]
 
 
 def test_meta_index_drops_ties_when_no_score_is_recorded():
@@ -394,40 +401,36 @@ def test_pretrain_sources_carry_their_own_mods():
     assert explicit.variable_mods == ()
 
 
-def test_a_misplaced_modification_fails_where_the_peptide_is_built():
-    """A mod placed somewhere the source did not put it must fail, not flow downstream.
+def test_ingest_stores_the_canonical_spelling_whatever_prospect_wrote():
+    """Ingest is the one place a degenerate spelling is accepted, and it emits the canonical one.
 
-    This is the failure the round-trip guard exists for, and it is invisible to every other check:
-    the peptide is valid, the mass is identical, and the teacher agrees with it. Only re-rendering
-    the parsed peptide and comparing against the source string distinguishes "parsed" from "parsed
-    correctly". Enforced at build time rather than audited afterwards, because comparing stored
-    shards against the current parser is tautological when both are the same code.
+    The grammar replaces a round-trip guard that used to sit here. That guard compared a re-render
+    against the source string to catch a modification parsed onto the wrong site; the declarative
+    grammar cannot make that mistake, because the terminus and the last residue are different
+    productions rather than the same loop with an index.
     """
-    from pepdistill.data.meta_index import _verified_peptide
+    from pepdistill.chem import Peptide
 
-    # The forms PROSPECT actually uses all survive, terminal mods included.
-    for modseq in (
-        "PEPTIDEK",
-        "PEPTIDEC[UNIMOD:4]K",
-        "[UNIMOD:737]-PEPTIDEK",
-        "PEPTIDEK-[UNIMOD:21]",
-        "[UNIMOD:737]-PEPTIDEC[UNIMOD:4]K[UNIMOD:737]",
+    # Every spelling PROSPECT uses, canonicalized. The N-terminal separator is added, and two mods
+    # on one residue are ordered deterministically, so equal molecules produce equal strings.
+    for written, canonical in (
+        ("PEPTIDEK", "PEPTIDEK"),
+        ("PEPTIDEC[UNIMOD:4]K", "PEPTIDEC[UNIMOD:4]K"),
+        ("[UNIMOD:737]-PEPTIDEK", "[UNIMOD:737]-PEPTIDEK"),
+        ("[UNIMOD:737]PEPTIDEK", "[UNIMOD:737]-PEPTIDEK"),
+        ("[UNIMOD:737]GGPPSQGGK[UNIMOD:1]RK", "[UNIMOD:737]-GGPPSQGGK[UNIMOD:1]RK"),
+        (
+            "[UNIMOD:737]VVQPQEEIATK[UNIMOD:737][UNIMOD:1]LR",
+            "[UNIMOD:737]-VVQPQEEIATK[UNIMOD:1][UNIMOD:737]LR",
+        ),
     ):
-        assert _verified_peptide(modseq).modified_sequence() == modseq
+        assert Peptide.from_prospect(written).modified_sequence() == canonical
 
-    # Cosmetic spellings must pass. PROSPECT omits the N-terminal separator that the renderer
-    # emits, and orders two mods on one residue either way; a literal comparison rejected 6.7% of
-    # the corpus on these two alone, every one of them equivalent.
-    for cosmetic in (
-        "[UNIMOD:737]GGPPSQGGK[UNIMOD:1]RK",
-        "[UNIMOD:737]VVQPQEEIATK[UNIMOD:737][UNIMOD:1]LR",
-    ):
-        assert _verified_peptide(cosmetic).sequence
-
-    # The *trailing* separator is chemistry, not punctuation: a C-terminal mod and a mod on the
-    # last residue share a mass and differ in structure, so normalizing it away would hide the one
-    # bug this guard exists for.
-    from pepdistill.data.meta_index import _canonical_modseq
-
-    assert _canonical_modseq("PEPTIDEK-[UNIMOD:21]") != _canonical_modseq("PEPTIDEK[UNIMOD:21]")
-    assert _canonical_modseq("[UNIMOD:737]-PEPTIDEK") == _canonical_modseq("[UNIMOD:737]PEPTIDEK")
+    # The terminus and the last residue stay distinct, at equal mass. This is the distinction the
+    # old guard existed to protect, now a property of the grammar.
+    terminal = Peptide.from_string("PEPTIDEK-[UNIMOD:21]")
+    on_residue = Peptide.from_string("PEPTIDEK[UNIMOD:21]")
+    assert terminal.mods == [("c", "UNIMOD:21")]
+    assert on_residue.mods == [(7, "UNIMOD:21")]
+    assert abs(terminal.mono_mass() - on_residue.mono_mass()) < 1e-9
+    assert terminal.modified_sequence() != on_residue.modified_sequence()

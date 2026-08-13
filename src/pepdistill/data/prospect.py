@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
-import pepdistill_rs as _rs
 
 from ..chem import ION_TYPES
 from ..teacher.base import PrecursorLabels
@@ -16,106 +14,6 @@ from .precursors import Precursor
 
 if TYPE_CHECKING:
     from .meta_index import MetaIndex
-
-
-_UNIMOD_TOKEN = re.compile(r"([A-Z])|\[UNIMOD:(\d+)\]")
-# The ProForma terminal separator is matched by position, not as another token alternative. Both
-# forms must read back -- PROSPECT writes `[UNIMOD:737]SEQ`, our own `modified_sequence()` writes
-# the compliant `[UNIMOD:737]-SEQ` -- but a `-` accepted anywhere is worse than one accepted
-# nowhere: a trailing `-[UNIMOD:21]` then attached to the preceding residue instead of the
-# C-terminus, and `PEP-TIDE` parsed as `PEPTIDE`. Both are wrong peptides with plausible fragments.
-_NTERM_PREFIX = re.compile(r"^\[UNIMOD:(\d+)\]-?")
-_CTERM_SUFFIX = re.compile(r"-\[UNIMOD:(\d+)\]$")
-
-
-def parse_modseq(modseq: str) -> tuple[str, tuple[tuple, ...]]:
-    """Parse a ProForma UNIMOD string -> (stripped_sequence, mods) in OUR mod names.
-    ``[UNIMOD:737]ET[UNIMOD:21]TLHLVLR`` -> ("ETTLHLVLR", (("n","TMT6plex"),(1,"Phospho"))).
-    A mod token attaches to the residue it follows; a leading token (before any residue) is
-    routed to the N-terminal site. Every accession resolves against the vendored UNIMOD table
-    (``pepdistill_rs.unimod_name``: our alias if one exists, else the UNIMOD title) — an
-    accession absent from that table raises ``ValueError`` rather than silently dropping the
-    peptide later.
-    Resolving is not enough: the name must also be *encodable*, i.e. project onto the model's
-    six-element basis. Iodo (UNIMOD:129) and the Se-containing mods resolve to a perfectly good
-    name and then fail inside ``collate``. Checking here turns a multi-hour training run that
-    aborts mid-epoch into a ``ValueError`` at parse time, next to the row that caused it.
-    """
-    residues: list[str] = []
-    mods: list[tuple] = []
-    pos = -1
-
-    # Peel the terminal modifications off by position first, so the body below can reject every
-    # remaining `-` rather than guessing which residue a stray one belongs to.
-    body = modseq
-    cterm_accession: int | None = None
-    nterm_accession: int | None = None
-    if (suffix := _CTERM_SUFFIX.search(body)) is not None:
-        cterm_accession = int(suffix.group(1))
-        body = body[: suffix.start()]
-    if (prefix := _NTERM_PREFIX.match(body)) is not None:
-        nterm_accession = int(prefix.group(1))
-        body = body[prefix.end() :]
-
-    consumed = 0
-    for m in _UNIMOD_TOKEN.finditer(body):
-        # Unmatched text between tokens is not skippable: the residue alternative matches bare
-        # capitals, so a descriptor this reader does not understand gets partly reinterpreted as
-        # residues. `AC[Carbamidomethyl@C]DEK` silently became `ACCCDEK` with the modification
-        # dropped, and `P[+79.96633]EPTIDE` became an unmodified `PEPTIDE` -- a wrong peptide with
-        # entirely plausible fragments. Require full coverage so an unsupported notation stops here.
-        if m.start() != consumed:
-            raise ValueError(
-                f"cannot parse {modseq!r}: unexpected {body[consumed : m.start()]!r} at offset "
-                f"{consumed} of its residue body. This reader accepts only ProForma UNIMOD "
-                "accessions (`[UNIMOD:n]`), with '-' only between a terminal one and the sequence."
-            )
-        consumed = m.end()
-        aa = m.group(1)
-        if aa:
-            residues.append(aa)
-            pos += 1
-        else:
-            n = int(m.group(2))
-            name = _rs.unimod_name(n)
-            if name is None:
-                raise ValueError(
-                    f"unknown UNIMOD accession {n} in {modseq!r}: not in the vendored "
-                    "unimod table (regenerate with tools/gen_unimod.py)"
-                )
-            try:
-                _rs.mod_element_comp(name)
-            except Exception as exc:
-                raise ValueError(
-                    f"UNIMOD:{n} ({name}) in {modseq!r} resolves but cannot be encoded: {exc}"
-                ) from exc
-            # A leading token in the body is still N-terminal: PROSPECT omits the separator, so
-            # `[UNIMOD:737]ET...` never matched the prefix above.
-            mods.append(("n" if pos < 0 else pos, name))
-    if consumed != len(body):
-        raise ValueError(
-            f"cannot parse {modseq!r}: unexpected trailing {body[consumed:]!r}. This reader "
-            "accepts only ProForma UNIMOD accessions (`[UNIMOD:n]`)."
-        )
-
-    def resolve(accession: int) -> str:
-        name = _rs.unimod_name(accession)
-        if name is None:
-            raise ValueError(
-                f"unknown UNIMOD accession {accession} in {modseq!r}: not in the vendored "
-                "unimod table (regenerate with tools/gen_unimod.py)"
-            )
-        return name
-
-    # Assembled in reading order -- N-terminal, residues, C-terminal -- so the result matches the
-    # order the string presents rather than the order this function happened to peel them off in.
-    ordered: list[tuple] = []
-    if nterm_accession is not None:
-        ordered.append(("n", resolve(nterm_accession)))
-    ordered.extend(mods)
-    if cterm_accession is not None:
-        ordered.append(("c", resolve(cterm_accession)))
-    return "".join(residues), tuple(ordered)
 
 
 @dataclass(frozen=True, slots=True)
@@ -304,7 +202,6 @@ class RealLabels:
 
 __all__ = [
     "ProspectSchema",
-    "parse_modseq",
     "decode_fragments",
     "fragment_filter_mask",
     "RealLabels",

@@ -30,6 +30,7 @@ from ..data.encode import Batch, FRAG_OFFSET
 from ..teacher.base import PrecursorLabels
 from .precursors import Precursor
 from .prepared_schema import read_prepared_parquet, read_validation_winners
+from .proforma import stripped_length
 
 try:
     from s3fs.utils import FileExpired as _FileExpired
@@ -143,19 +144,6 @@ def load_shard_manifests(prefix: str, log: Callable[[str], None] | None = None) 
         return list(pool.map(read, paths))
 
 
-def _parse_site(token: str):
-    return token if token in ("n", "c") else int(token)
-
-
-def _parse_mods(serialized: str) -> tuple:
-    if not serialized:
-        return ()
-    return tuple(
-        (_parse_site(site), float(spec) if spec[:1] in "+-" else spec)
-        for site, spec in (pair.split(":", 1) for pair in serialized.split(";"))
-    )
-
-
 def _open_parquet(uri: str):
     if "://" in uri:
         return fsspec.open(uri, "rb").open()
@@ -168,10 +156,10 @@ def _row_examples(frame: pd.DataFrame, dataset_id: int, encoder) -> list[RealExa
     out: list[RealExample] = []
     n_ions = len(ION_TYPES)
     for row in frame.itertuples(index=False):
-        sequence = str(row.sequence)
-        mods = _parse_mods(str(row.mods or ""))
+        peptide = Peptide.from_string(str(row.proforma))
+        sequence = peptide.sequence
         precursor = Precursor(
-            peptide=Peptide(sequence, mods),
+            peptide=peptide,
             charge=int(row.charge),
             split=str(row.split),
         )
@@ -209,10 +197,8 @@ def _frame_batch(frame: pl.DataFrame, encoder) -> RealBatch:
 
     import pepdistill_rs as _rs
 
-    sequences = frame["sequence"].to_list()
     arrays = _rs.collate_prepared(
-        sequences,
-        frame["mods"].fill_null("").to_list(),
+        frame["proforma"].to_list(),
         frame["charge"].to_list(),
     )
     inputs = Batch(
@@ -226,7 +212,9 @@ def _frame_batch(frame: pl.DataFrame, encoder) -> RealBatch:
         torch.from_numpy(arrays["pad_mask"]),
         torch.from_numpy(arrays["frag_mask"]),
     )
-    lengths = [len(sequence) for sequence in sequences]
+    # Taken from the collator rather than recounted here: it already parsed each peptide, so a
+    # second count from the string would be a second implementation of "how long is this peptide".
+    lengths = [int(value) for value in arrays["lengths"]]
     sites = max(lengths[0] - 1, 0)
     if any(length != lengths[0] for length in lengths):
         raise ValueError("prepared training batches must contain one peptide length")
@@ -352,9 +340,9 @@ class PreparedStreamingDataset:
                 # Transformer cost is set by the longest sequence in each batch. Grouping equal
                 # lengths inside an already-shuffled shard removes padding work without adding
                 # a large row-level shuffle buffer or changing which observations are trained.
-                frame = frame.with_columns(
-                    pl.col("sequence").str.len_chars().alias("_sequence_length")
-                ).sort("_sequence_length")
+                frame = frame.with_columns(stripped_length().alias("_sequence_length")).sort(
+                    "_sequence_length"
+                )
                 frame = frame.drop("spectrum_id")
                 read_seconds = time.perf_counter() - read_at
                 if self.log is not None:

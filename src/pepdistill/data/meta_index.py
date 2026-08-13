@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 
 import polars as pl
 
 from ..chem import Peptide
 from .config import SplitConfig
-from .prospect import ProspectSchema, parse_modseq
+from .proforma import MOD_TOKEN_PATTERN
+from .prospect import ProspectSchema
 from .split import assign_split
 
 
@@ -44,12 +44,6 @@ class MetaIndex:
         selected = (meta.irt for meta in self.by_key.values() if meta.split in splits)
         values = list(selected)
         return len(values), sum(values), sum(value * value for value in values)
-
-
-#: A UNIMOD token, or the ProForma separator between a terminal token and the sequence. Stripping
-#: both leaves the bare residues, which is all the localization rule needs -- so the peptide never
-#: has to be parsed in Python just to group by it.
-_MOD_TOKEN_PATTERN = r"\[UNIMOD:\d+\]|-"
 
 
 def _fill_optional(
@@ -104,7 +98,7 @@ def _resolve_localizations(frame: pl.DataFrame, s: ProspectSchema) -> tuple[pl.D
     spectrum = [s.raw_file, s.scan_number]
     group = spectrum + ["_stripped"]
     scored = frame.with_columns(
-        pl.col(s.modified_sequence).str.replace_all(_MOD_TOKEN_PATTERN, "").alias("_stripped")
+        pl.col(s.modified_sequence).str.replace_all(MOD_TOKEN_PATTERN, "").alias("_stripped")
     )
     if s.andromeda_score in scored.columns:
         # `max` skips nulls, so a group scored entirely by nulls keeps every row and stays
@@ -125,58 +119,6 @@ def _resolve_localizations(frame: pl.DataFrame, s: ProspectSchema) -> tuple[pl.D
     )
     unidentifiable = localized.filter(pl.col("_peptides") > 1).select(spectrum).n_unique()
     return localized.filter(pl.col("_peptides") == 1), unlocalizable, unidentifiable
-
-
-#: The N-terminal separator, which PROSPECT omits (``[UNIMOD:737]SEQ``) and the renderer emits
-#: (``[UNIMOD:737]-SEQ``). The *trailing* separator is deliberately not matched: ``SEQK-[UNIMOD:21]``
-#: and ``SEQK[UNIMOD:21]`` are different molecules, and telling those apart is the whole point.
-_NTERM_SEPARATOR = re.compile(r"^(\[UNIMOD:\d+\])-")
-#: Two or more modifications on one site. Their order is a serialization choice, not chemistry.
-_SITE_RUN = re.compile(r"(?:\[UNIMOD:\d+\]){2,}")
-
-
-def _canonical_modseq(modseq: str) -> str:
-    """Normalize the two ways an equivalent modified sequence can be spelled."""
-    modseq = _NTERM_SEPARATOR.sub(r"\1", modseq)
-    return _SITE_RUN.sub(
-        lambda run: "".join(sorted(re.findall(r"\[UNIMOD:\d+\]", run.group(0)))), modseq
-    )
-
-
-def _verified_peptide(modseq: str) -> Peptide:
-    """Parse a modified sequence, rejecting one whose mods land somewhere the source did not say.
-
-    Sites are ``'n'``/``'c'`` for the termini and 0-based indices for residues:
-
-    >>> parse_modseq("PEPS[UNIMOD:21]IDEK")
-    ('PEPSIDEK', ((3, 'Phospho'),))
-    >>> parse_modseq("PEPTIDEK-[UNIMOD:21]")
-    ('PEPTIDEK', (('c', 'Phospho'),))
-
-    The guard catches a modification parsed onto the wrong site. Nothing else can: the wrong site
-    weighs exactly what the right one does, so the mass agrees and so does the teacher. It is a
-    round trip because a re-render exposes the site, which a mass never does:
-
-    >>> _verified_peptide("PEPTIDEK-[UNIMOD:21]").modified_sequence()
-    'PEPTIDEK-[UNIMOD:21]'
-
-    Compared canonically, not literally. PROSPECT omits the N-terminal separator that the renderer
-    emits, and orders two mods on one residue either way; a literal comparison rejects 6.7% of the
-    corpus over that punctuation alone, every case equivalent:
-
-    >>> _verified_peptide("[UNIMOD:737]GGPPSQGGK[UNIMOD:1]RK").modified_sequence()
-    '[UNIMOD:737]-GGPPSQGGK[UNIMOD:1]RK'
-    """
-    stripped, mods = parse_modseq(modseq)
-    peptide = Peptide(stripped, mods)
-    rendered = peptide.modified_sequence()
-    if _canonical_modseq(rendered) != _canonical_modseq(modseq):
-        raise ValueError(
-            f"modified sequence {modseq!r} does not survive a parse/render round trip: parsed to "
-            f"sequence {stripped!r} with mods {list(mods)}, which renders as {rendered!r}. A "
-            "modification is placed somewhere the source did not put it."
-        )
-    return peptide
 
 
 def build_meta_index_from_frame(
@@ -225,7 +167,7 @@ def build_meta_index_from_frame(
         modseq = values[s.modified_sequence]
         cached = peptides.get(modseq)
         if cached is None:
-            peptide = _verified_peptide(modseq)
+            peptide = Peptide.from_prospect(modseq)
             cached = (peptide, assign_split(peptide.sequence, split_cfg))
             peptides[modseq] = cached
         peptide, split = cached

@@ -10,7 +10,7 @@ from pepdistill.etl.curation import CURATION_ANNOTATION_SCHEMA, analyze_prepared
 def _row(
     spectrum_id: int,
     scan: int,
-    sequence: str,
+    proforma: str,
     score: float,
     ms2: list[float],
     *,
@@ -22,8 +22,7 @@ def _row(
         "dataset": "ptm",
         "raw_file": "run",
         "scan_number": scan,
-        "sequence": sequence,
-        "mods": "1:Phospho",
+        "proforma": proforma,
         "charge": 2,
         "split": "train",
         "irt": 10.0,
