@@ -77,14 +77,15 @@ pepdistill/etl/        catalog discovery, archive conversion, shard manifests, f
 pepdistill/teacher/    AlphaPeptDeep and deterministic fake teachers
 pepdistill/models/     student architectures, presets, context encoders, checkpoint contracts
 pepdistill/distill/    pretrain/train loops, validation, early stopping, pipeline configuration
-pepdistill/predict/    reference/vectorized Python library generation and deferred ONNX path
+pepdistill/predict/    reference and vectorized Python library generation
 rust/core/             shared chemistry, encoding, artifact reader, and student inference
 rust/cli/              standalone safetensors-to-DIA-NN/JSON inference
 ```
 
 ## Deliberately deferred
 
-ONNX remains available as an experimental export/runtime path, but it is not the current product
-milestone and should not drive architecture work. The current optimization and integration target
-is the Rust FASTA-to-library-to-search path. Additional search-engine adapters can follow measured
-consumer needs.
+The ONNX export and runtime were removed rather than left to rot: nothing consumed them, and the
+export baked a sequence length into the graph, so it rejected any other length. A dead path that
+looks alive is worse than an absent one. The optimization and integration target is the Rust
+FASTA-to-library-to-search path. Additional search-engine adapters can follow measured consumer
+needs, and a portable export format can be reintroduced when a named consumer requires one.

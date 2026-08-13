@@ -1,7 +1,6 @@
-"""Vectorized predictor matches the reference, and ONNX round-trips."""
+"""Vectorized predictor matches the reference."""
 
 import numpy as np
-import pytest
 
 from pepdistill.chem import Peptide
 from pepdistill.data.precursors import Precursor
@@ -65,27 +64,3 @@ def test_torch_runner_stores_ms_context(tmp_path):
     )
     runner = TorchRunner(m, torch.device("cpu"), ms_context=ctx)
     assert isinstance(runner.ms_context, np.ndarray)
-
-
-def test_onnx_roundtrip(tmp_path):
-    pytest.importorskip("onnxruntime")
-    pytest.importorskip("onnx")
-    from pepdistill.predict.onnx import OnnxRunner, export_onnx
-
-    # CNN exports with fully dynamic axes.
-    model = build_student("flash")
-    path = tmp_path / "m.onnx"
-    export_onnx(model, path)
-    precs = _precs()
-    ref = (
-        predict_library_fast(TorchRunner(model, "cpu"), precs, min_intensity=0.05)
-        .sort_values(KEY)
-        .reset_index(drop=True)
-    )
-    onx = (
-        predict_library_fast(OnnxRunner(path), precs, min_intensity=0.05)
-        .sort_values(KEY)
-        .reset_index(drop=True)
-    )
-    assert len(ref) == len(onx)
-    assert np.abs(ref["relative_intensity"].values - onx["relative_intensity"].values).max() < 1e-3

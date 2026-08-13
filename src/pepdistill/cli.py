@@ -1,6 +1,6 @@
 """``pepdistill`` command-line interface.
 
-    run      config.toml           -> trained model (+ optional onnx / bench)
+    run      config.toml           -> trained model (+ optional bench)
     predict  model + FASTA          -> library.parquet
     prepare  config.toml             -> deterministic shard assets
 
@@ -265,16 +265,13 @@ def run(
 
 @app.command()
 def predict(
-    model: Path = typer.Option(
-        ..., exists=True, readable=True, help="Checkpoint (.ckpt) or .onnx."
-    ),
+    model: Path = typer.Option(..., exists=True, readable=True, help="Checkpoint (.ckpt)."),
     out: Path = typer.Option(..., "--out", "-o", help="Output library parquet."),
     fasta: Optional[Path] = typer.Option(None, exists=True, help="Digest this FASTA to predict."),
     precursors: Optional[Path] = typer.Option(None, exists=True, help="Or use a precursor table."),
     min_intensity: float = 0.01,
     batch_size: int = 4096,
-    device: str = typer.Option("auto", help="auto | cpu | mps | cuda (torch runtime)"),
-    runtime: str = typer.Option("torch", help="torch | onnx"),
+    device: str = typer.Option("auto", help="auto | cpu | mps | cuda."),
     nce: Optional[float] = typer.Option(
         None, help="Collision energy for context-aware MS2 (needs a ckpt with a saved encoder)."
     ),
@@ -331,41 +328,32 @@ def predict(
             )
         instrument, detector, fragmentation, nce = parts[0], parts[1], parts[2], float(parts[3])
 
-    if runtime == "onnx" or str(model).endswith(".onnx"):
-        from .predict.onnx import OnnxRunner  # optional [onnx] extra — import only if used
+    ms_ctx_vec = None
+    if nce is not None:
+        from .models.registry import load_context
 
-        if nce is not None:
+        ctx = load_context(model)
+        if ctx is None or ctx.encoder is None:
             raise typer.BadParameter(
-                "context-aware MS2 (--nce/--ms-context) needs the torch runtime"
+                f"{model} has no saved acquisition encoder; can't condition MS2"
             )
-        runner = OnnxRunner(model)
-    else:
-        ms_ctx_vec = None
-        if nce is not None:
-            from .models.registry import load_context
-
-            ctx = load_context(model)
-            if ctx is None or ctx.encoder is None:
-                raise typer.BadParameter(
-                    f"{model} has no saved acquisition encoder; can't condition MS2"
-                )
-            enc = ctx.encoder
-            ms_ctx_vec = (
-                enc(
-                    torch.tensor([enc.instrument_id(instrument)]),
-                    torch.tensor([enc.detector_id(detector)]),
-                    torch.tensor([enc.fragmentation_id(fragmentation)]),
-                    torch.tensor([float(nce)]),
-                )
-                .detach()
-                .numpy()[0]
+        enc = ctx.encoder
+        ms_ctx_vec = (
+            enc(
+                torch.tensor([enc.instrument_id(instrument)]),
+                torch.tensor([enc.detector_id(detector)]),
+                torch.tensor([enc.fragmentation_id(fragmentation)]),
+                torch.tensor([float(nce)]),
             )
-            typer.echo(
-                f"context-aware: {instrument or '-'}::{detector or '-'}::"
-                f"{fragmentation or '-'}::{nce} "
-                f"-> ms_context |v|={float((ms_ctx_vec**2).sum() ** 0.5):.3f}"
-            )
-        runner = TorchRunner(load_checkpoint(model), resolve_device(device), ms_context=ms_ctx_vec)
+            .detach()
+            .numpy()[0]
+        )
+        typer.echo(
+            f"context-aware: {instrument or '-'}::{detector or '-'}::"
+            f"{fragmentation or '-'}::{nce} "
+            f"-> ms_context |v|={float((ms_ctx_vec**2).sum() ** 0.5):.3f}"
+        )
+    runner = TorchRunner(load_checkpoint(model), resolve_device(device), ms_context=ms_ctx_vec)
 
     t0 = time.perf_counter()
     lib = predict_library_fast(runner, precs, batch_size=batch_size, min_intensity=min_intensity)

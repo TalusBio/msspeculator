@@ -1,4 +1,4 @@
-"""One config-driven Lightning pipeline: pretrain -> train -> export -> bench.
+"""One config-driven Lightning pipeline: pretrain -> train -> bench.
 
 A single :class:`RunConfig` replaces the old per-stage CLI + hand-rolled trainer. Every stage
 is independently toggleable; the model and the shared :class:`MSContextEncoder` are built once
@@ -12,7 +12,7 @@ Stages:
   axis. (A fixed-energy corpus would just be a dataset that carries its own CE — no special mode.)
 - **train** — real-speclib sink over a prepared Parquet manifest, streamed from local storage or
   object storage, with per-dataset ``chrom_context`` and factor-driven ``ms_context``.
-- **export** — ONNX. **bench** — library-generation throughput on a FASTA digest.
+- **bench** — library-generation throughput on a FASTA digest.
 
 Inference (predict a library from a finished model) is deliberately NOT here — it is the
 standalone ``predict`` command.
@@ -196,12 +196,6 @@ def _train_cfg(raw: dict) -> TrainCfg:
 
 
 @dataclass
-class ExportCfg:
-    enabled: bool = False
-    opset: int = 17
-
-
-@dataclass
 class BenchCfg:
     enabled: bool = False
     fasta: str = ""
@@ -265,10 +259,9 @@ class RunConfig:
     activation: str | None = None  # override preset activation for controlled retraining sweeps
     device: str = "auto"
     seed: int = 0
-    model_in: str | None = None  # optional checkpoint to initialize pretrain/train/export/bench
+    model_in: str | None = None  # optional checkpoint to initialize pretrain/train/bench
     pretrain: PretrainCfg = field(default_factory=PretrainCfg)
     train: TrainCfg = field(default_factory=TrainCfg)
-    export: ExportCfg = field(default_factory=ExportCfg)
     bench: BenchCfg = field(default_factory=BenchCfg)
     tracking: TrackingCfg = field(default_factory=TrackingCfg)
     diagnostics: DiagnosticsCfg = field(default_factory=DiagnosticsCfg)
@@ -296,7 +289,6 @@ class RunConfig:
             },
             pretrain=PretrainCfg(sources=sources, **pre),
             train=_train_cfg(raw.get("train", {})),
-            export=ExportCfg(**raw.get("export", {})),
             bench=BenchCfg(**raw.get("bench", {})),
             tracking=TrackingCfg(**raw.get("tracking", {})),
             diagnostics=DiagnosticsCfg(**raw.get("diagnostics", {})),
@@ -878,16 +870,6 @@ def run_pipeline(cfg: RunConfig, log=print) -> dict:
         mirror(ckpt)
     log(f"saved {ckpt}")
 
-    if cfg.export.enabled:
-        from ..predict.onnx import export_onnx  # optional [onnx] extra — import only if used
-
-        onnx_path = out / "model.onnx"
-        export_onnx(model, onnx_path, opset=cfg.export.opset)
-        if mirror is not None:
-            mirror(onnx_path)
-        summary["export"] = str(onnx_path)
-        log(f"[export] {onnx_path}")
-
     if cfg.bench.enabled and cfg.bench.fasta:
         summary["bench"] = _bench(model, cfg.bench, log)
 
@@ -933,7 +915,6 @@ __all__ = [
     "DigestSource",
     "PretrainCfg",
     "TrainCfg",
-    "ExportCfg",
     "BenchCfg",
     "TrackingCfg",
     "DiagnosticsCfg",

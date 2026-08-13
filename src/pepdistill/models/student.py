@@ -1,7 +1,7 @@
 """Small, hardware-friendly student network.
 
 No recurrence (LSTM/GRU) anywhere — the backbone is either a Transformer encoder or a
-dilated 1-D CNN, both of which parallelize well on CPU/GPU and export cleanly to ONNX.
+dilated 1-D CNN, both of which parallelize well on CPU/GPU and export cleanly to safetensors.
 Three heads share one encoder: MS2 fragment intensities, retention time, and CCS.
 """
 
@@ -87,7 +87,7 @@ class FourierFeatures(nn.Module):
         super().__init__()
         lam = torch.logspace(math.log10(self.WAVELENGTH_MAX), math.log10(self.WAVELENGTH_MIN), k)
         # Buffer, not a parameter: the ladder is fixed, and it must travel with the module
-        # into checkpoints and ONNX exports.
+        # into checkpoints and exported artifacts.
         self.register_buffer("freq", 2.0 * math.pi / lam)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -380,8 +380,8 @@ class StudentModel(nn.Module):
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Mask-free forward for same-length batches; returns denormalized (ms2, rt, ccs).
 
-        This is the inference/ONNX path: no padding, so no masks — attention and pooling
-        run dense. Returns plain tensors (not a dict) so it exports cleanly to ONNX. Takes
+        This is the inference path: no padding, so no masks — attention and pooling
+        run dense. Returns plain tensors (not a dict) so it traces cleanly for export. Takes
         MS context only (RT/CCS need no acquisition context here); bake it as a constant for
         a fixed-instrument export.
         """

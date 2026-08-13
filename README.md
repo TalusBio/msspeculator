@@ -26,7 +26,6 @@ prepared experimental spectral libraries.
 uv sync                                  # core only: no torch, no Polars
 uv sync --extra etl                      # preparation workers: Polars + S3, no torch
 uv sync --extra torch --extra teacher --extra etl --extra tracking  # development / cloud training
-uv sync --extra onnx                     # optional/deferred ONNX environment
 ```
 
 Torch and Lightning sit behind the `torch` extra rather than in the core dependencies. They resolve
@@ -123,8 +122,7 @@ Standalone Python inference from a trained checkpoint:
 pepdistill predict --model work/model.ckpt  --fasta proteome.fasta -o library.parquet --device auto
 ```
 
-The ONNX path remains available behind the `onnx` extra, but is deferred while the production
-work focuses on the Rust library generator and search integration.
+Production inference is the Rust path; see `export-rust` below.
 
 Condition MS2 on the run's acquisition context (torch runtime only, needs a checkpoint with a
 saved `MSContextEncoder` — i.e. one trained with `[train]` or `[pretrain]` enabled). Give the
@@ -236,7 +234,7 @@ pepdistill/
   models/      student architectures (no LSTM) + presets + context conditioning + checkpoint I/O
   distill/     dataset, losses (MS2 cosine / RT+CCS MSE), Lightning regimes (distill +
                real-speclib context) and the config-driven pipeline
-  predict/     library.py (reference) + fast.py (vectorized) + deferred ONNX export/runtime
+  predict/     library.py (reference) + fast.py (vectorized)
   eval.py      val reduction (best example per library entry)
   util.py      device resolution (auto -> mps/cpu)
   cli.py       run/predict/export-rust plus prepare/prepare-status/prepare-finalize

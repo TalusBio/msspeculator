@@ -2,8 +2,8 @@
 
 Updated 2026-08-11. The product milestone is a reproducible path from FASTA and prepared
 experimental data to a Rust-generated spectral library that produces useful search results.
-Validation is reported per dataset; a pooled score is not an acceptance criterion. ONNX is
-deferred until it solves a measured deployment need.
+Validation is reported per dataset; a pooled score is not an acceptance criterion. Production
+inference is the Rust path via `export-rust`.
 
 ## Current baseline
 
@@ -87,7 +87,8 @@ deferred until it solves a measured deployment need.
 
 ## Parked
 
-- ONNX export/runtime maintenance, until a concrete consumer requires it.
+- A portable export format (ONNX or otherwise), until a concrete consumer requires one. The ONNX
+  path was removed on 2026-08-13; it had no consumer and its export baked in a sequence length.
 - Unspecific-window pretraining, until a non-tryptic target justifies the much larger stream.
 - Additional search-engine adapters, until there is a named consumer and format contract.
 - Further parallelism changes, until profiling of the full prepared-data/model workload shows a

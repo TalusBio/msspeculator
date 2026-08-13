@@ -31,13 +31,6 @@ torch = [
 teacher = [
     "peptdeep>=1.2",
 ]
-# ONNX export + fast CPU inference runtime.
-# onnx is capped: >=1.18 pulls ml_dtypes>=0.5 which needs numpy>=2, conflicting with the
-# numpy<2 pin from the teacher (peptdeep) tree.
-onnx = [
-    "onnx>=1.16,<1.18",
-    "onnxruntime>=1.18",
-]
 # Polars-based preparation and S3 streaming of immutable, chunked training assets.
 etl = [
     "polars>=1.0",

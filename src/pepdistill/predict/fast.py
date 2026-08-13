@@ -6,7 +6,6 @@ dense tensor with no padding, run the model once per bucket, and compute fragmen
 assemble the output with pure numpy — no per-fragment Python. Only O(precursors) Python
 remains (mod placement + modified-sequence strings), never O(fragments).
 
-Supports a torch model or an ONNX session (see :mod:`pepdistill.predict.onnx`).
 """
 
 from __future__ import annotations
@@ -26,7 +25,7 @@ _ION_IS_B = np.array([ion == "b" for ion, _ in ION_TYPES], dtype=bool)
 
 
 class ModelRunner:
-    """Adapts either a torch StudentModel or an ONNX session to one call signature."""
+    """One call signature for a student model, whatever runtime backs it."""
 
     def run(
         self,

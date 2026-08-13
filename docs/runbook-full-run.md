@@ -138,7 +138,7 @@ every_n_epochs = 1               # 0 disables epoch snapshots
 interval_minutes = 60.0          # 0 disables wall-clock snapshots
 render_initial = true
 
-# [export] / [bench] left off. ONNX is deferred; use export-rust for production inference.
+# [bench] left off. Production inference is the Rust path; see export-rust.
 ```
 
 ### What the knobs mean
