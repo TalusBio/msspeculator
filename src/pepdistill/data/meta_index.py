@@ -48,6 +48,31 @@ class MetaIndex:
 _MOD_TOKEN_PATTERN = r"\[UNIMOD:\d+\]|-"
 
 
+def _fill_optional(frame: pl.DataFrame, s: ProspectSchema) -> pl.DataFrame:
+    """Give the optional columns their absent-value defaults, as columns.
+
+    An unrecorded measurement becomes NaN and an unrecorded label an empty string. Done here so
+    the row loop is pure reads: as a per-row conditional this was five branches per spectrum, and
+    as a helper call it was five calls, either of which costs more than filling a column once.
+    """
+    numeric = (s.collision_energy, s.andromeda_score, s.precursor_intensity)
+    labels = (s.mass_analyzer, s.fragmentation)
+    return frame.with_columns(
+        [
+            (
+                pl.col(name).fill_null(float("nan"))
+                if name in frame.columns
+                else pl.lit(float("nan"))
+            ).alias(name)
+            for name in numeric
+        ]
+        + [
+            (pl.col(name).fill_null("") if name in frame.columns else pl.lit("")).alias(name)
+            for name in labels
+        ]
+    )
+
+
 def _resolve_localizations(frame: pl.DataFrame, s: ProspectSchema) -> tuple[pl.DataFrame, int]:
     """Keep one best-scoring localization per spectrum, dropping the ones that cannot be localized.
 
@@ -100,6 +125,15 @@ def build_meta_index_from_frame(
         raise ValueError(f"metadata frame missing retention-time columns {irt_col!r}/{raw_col!r}")
 
     localized, ambiguous = _resolve_localizations(frame, s)
+    localized = _fill_optional(localized, s)
+    # Checked once over columns rather than by casting every field of every row: Polars already
+    # hands back str/int/float, so those casts only ever served as a null guard, and paying one
+    # per field per row for it cost more than the rest of the loop body.
+    required_values = [s.raw_file, s.scan_number, s.modified_sequence, s.charge, irt_col, raw_col]
+    null_counts = localized.select(pl.col(required_values).null_count()).row(0, named=True)
+    empty = {name: count for name, count in null_counts.items() if count}
+    if empty:
+        raise ValueError(f"metadata frame has null values in required columns: {empty}")
     # Everything derived purely from the modified sequence is cached on it. A source has ~40
     # replicate spectra per peptidoform, so parsing, building the peptide and hashing its split
     # once each rather than per row also leaves one shared Peptide per peptidoform instead of one
@@ -108,34 +142,24 @@ def build_meta_index_from_frame(
     peptides: dict[str, tuple[Peptide, str]] = {}
     index = MetaIndex(ambiguous_localization_spectra=ambiguous)
     for values in localized.iter_rows(named=True):
-        modseq = str(values[s.modified_sequence])
+        modseq = values[s.modified_sequence]
         cached = peptides.get(modseq)
         if cached is None:
             stripped, mods = parse_modseq(modseq)
             cached = (Peptide(stripped, mods), assign_split(stripped, split_cfg))
             peptides[modseq] = cached
         peptide, split = cached
-        key = (str(values[s.raw_file]), int(values[s.scan_number]))
-        collision_energy = values.get(s.collision_energy)
-        index.by_key[key] = SpectrumMeta(
+        index.by_key[(values[s.raw_file], values[s.scan_number])] = SpectrumMeta(
             peptide=peptide,
-            charge=int(values[s.charge]),
-            irt=float(values[irt_col]),
-            raw_rt=float(values[raw_col]),
+            charge=values[s.charge],
+            irt=values[irt_col],
+            raw_rt=values[raw_col],
             split=split,
-            mass_analyzer=str(values.get(s.mass_analyzer, "")),
-            fragmentation=str(values.get(s.fragmentation, "")),
-            energy=(float(collision_energy) if collision_energy is not None else float("nan")),
-            andromeda=(
-                float(values[s.andromeda_score])
-                if s.andromeda_score in values and values[s.andromeda_score] is not None
-                else float("nan")
-            ),
-            precursor_intensity=(
-                float(values[s.precursor_intensity])
-                if s.precursor_intensity in values and values[s.precursor_intensity] is not None
-                else float("nan")
-            ),
+            mass_analyzer=values[s.mass_analyzer],
+            fragmentation=values[s.fragmentation],
+            energy=values[s.collision_energy],
+            andromeda=values[s.andromeda_score],
+            precursor_intensity=values[s.precursor_intensity],
         )
     if not index.by_key:
         # Distinguish the two ways this ends up empty: an empty selection is a caller error, while
