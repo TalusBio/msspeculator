@@ -60,15 +60,16 @@ After either, `import pepdistill_rs` succeeds in the project venv and
 
 ## Contract
 
-Rust owns chemistry: `MOD_DELTA` (mod name -> mass delta), `RESIDUE_MASS`, `H2O`, `PROTON`,
-vocab constants (`AA_OFFSET`/`PAD_IDX`/`N_TOKENS`/terminus indices), and ion-series layout
-(`ION_TYPES`) all live in `rust/core` and are exported through `pepdistill_rs`. Python code
-never duplicates or re-derives these values — it imports them from `pepdistill.chem`
-(re-exported from the ext).
+Rust owns chemistry: `mod_delta`/`mod_composition` (descriptor -> mass / element composition),
+`RESIDUE_MASS`, `H2O`, `PROTON`, vocab constants (`AA_OFFSET`/`PAD_IDX`/`N_TOKENS`/terminus
+indices), and ion-series layout (`ION_TYPES`) all live in `rust/core` and are exported through
+`pepdistill_rs`. Python code never duplicates or re-derives these values — it imports them from
+`pepdistill.chem` (re-exported from the ext).
 
-Callers pass **modification names** (e.g. `"Oxidation@M"`), not pre-scaled deltas — Rust
-looks up the mass shift internally via `MOD_DELTA`. This applies uniformly to `Peptide`
-construction, `collate`/`bucket_arrays`, and `fragment_mz`/`fragment_mz_matrix`. There is no
+Callers pass **ProForma descriptors** (e.g. `"UNIMOD:35"`, `"Formula:H2O"`), not pre-scaled
+deltas — Rust resolves composition and mass internally against the vendored UNIMOD table. This
+applies uniformly to `Peptide` construction, `collate`/`bucket_arrays`, and
+`fragment_mz`/`fragment_mz_matrix`. There is no
 Python-side chemistry to keep in parity with Rust; Rust unit tests
 (`cargo test -p pepdistill-core`, see `core/src/chem.rs`, `core/src/peptide.rs`,
 `core/src/tokenize.rs`, `core/src/bucket.rs`) are the authoritative coverage.

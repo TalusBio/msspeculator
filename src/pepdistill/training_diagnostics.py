@@ -20,9 +20,8 @@ import fsspec
 import lightning as L
 import numpy as np
 import torch
-from pepdistill_rs import mod_element_comp
 
-from .chem import MOD_DELTA, Peptide, fragment_mz_matrix
+from .chem import Peptide, fragment_mz_matrix, mod_composition, mod_delta, unimod_title
 from .data.encode import FRAG_OFFSET, collate
 from .data.precursors import Precursor
 from .diagnostics import (
@@ -43,6 +42,18 @@ from .diagnostics import (
 
 
 T = TypeVar("T")
+
+# Modifications plotted in the encoder-embedding panel: the canonical PTMs of PROSPECT plus the
+# two the pretrain digest samples. Every one routes through the composition encoder, which the
+# panel needs in order to draw an atoms/mass pair for it.
+PANEL_MODIFICATIONS = (
+    4,  # Carbamidomethyl
+    21,  # Phospho
+    35,  # Oxidation
+    737,  # TMT6plex
+    1,  # Acetyl
+    121,  # GG
+)
 
 
 @dataclass(frozen=True)
@@ -151,11 +162,13 @@ def _modification_embeddings(model) -> tuple[list[LabeledEmbedding], list[Embedd
     connections: list[EmbeddingConnection] = []
     device = next(model.parameters()).device
     with torch.inference_mode():
-        for name, mass in sorted(MOD_DELTA.items()):
+        for accession in PANEL_MODIFICATIONS:
+            descriptor = f"UNIMOD:{accession}"
             composition = torch.tensor(
-                mod_element_comp(name), dtype=torch.float32, device=device
+                mod_composition(descriptor), dtype=torch.float32, device=device
             ).unsqueeze(0)
-            mass_tensor = torch.tensor([mass], dtype=torch.float32, device=device)
+            mass_tensor = torch.tensor([mod_delta(descriptor)], dtype=torch.float32, device=device)
+            name = unimod_title(accession)
             atom_label = f"{name}:atoms"
             mass_label = f"{name}:mass"
             points.extend(

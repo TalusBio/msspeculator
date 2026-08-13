@@ -39,4 +39,10 @@ def test_collate_prepared_matches_object_collate():
 def test_constants_and_ion_types():
     assert rs.PAD_IDX == 26 and rs.N_TOKENS == 29
     assert rs.ION_TYPES == [("b", 1), ("y", 1), ("b", 2), ("y", 2)]
-    assert math.isclose(rs.MOD_DELTA["Carbamidomethyl@C"], 57.021463723, abs_tol=1e-6)
+    assert math.isclose(rs.mod_delta("UNIMOD:4"), 57.021463723, abs_tol=1e-6)
+    assert rs.mod_composition("UNIMOD:4") == [2, 3, 1, 1, 0, 0]
+    assert rs.unimod_title(4) == "Carbamidomethyl"
+    # A bare delta has a mass but no composition, and is refused rather than zero-filled.
+    assert math.isclose(rs.mod_delta("+15.5"), 15.5, abs_tol=1e-9)
+    with pytest.raises(ValueError, match="no composition"):
+        rs.mod_composition("+15.5")

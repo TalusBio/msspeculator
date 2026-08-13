@@ -17,21 +17,6 @@ use crate::composition::AtomicComposition;
 const ELEMENTS_TSV: &str = include_str!("../data/elements.tsv");
 const UNIMOD_TSV: &str = include_str!("../data/unimod.tsv");
 
-/// Our historical modification names -> UNIMOD accession.
-///
-/// These four are a frozen contract on the **read** side: serialized precursor caches and
-/// prepared `mods` columns in the wild use them, so `by_name` must keep accepting them forever.
-/// They are deliberately *not* a vocabulary we emit. Two of them (`Carbamidomethyl@C`,
-/// `Oxidation@M`) carry alphabase-style `@Site` suffixes that are not valid ProForma descriptors,
-/// so emitting them yields modified sequences our own grammar cannot parse — see
-/// `ModSpec::render`, which resolves every named modification to its accession instead.
-pub const ALIASES: &[(&str, u32)] = &[
-    ("Carbamidomethyl@C", 4),
-    ("Phospho", 21),
-    ("Oxidation@M", 35),
-    ("TMT6plex", 737),
-];
-
 #[derive(Debug, Clone)]
 pub struct ModEntry {
     pub accession: u32,
@@ -46,7 +31,6 @@ struct Tables {
     masses: HashMap<String, f64>,
     entries: Vec<ModEntry>,
     by_acc: HashMap<u32, usize>,
-    by_title: HashMap<String, usize>,
 }
 
 static TABLES: OnceLock<Tables> = OnceLock::new();
@@ -87,16 +71,10 @@ fn tables() -> &'static Tables {
             .enumerate()
             .map(|(i, e)| (e.accession, i))
             .collect();
-        let by_title = entries
-            .iter()
-            .enumerate()
-            .map(|(i, e)| (e.title.clone(), i))
-            .collect();
         Tables {
             masses,
             entries,
             by_acc,
-            by_title,
         }
     })
 }
@@ -112,15 +90,6 @@ pub fn all_entries() -> &'static [ModEntry] {
 pub fn by_accession(acc: u32) -> Option<&'static ModEntry> {
     let t = tables();
     t.by_acc.get(&acc).map(|i| &t.entries[*i])
-}
-
-/// Resolve a canonical name: our alias if one exists, otherwise a UNIMOD title.
-pub fn by_name(name: &str) -> Option<&'static ModEntry> {
-    if let Some((_, acc)) = ALIASES.iter().find(|(n, _)| *n == name) {
-        return by_accession(*acc);
-    }
-    let t = tables();
-    t.by_title.get(name).map(|i| &t.entries[*i])
 }
 
 #[cfg(test)]
@@ -183,15 +152,6 @@ mod tests {
         assert_eq!(by_accession(21).unwrap().title, "Phospho");
         assert_eq!(by_accession(737).unwrap().title, "TMT6plex");
         assert!(by_accession(99_999_999).is_none());
-    }
-
-    #[test]
-    fn aliases_resolve_to_the_same_entry() {
-        assert_eq!(by_name("Carbamidomethyl@C").unwrap().accession, 4);
-        assert_eq!(by_name("Oxidation@M").unwrap().accession, 35);
-        // A bare UNIMOD title works too, for mods with no alias.
-        assert_eq!(by_name("Phospho").unwrap().accession, 21);
-        assert!(by_name("NotAMod").is_none());
     }
 
     #[test]

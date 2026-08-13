@@ -439,7 +439,10 @@ mod tests {
         );
         assert_eq!(p.mods.len(), 2, "two distinct sites, not one merged mod");
         let base = Peptide::new("KPEPTIDE".into(), vec![]).mono_mass().unwrap();
-        let d = crate::chem::mod_delta("TMT6plex").unwrap();
+        let d = crate::proforma::unimod_spec(737)
+            .unwrap()
+            .delta_mass()
+            .unwrap();
         assert!((p.mono_mass().unwrap() - (base + 2.0 * d)).abs() < 1e-6);
     }
 

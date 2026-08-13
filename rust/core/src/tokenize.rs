@@ -154,7 +154,6 @@ pub fn collate(peptides: &[Peptide], charges: &[i64]) -> anyhow::Result<CollateA
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chem;
     use crate::peptide::{EncodingRoute, ModSpec};
 
     #[test]
@@ -191,7 +190,10 @@ mod tests {
         assert_eq!(a.tokens[[0, 2]], (b'C' - b'A') as i64);
         assert_eq!(a.tokens[[0, 3]], CTERM_IDX);
         // mod site 1 (0-based within seq) lands at offset 1+1=2
-        let expected = chem::mod_delta("Carbamidomethyl@C").unwrap() as f32;
+        let expected = crate::proforma::unimod_spec(4)
+            .unwrap()
+            .delta_mass()
+            .unwrap() as f32;
         assert!((a.mod_mass[[0, 2]] - expected).abs() < 1e-6);
         assert!(a.mod_present[[0, 2]]);
         assert!(a.mod_has_composition[[0, 2]]);
@@ -336,8 +338,14 @@ mod tests {
         // Carbamidomethyl C2H3NO + Oxidation O, in ELEMENTS order C,H,N,O,S,P.
         let comp: Vec<f32> = (0..N_ELEMENTS).map(|k| a.mod_comp[[0, col, k]]).collect();
         assert_eq!(comp, vec![2.0, 3.0, 1.0, 2.0, 0.0, 0.0]);
-        let expected = (chem::mod_delta("Carbamidomethyl@C").unwrap()
-            + chem::mod_delta("Oxidation@M").unwrap()) as f32;
+        let expected = (crate::proforma::unimod_spec(4)
+            .unwrap()
+            .delta_mass()
+            .unwrap()
+            + crate::proforma::unimod_spec(35)
+                .unwrap()
+                .delta_mass()
+                .unwrap()) as f32;
         assert!((a.mod_mass[[0, col]] - expected).abs() < 1e-4);
     }
 

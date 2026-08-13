@@ -1,9 +1,9 @@
 //! Monoisotopic mass and m/z arithmetic — the single source of truth for pepdistill's
 //! chemistry constants; `pepdistill.chem` (Python) is now a thin shim over this module.
 //!
-//! Supports the 20 standard amino acids plus named modifications resolved against the vendored
-//! UNIMOD table (`unimod::by_name`, via `mod_delta`/`mod_element_comp`). Fragment ordering
-//! matches `chem.ION_TYPES` = (b,1),(y,1),(b,2),(y,2).
+//! Supports the 20 standard amino acids; modification chemistry lives on `ModSpec`, resolved
+//! against the vendored UNIMOD table. Fragment ordering matches `chem.ION_TYPES` =
+//! (b,1),(y,1),(b,2),(y,2).
 
 pub const PROTON: f64 = 1.007_276_466_879;
 pub const H2O: f64 = 18.010_564_684_25;
@@ -112,28 +112,6 @@ pub fn fragment_mz_matrix(rm: &[f64]) -> Vec<Vec<f64>> {
     out
 }
 
-/// Modification mass delta (Da), computed from the vendored UNIMOD composition. There is no
-/// second table of literal deltas to drift against — `unimod::ALIASES` is the only mapping.
-///
-/// Two distinct failures, kept distinct: the name is not in the table, or the name resolves but
-/// its composition names a nuclide the mass table lacks. Collapsing the second into the first
-/// (as an `Option` return did) reports a broken table refresh as "unknown modification", which
-/// sends the reader looking for a typo in a name that is in fact present.
-pub fn mod_delta(name: &str) -> anyhow::Result<f64> {
-    let e = crate::unimod::by_name(name)
-        .ok_or_else(|| anyhow::anyhow!("unknown modification {name}"))?;
-    e.comp
-        .mono_mass(crate::unimod::nuclide_masses())
-        .map_err(|e| anyhow::anyhow!("modification {name} has no computable mass: {e}"))
-}
-
-/// Isotope-agnostic 6-element composition delta for a named modification.
-pub fn mod_element_comp(name: &str) -> anyhow::Result<[i8; crate::composition::N_ELEMENTS]> {
-    let e = crate::unimod::by_name(name)
-        .ok_or_else(|| anyhow::anyhow!("unknown modification {name}"))?;
-    e.comp.element_comp()
-}
-
 pub fn mono_mass(rm: &[f64]) -> f64 {
     rm.iter().sum::<f64>() + H2O
 }
@@ -226,35 +204,36 @@ mod tests {
     }
 
     #[test]
-    fn frozen_alias_contract() {
-        // These four names appear in serialized precursor caches; their deltas must not drift.
-        let expected: &[(&str, f64)] = &[
-            ("Carbamidomethyl@C", 57.021_463_723),
-            ("Oxidation@M", 15.994_914_622),
-            ("Phospho", 79.966_331_2),
-            ("TMT6plex", 229.162_932_1),
+    fn frozen_modification_deltas() {
+        // The canonical PTMs we train on. Their deltas come from the vendored UNIMOD
+        // compositions, so a bad table refresh shows up here rather than as a quietly shifted
+        // precursor mass.
+        let expected: &[(u32, f64)] = &[
+            (4, 57.021_463_723),  // Carbamidomethyl
+            (35, 15.994_914_622), // Oxidation
+            (21, 79.966_331_2),   // Phospho
+            (737, 229.162_932_1), // TMT6plex
+            (1, 42.010_564_7),    // Acetyl
+            (121, 114.042_927_4), // GG
         ];
-        for &(name, delta) in expected {
-            approx(mod_delta(name).unwrap(), delta, 1e-5);
+        for &(accession, delta) in expected {
+            let spec = crate::proforma::unimod_spec(accession).unwrap();
+            approx(spec.delta_mass().unwrap(), delta, 1e-5);
         }
-        let err = mod_delta("NotAMod").unwrap_err().to_string();
-        assert!(err.contains("unknown modification"), "{err}");
+        assert!(crate::proforma::unimod_spec(999_999).is_err());
     }
 
     #[test]
-    fn mod_delta_distinguishes_unknown_name_from_uncomputable_mass() {
-        // A missing nuclide is not an unknown modification: the two diagnoses send a reader to
-        // different files (the alias list vs. the vendored nuclide table).
-        let unknown = mod_delta("NotAMod").unwrap_err().to_string();
-        assert!(unknown.contains("unknown modification"), "{unknown}");
-
+    fn uncomputable_mass_is_not_reported_as_an_unknown_modification() {
+        // A missing nuclide is not an unknown accession: the two diagnoses send a reader to
+        // different files (the UNIMOD table vs. the vendored nuclide table).
         let comp = crate::composition::AtomicComposition::parse("Xx(1)").unwrap();
         let err = comp
             .mono_mass(crate::unimod::nuclide_masses())
             .unwrap_err()
             .to_string();
         assert!(err.contains("no monoisotopic mass for nuclide"), "{err}");
-        assert!(!err.contains("unknown modification"), "{err}");
+        assert!(!err.contains("unknown UNIMOD accession"), "{err}");
     }
 
     #[test]

@@ -200,40 +200,34 @@ fn ms2_target_shape(length: usize) -> (usize, usize) {
     chem::ms2_target_shape(length)
 }
 
-/// Canonical name for a UNIMOD accession: our alias if one exists, else the UNIMOD title.
-/// `None` if the accession is not in the vendored table.
-#[pyfunction]
-fn unimod_name(accession: u32) -> Option<String> {
-    let e = unimod::by_accession(accession)?;
-    let alias = unimod::ALIASES
-        .iter()
-        .find(|(_, a)| *a == accession)
-        .map(|(n, _)| n.to_string());
-    Some(alias.unwrap_or_else(|| e.title.clone()))
-}
-
-/// UNIMOD accession for one of our aliases or a canonical UNIMOD title.
-#[pyfunction]
-fn unimod_accession(name: &str) -> Option<u32> {
-    unimod::by_name(name).map(|entry| entry.accession)
-}
-
-/// The UNIMOD title for an accession, ignoring our aliases. `None` if the accession is unknown.
+/// The UNIMOD title for an accession — `"Phospho"` for 21. `None` if the accession is unknown.
 ///
-/// Distinct from `unimod_name`, which prefers an alias. Aliases are a read-only compatibility
-/// table for *input*; using them to generate output leaks our internal spelling, and two of the
-/// four carry a residue suffix, so `unimod_name` returns `Carbamidomethyl@C` for accession 4 and a
-/// bare `Phospho` for 21. A consumer that appends its own site needs the bare title every time.
+/// The bare title, with no site suffix: a consumer that needs alphabase's `Name@Site` spelling
+/// appends the site it holds, which is the only thing that knows where the modification sits.
 #[pyfunction]
 fn unimod_title(accession: u32) -> Option<String> {
     unimod::by_accession(accession).map(|entry| entry.title.clone())
 }
 
-/// 6-element composition delta for a named modification, in `composition::ELEMENTS` order.
-/// Raises `ValueError` if the name is unknown or needs an element outside that basis.
+/// Mass delta in Daltons for one unbracketed ProForma descriptor, e.g. `"UNIMOD:35"`.
 #[pyfunction]
-fn mod_element_comp(name: &str) -> PyResult<[i8; pepdistill_core::composition::N_ELEMENTS]> {
-    chem::mod_element_comp(name).map_err(to_pyerr)
+fn mod_delta(descriptor: &str) -> PyResult<f64> {
+    proforma::parse_descriptor(descriptor)
+        .and_then(|spec| spec.delta_mass())
+        .map_err(to_pyerr)
+}
+
+/// 6-element composition delta for one unbracketed ProForma descriptor, in
+/// `composition::ELEMENTS` order. Raises `ValueError` for a descriptor with no composition —
+/// a bare mass delta, or one whose elements fall outside that basis.
+#[pyfunction]
+fn mod_composition(descriptor: &str) -> PyResult<[i8; pepdistill_core::composition::N_ELEMENTS]> {
+    let spec = proforma::parse_descriptor(descriptor).map_err(to_pyerr)?;
+    spec.element_comp().map_err(to_pyerr)?.ok_or_else(|| {
+        pyo3::exceptions::PyValueError::new_err(format!(
+            "modification {descriptor:?} routes through the mass encoder and has no composition"
+        ))
+    })
 }
 
 #[pyfunction]
@@ -349,11 +343,10 @@ fn pepdistill_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(fragment_mz, m)?)?;
     m.add_function(wrap_pyfunction!(fragment_mz_matrix, m)?)?;
     m.add_function(wrap_pyfunction!(ms2_target_shape, m)?)?;
-    m.add_function(wrap_pyfunction!(unimod_name, m)?)?;
     m.add_function(wrap_pyfunction!(parse_modification_rule, m)?)?;
-    m.add_function(wrap_pyfunction!(unimod_accession, m)?)?;
     m.add_function(wrap_pyfunction!(unimod_title, m)?)?;
-    m.add_function(wrap_pyfunction!(mod_element_comp, m)?)?;
+    m.add_function(wrap_pyfunction!(mod_delta, m)?)?;
+    m.add_function(wrap_pyfunction!(mod_composition, m)?)?;
     m.add_function(wrap_pyfunction!(collate, m)?)?;
     m.add_function(wrap_pyfunction!(collate_prepared, m)?)?;
     m.add_function(wrap_pyfunction!(bucket_arrays, m)?)?;
@@ -374,14 +367,6 @@ fn pepdistill_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
         ion.append((if is_b { "b" } else { "y" }, z as i64))?;
     }
     m.add("ION_TYPES", ion)?;
-
-    let mods = PyDict::new_bound(py);
-    for &(name, _acc) in unimod::ALIASES.iter() {
-        let delta = chem::mod_delta(name)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
-        mods.set_item(name, delta)?;
-    }
-    m.add("MOD_DELTA", mods)?;
 
     let residues = PyDict::new_bound(py);
     let residue_compositions = PyDict::new_bound(py);

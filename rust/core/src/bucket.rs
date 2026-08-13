@@ -142,7 +142,10 @@ mod tests {
         assert_eq!(ba.tokens[[0, 3]], CTERM_IDX);
         assert_eq!(ba.residue_mass.shape(), &[1, 2]);
         let base_c = chem::residue_mass(b'C').unwrap();
-        let d = chem::mod_delta("Carbamidomethyl@C").unwrap();
+        let d = crate::proforma::unimod_spec(4)
+            .unwrap()
+            .delta_mass()
+            .unwrap();
         assert!((ba.residue_mass[[0, 1]] - (base_c + d)).abs() < 1e-9);
     }
 
