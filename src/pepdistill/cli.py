@@ -16,17 +16,16 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Optional
 
-import pandas as pd
-import torch
 import typer
 
 from .data.config import DigestConfig, SplitConfig
 from .data.digest import digest_fasta
 from .data.precursors import enumerate_precursors, frame_to_precursors
-from .distill.pipeline import RunConfig, run_pipeline
-from .models.registry import load_checkpoint
-from .predict.fast import TorchRunner, predict_library_fast
-from .predict.library import write_library
+
+# torch, pandas and the training pipeline are imported inside the commands that use them, as the
+# other commands here already do. At module scope they made `pepdistill prepare` load the whole
+# training stack: an ETL worker paid seconds of import and a GB of memory for a path that never
+# touches a tensor. (Installation still pulls them -- that needs torch behind an extra.)
 from .util import resolve_device
 
 app = typer.Typer(add_completion=False, help="Distill AlphaPeptDeep into fast spectral libraries.")
@@ -227,6 +226,8 @@ def run(
     no_train: bool = typer.Option(False, help="Disable the real-speclib train stage."),
 ) -> None:
     """Run the training pipeline described by a TOML config."""
+    from .distill.pipeline import RunConfig, run_pipeline
+
     cfg = RunConfig.from_toml(config)
     if out is not None:
         cfg = replace(cfg, out=str(out))
@@ -275,6 +276,13 @@ def predict(
     max_var_mods: int = 1,
 ) -> None:
     """Predict a spectral library from a trained student (vectorized, length-bucketed)."""
+    import pandas as pd
+    import torch
+
+    from .models.registry import load_checkpoint
+    from .predict.fast import TorchRunner, predict_library_fast
+    from .predict.library import write_library
+
     if (fasta is None) == (precursors is None):
         raise typer.BadParameter("provide exactly one of --fasta or --precursors")
 
@@ -374,7 +382,7 @@ def diagnose(
 ) -> None:
     """Render the same fixed diagnostic panel used during training for one checkpoint."""
     from .models.context import MSContextEncoder
-    from .models.registry import load_context
+    from .models.registry import load_checkpoint, load_context
     from .teacher import get_teacher
     from .training_diagnostics import TrainingDiagnosticRenderer
 

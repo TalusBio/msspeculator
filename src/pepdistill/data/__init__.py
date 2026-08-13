@@ -1,8 +1,13 @@
-"""FASTA digestion, precursor enumeration, deterministic splitting, tensor encoding."""
+"""FASTA digestion, precursor enumeration, deterministic splitting.
+
+Tensor encoding is deliberately *not* re-exported here. ``encode`` imports torch, so re-exporting
+it made importing anything from this package -- ``config``, ``digest``, ``split`` -- pull the whole
+torch stack in with it. That put torch on the preparation ETL's import path, which never touches a
+tensor. Import :mod:`pepdistill.data.encode` directly, as every caller already does.
+"""
 
 from .config import DigestConfig, SplitConfig
 from .digest import cleave_protein, digest_fasta, digest_records, parse_fasta
-from .encode import Batch, collate
 from .precursors import (
     Precursor,
     enumerate_precursors,
@@ -23,6 +28,4 @@ __all__ = [
     "frame_to_precursors",
     "Precursor",
     "assign_split",
-    "collate",
-    "Batch",
 ]
