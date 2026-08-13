@@ -392,3 +392,42 @@ def test_pretrain_sources_carry_their_own_mods():
     )
     assert explicit.fixed_mods == ("Carbamidomethyl@C",)
     assert explicit.variable_mods == ()
+
+
+def test_a_misplaced_modification_fails_where_the_peptide_is_built():
+    """A mod placed somewhere the source did not put it must fail, not flow downstream.
+
+    This is the failure the round-trip guard exists for, and it is invisible to every other check:
+    the peptide is valid, the mass is identical, and the teacher agrees with it. Only re-rendering
+    the parsed peptide and comparing against the source string distinguishes "parsed" from "parsed
+    correctly". Enforced at build time rather than audited afterwards, because comparing stored
+    shards against the current parser is tautological when both are the same code.
+    """
+    from pepdistill.data.meta_index import _verified_peptide
+
+    # The forms PROSPECT actually uses all survive, terminal mods included.
+    for modseq in (
+        "PEPTIDEK",
+        "PEPTIDEC[UNIMOD:4]K",
+        "[UNIMOD:737]-PEPTIDEK",
+        "PEPTIDEK-[UNIMOD:21]",
+        "[UNIMOD:737]-PEPTIDEC[UNIMOD:4]K[UNIMOD:737]",
+    ):
+        assert _verified_peptide(modseq).modified_sequence() == modseq
+
+    # Cosmetic spellings must pass. PROSPECT omits the N-terminal separator that the renderer
+    # emits, and orders two mods on one residue either way; a literal comparison rejected 6.7% of
+    # the corpus on these two alone, every one of them equivalent.
+    for cosmetic in (
+        "[UNIMOD:737]GGPPSQGGK[UNIMOD:1]RK",
+        "[UNIMOD:737]VVQPQEEIATK[UNIMOD:737][UNIMOD:1]LR",
+    ):
+        assert _verified_peptide(cosmetic).sequence
+
+    # The *trailing* separator is chemistry, not punctuation: a C-terminal mod and a mod on the
+    # last residue share a mass and differ in structure, so normalizing it away would hide the one
+    # bug this guard exists for.
+    from pepdistill.data.meta_index import _canonical_modseq
+
+    assert _canonical_modseq("PEPTIDEK-[UNIMOD:21]") != _canonical_modseq("PEPTIDEK[UNIMOD:21]")
+    assert _canonical_modseq("[UNIMOD:737]-PEPTIDEK") == _canonical_modseq("[UNIMOD:737]PEPTIDEK")

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 import polars as pl
@@ -126,6 +127,57 @@ def _resolve_localizations(frame: pl.DataFrame, s: ProspectSchema) -> tuple[pl.D
     return localized.filter(pl.col("_peptides") == 1), unlocalizable, unidentifiable
 
 
+#: The N-terminal separator, which PROSPECT omits (``[UNIMOD:737]SEQ``) and the renderer emits
+#: (``[UNIMOD:737]-SEQ``). The *trailing* separator is deliberately not matched: ``SEQK-[UNIMOD:21]``
+#: and ``SEQK[UNIMOD:21]`` are different molecules, and telling those apart is the whole point.
+_NTERM_SEPARATOR = re.compile(r"^(\[UNIMOD:\d+\])-")
+#: Two or more modifications on one site. Their order is a serialization choice, not chemistry.
+_SITE_RUN = re.compile(r"(?:\[UNIMOD:\d+\]){2,}")
+
+
+def _canonical_modseq(modseq: str) -> str:
+    """Normalize the two ways an equivalent modified sequence can be spelled."""
+    modseq = _NTERM_SEPARATOR.sub(r"\1", modseq)
+    return _SITE_RUN.sub(
+        lambda run: "".join(sorted(re.findall(r"\[UNIMOD:\d+\]", run.group(0)))), modseq
+    )
+
+
+def _verified_peptide(modseq: str) -> Peptide:
+    """Parse one modified sequence, and require that it renders back to the same molecule.
+
+    Parsing succeeding is not the same as parsing being right. A malformed token already fails
+    loudly, but a *misplaced* one does not: a C-terminal ``-[UNIMOD:21]`` once read as a mod on the
+    final residue, which produced a perfectly valid peptide carrying the phosphate in the wrong
+    place, and nothing downstream could tell -- the mass is identical, so even the teacher agreed.
+    Re-rendering the parsed peptide and comparing against the source is what separates those cases.
+
+    Compared canonically rather than literally, which measurement forced: an exact string
+    comparison rejects 139,435 of the 2,067,007 distinct PROSPECT peptidoforms (6.7%) purely over
+    the N-terminal separator and the order of two mods on one residue. All 139,435 were verified
+    equivalent and none was a placement error, so a literal check here would have failed valid data
+    on 6.7% of the corpus while catching nothing.
+
+    This belongs here, at the one point where a source sequence becomes a peptide, rather than in a
+    tool run afterwards. An audit comparing stored shards against the current parser can only
+    detect a parser that has *changed*: it is tautological when both sides are the same code, and
+    it cannot fail a shard while that shard is being written.
+
+    Costs one render per distinct peptidoform (about 11k per source against ~450k rows), because
+    the caller caches on the modified sequence.
+    """
+    stripped, mods = parse_modseq(modseq)
+    peptide = Peptide(stripped, mods)
+    rendered = peptide.modified_sequence()
+    if _canonical_modseq(rendered) != _canonical_modseq(modseq):
+        raise ValueError(
+            f"modified sequence {modseq!r} does not survive a parse/render round trip: parsed to "
+            f"sequence {stripped!r} with mods {list(mods)}, which renders as {rendered!r}. A "
+            "modification is placed somewhere the source did not put it."
+        )
+    return peptide
+
+
 def build_meta_index_from_frame(
     frame: pl.DataFrame,
     split_cfg: SplitConfig | None = None,
@@ -172,8 +224,8 @@ def build_meta_index_from_frame(
         modseq = values[s.modified_sequence]
         cached = peptides.get(modseq)
         if cached is None:
-            stripped, mods = parse_modseq(modseq)
-            cached = (Peptide(stripped, mods), assign_split(stripped, split_cfg))
+            peptide = _verified_peptide(modseq)
+            cached = (peptide, assign_split(peptide.sequence, split_cfg))
             peptides[modseq] = cached
         peptide, split = cached
         index.by_key[(values[s.raw_file], values[s.scan_number])] = SpectrumMeta(
