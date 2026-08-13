@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from ..chem import MOD_DELTA
+
 
 # Enzyme cleavage rules: cut C-terminal to any residue in ``cleave_after``, unless the
 # next residue is in ``restrict_before``. Extend the registry to add enzymes.
@@ -41,6 +43,33 @@ class DigestConfig:
     # Variable mods enumerated as mod-forms up to ``max_variable_mods`` per peptide.
     variable_mods: tuple[str, ...] = ("Oxidation@M",)
     max_variable_mods: int = 1
+
+    def __post_init__(self) -> None:
+        """Reject a mod name here, where the config is read, rather than deep in a run.
+
+        A fixed or variable mod name has to answer two questions: which residue it sits on, which
+        is the ``@R`` suffix, and what mass it adds, which is the lookup in ``MOD_DELTA``. Nothing
+        checked either on the pretrain path, and neither failure was prompt: a name without ``@``
+        reached ``_mod_target`` and raised ``IndexError: list index out of range``, while a name
+        with one that the vocabulary does not know built precursors quite happily -- ``Peptide``
+        resolves the mass lazily -- and only raised once the teacher or encoder asked for a mass,
+        by which point a run had been going for a while.
+        """
+        for group, names in (
+            ("fixed_mods", self.fixed_mods),
+            ("variable_mods", self.variable_mods),
+        ):
+            for name in names:
+                if "@" not in name:
+                    raise ValueError(
+                        f"{group} entry {name!r} names no residue; a site-agnostic name cannot be "
+                        f"placed. Write it as Title@Residue, such as {name}@S"
+                    )
+                if name not in MOD_DELTA:
+                    raise ValueError(
+                        f"{group} entry {name!r} is not a known modification; known: "
+                        f"{sorted(n for n in MOD_DELTA if '@' in n)}"
+                    )
 
     def enzyme_rule(self) -> Enzyme:
         try:

@@ -347,3 +347,48 @@ def test_meta_index_drops_a_scan_reported_with_two_peptides():
     assert index.ambiguous_identification_spectra == 1
     assert index.ambiguous_localization_spectra == 0
     assert sorted(scan for _, scan in index.by_key) == [2]
+
+
+def test_unplaceable_mod_names_are_rejected_where_the_config_is_read():
+    """A bad mod name must fail at config time, not partway into a run.
+
+    Neither failure was prompt before this. A name without ``@`` reached ``_mod_target`` and
+    raised ``IndexError: list index out of range``, naming neither the mod nor the setting it came
+    from. A name with ``@`` that the vocabulary does not know was worse: ``Peptide`` resolves mass
+    lazily, so precursors built fine and the error only surfaced once the teacher or encoder asked
+    for a mass. The two causes stay distinguishable, since the fixes differ -- add the residue, or
+    use a mod that exists.
+    """
+    with pytest.raises(ValueError, match="names no residue"):
+        DigestConfig(variable_mods=("Phospho",))
+    with pytest.raises(ValueError, match="not a known modification"):
+        DigestConfig(variable_mods=("Phospho@S",))
+    with pytest.raises(ValueError, match="not a known modification"):
+        DigestConfig(fixed_mods=("Nonsense@M",))
+    # The offending setting is named, so a config with both lists populated is actionable.
+    with pytest.raises(ValueError, match="fixed_mods entry"):
+        DigestConfig(fixed_mods=("Phospho",), variable_mods=("Oxidation@M",))
+    # Site-agnostic names remain valid as explicit site specs; they are only unplaceable here.
+    assert DigestConfig().fixed_mods == ("Carbamidomethyl@C",)
+
+
+def test_pretrain_sources_carry_their_own_mods():
+    """Mods are per-source, and a source's choice must reach the digest config.
+
+    ``_digest_cfg`` dropped both lists, so a pretrain config could not set mods at all and every
+    run silently used the DigestConfig defaults.
+    """
+    from pepdistill.distill.pipeline import DigestSource, _digest_cfg
+
+    default = _digest_cfg(DigestSource(fasta="x.fasta"))
+    assert (default.fixed_mods, default.variable_mods) == (
+        ("Carbamidomethyl@C",),
+        ("Oxidation@M",),
+    )
+
+    # A TOML list arrives as a list, not a tuple, and DigestConfig is frozen with tuple fields.
+    explicit = _digest_cfg(
+        DigestSource(fasta="x.fasta", fixed_mods=["Carbamidomethyl@C"], variable_mods=[])
+    )
+    assert explicit.fixed_mods == ("Carbamidomethyl@C",)
+    assert explicit.variable_mods == ()

@@ -80,6 +80,11 @@ class DigestSource:
     min_charge: int = 2
     max_charge: int = 4
     max_var_mods: int = 1
+    # Mods are per-source for the same reason charge is: a tryptic proteome and an unspecific
+    # immunopeptidome source do not carry the same chemistry. Defaults match DigestConfig, which
+    # is what every run silently used while these were not plumbed through at all.
+    fixed_mods: tuple[str, ...] = ("Carbamidomethyl@C",)
+    variable_mods: tuple[str, ...] = ("Oxidation@M",)
 
 
 @dataclass
@@ -313,6 +318,8 @@ def _digest_cfg(s: DigestSource) -> DigestConfig:
         min_charge=s.min_charge,
         max_charge=s.max_charge,
         max_variable_mods=s.max_var_mods,
+        fixed_mods=tuple(s.fixed_mods),
+        variable_mods=tuple(s.variable_mods),
     )
 
 
