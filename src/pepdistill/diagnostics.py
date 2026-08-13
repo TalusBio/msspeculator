@@ -6,7 +6,7 @@ import io
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Sequence
 
 import fsspec
 import numpy as np
@@ -216,6 +216,31 @@ class DiagnosticReferencePanel:
                 )
             )
         return {dataset: float(np.mean(values)) for dataset, values in sorted(grouped.items())}
+
+
+# Spectral angle is bounded in [0, 1] for non-negative intensities, so one fixed grid can be
+# shared by every producer of a spectral-angle distribution: the teacher yardstick, the curation
+# replicate ceiling, and the student's own validation. They are meant to be drawn on top of each
+# other, so the grid is defined once here rather than three times at each call site.
+SA_HISTOGRAM_BINS = 50
+SA_HISTOGRAM_EDGES: tuple[float, ...] = tuple(
+    float(edge) for edge in np.linspace(0.0, 1.0, SA_HISTOGRAM_BINS + 1)
+)
+
+
+def sa_histogram(values: Sequence[float] | np.ndarray) -> dict[str, Any]:
+    """Counts of spectral angles on the shared grid, plus enough to detect dropped values.
+
+    ``counted`` and ``total`` differ only if a value fell outside [0, 1], which cannot happen for
+    non-negative intensities; keeping both makes that assumption checkable rather than assumed.
+    """
+    array = np.asarray(values, dtype=np.float64)
+    counts, _ = np.histogram(array, bins=SA_HISTOGRAM_BINS, range=(0.0, 1.0))
+    return {
+        "counts": [int(count) for count in counts],
+        "counted": int(counts.sum()),
+        "total": int(array.size),
+    }
 
 
 def normalized_spectral_angle(first: np.ndarray, second: np.ndarray) -> float:
@@ -477,6 +502,9 @@ __all__ = [
     "LabeledEmbedding",
     "IrtStandard",
     "ReferenceSpectrum",
+    "SA_HISTOGRAM_BINS",
+    "SA_HISTOGRAM_EDGES",
+    "sa_histogram",
     "RtObservation",
     "RtRegressionMetrics",
     "SpectrumComparison",

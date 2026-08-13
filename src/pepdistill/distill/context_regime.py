@@ -31,7 +31,7 @@ import time
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import lightning as L
 import numpy as np
@@ -41,6 +41,7 @@ from torch.utils.data import DataLoader
 
 from ..data.augmentation import substitute_residues
 from ..data.encode import Batch
+from ..diagnostics import SA_HISTOGRAM_BINS, SA_HISTOGRAM_EDGES
 from ..data.precursors import Precursor
 from ..eval import best_per_key, ms2_intensity, precursor_key
 from ..models.context import ChromRunbook, MSContextEncoder
@@ -165,6 +166,10 @@ class RealSpeclibModule(L.LightningModule):
             raise ValueError("residue_substitution_probability must be between 0 and 1")
         self.residue_substitution_probability = residue_substitution_probability
         self.last_validation_step: int | None = None
+        # dataset name -> spectral-angle counts on the shared grid, rebuilt each validation check.
+        # Kept as plain state rather than a logged scalar: the point is the shape of the
+        # distribution, which is what makes it comparable to the teacher and the ceiling.
+        self.val_sa_histograms: dict[str, np.ndarray] = {}
         # dataset name -> chrom_context row; needed to address a trained dataset at inference.
         self.dataset_index = dataset_index
         self.dataset_names = (
@@ -275,6 +280,17 @@ class RealSpeclibModule(L.LightningModule):
             mask = rb.dataset_id == dataset_id
             n = int(mask.sum())
             prefix = f"val/{name}"
+            # A mean cannot be drawn against the teacher yardstick or the replicate ceiling, both
+            # of which ship a distribution. Accumulate counts on the shared grid so all three
+            # overlay exactly; 50 ints per dataset per check costs nothing.
+            counts = self.val_sa_histograms.setdefault(
+                name, np.zeros(SA_HISTOGRAM_BINS, dtype=np.int64)
+            )
+            counts += np.histogram(
+                sa[mask].detach().float().cpu().numpy(),
+                bins=SA_HISTOGRAM_BINS,
+                range=(0.0, 1.0),
+            )[0]
             self.log_dict(
                 {
                     f"{prefix}/spectral_angle": sa[mask].mean(),
@@ -285,6 +301,11 @@ class RealSpeclibModule(L.LightningModule):
                 batch_size=n,
             )
             self.log(f"{prefix}/n", float(n), reduce_fx="sum")
+
+    def on_validation_epoch_start(self) -> None:
+        # Each check reports its own distribution; accumulating across checks would smear the
+        # student's progress into its own history.
+        self.val_sa_histograms = {}
 
     def on_validation_epoch_end(self) -> None:
         # Used by the fit wrapper to guarantee one final validation when a short run finishes
@@ -324,7 +345,9 @@ class _RealTrainProgress(L.Callback):
         self._examples = 0
         self._validation_check = 0
 
-    def _write_validation_metrics(self, trainer: L.Trainer) -> None:
+    def _write_validation_metrics(
+        self, trainer: L.Trainer, pl_module: L.LightningModule | None = None
+    ) -> None:
         if self.metrics_path is None:
             return
         values = {}
@@ -333,13 +356,23 @@ class _RealTrainProgress(L.Callback):
                 continue
             values[key] = float(value.detach().cpu())
         lr = float(trainer.optimizers[0].param_groups[0]["lr"])
-        record = {
+        record: dict[str, Any] = {
             "validation_check": self._validation_check,
             "epoch": trainer.current_epoch + 1,
             "global_step": trainer.global_step,
             "lr": lr,
             **values,
         }
+        # The per-dataset spectral-angle distribution, on the same grid as the published teacher
+        # yardstick and the corpus replicate ceiling, so a check can be drawn against both rather
+        # than compared as three unrelated means.
+        histograms = getattr(pl_module, "val_sa_histograms", None)
+        if histograms:
+            record["val_sa_histogram_bin_edges"] = list(SA_HISTOGRAM_EDGES)
+            record["val_sa_histogram"] = {
+                name: [int(count) for count in counts]
+                for name, counts in sorted(histograms.items())
+            }
         self.metrics_path.parent.mkdir(parents=True, exist_ok=True)
         with self.metrics_path.open("a") as fh:
             fh.write(json.dumps(record, sort_keys=True) + "\n")
@@ -398,7 +431,7 @@ class _RealTrainProgress(L.Callback):
         if trainer.sanity_checking:
             return
         self._validation_check += 1
-        self._write_validation_metrics(trainer)
+        self._write_validation_metrics(trainer, pl_module)
         names = sorted(k for k in trainer.callback_metrics if k.startswith("val/"))
         if names:
             # Keep the line compact; the full per-dataset values remain in callback_metrics and

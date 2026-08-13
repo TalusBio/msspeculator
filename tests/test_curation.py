@@ -91,7 +91,7 @@ def test_curation_uses_shared_window_replication_filter_and_context_cap(tmp_path
     assert analysis.report["selection"]["selected_rows"] == 2
     assert analysis.report["selection"]["qualifying_peptidoforms"] == 1
     assert analysis.report["selection"]["rejected_peptidoforms"] == 1
-    assert analysis.report["spectral_consistency"]["all"] is not None
+    assert analysis.report["achievable_ceiling"]["all"]["mean"] is not None
     assert analysis.report["replication"]["selected_psms_per_peptidoform"]["p50"] == 1.0
     assert analysis.report["chromatography"]["run_widths"]["run"]["width_minutes"] == 1.0
 
@@ -102,8 +102,8 @@ def test_curation_uses_shared_window_replication_filter_and_context_cap(tmp_path
     assert pl.read_parquet(annotations_path).schema == CURATION_ANNOTATION_SCHEMA
 
 
-def test_spectral_consistency_scores_each_subset_against_its_own_consensus(tmp_path):
-    """The reported SA must describe the retained subset, not the subset versus everything.
+def test_achievable_ceiling_scores_each_subset_against_its_own_consensus(tmp_path):
+    """The reported ceiling must describe the retained subset, not the subset versus everything.
 
     Building the consensus from every spectrum in the context and only masking which rows get
     measured scores a policy against the observations it discarded, so the three numbers cannot
@@ -148,9 +148,15 @@ def test_spectral_consistency_scores_each_subset_against_its_own_consensus(tmp_p
         max_run_width_minutes=60.0,
     )
     assert analysis.report["selection"]["selected_rows"] == 2
-    consistency = analysis.report["spectral_consistency"]
-    assert consistency["selected"] == pytest.approx(1.0)
-    assert consistency["selected"] > consistency["within_apex_window"]
+    ceiling = analysis.report["achievable_ceiling"]
+    assert ceiling["selected"]["mean"] == pytest.approx(1.0)
+    assert ceiling["selected"]["mean"] > ceiling["within_apex_window"]["mean"]
+    # The distribution travels with the mean so the ceiling can be drawn, not just annotated,
+    # and it shares the grid the teacher yardstick and student validation use.
+    histogram = ceiling["selected"]["histogram"]
+    assert histogram["counted"] == histogram["total"] == ceiling["selected"]["replicates_compared"]
+    assert len(histogram["counts"]) == len(ceiling["histogram_bin_edges"]) - 1
+    assert histogram["counts"][-1] == histogram["total"]  # all mass in the top bin at SA 1.0
 
 
 def test_curation_ranks_unscored_psms_last(tmp_path):

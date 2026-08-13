@@ -22,7 +22,9 @@ import time
 from collections import defaultdict
 from datetime import date
 from pathlib import Path
+from typing import Any
 
+import fsspec
 import numpy as np
 
 from pepdistill.data.prepared import PreparedManifest, PreparedStreamingDataset
@@ -58,9 +60,36 @@ def _teacher_refusal(precursor) -> str | None:
     return None
 
 
+# Spectral angle is bounded in [0, 1] for non-negative intensities, so a fixed grid is shared by
+# every group. 50 bins is enough to redraw the distribution as a violin while keeping the whole
+# per-dataset record a few kilobytes -- small enough to publish beside a prepared corpus and load
+# during training as a reference line.
+_HISTOGRAM_BINS = 50
+
+
 def _quantiles(values: np.ndarray) -> dict[str, float]:
     return {
         f"p{int(q * 100):02d}": float(np.quantile(values, q)) for q in (0.05, 0.25, 0.5, 0.75, 0.95)
+    }
+
+
+def _histogram(values: np.ndarray) -> dict[str, Any]:
+    """Counts on the shared [0, 1] grid, plus enough to verify nothing was dropped."""
+    counts, _ = np.histogram(values, bins=_HISTOGRAM_BINS, range=(0.0, 1.0))
+    return {
+        "counts": [int(count) for count in counts],
+        "counted": int(counts.sum()),
+        "total": int(values.size),
+    }
+
+
+def _distribution(values: np.ndarray) -> dict[str, Any]:
+    """The per-group record: summary statistics plus a redrawable distribution."""
+    return {
+        "spectra_scored": int(values.size),
+        "spectral_angle_mean": float(values.mean()),
+        "spectral_angle_quantiles": _quantiles(values),
+        "spectral_angle_histogram": _histogram(values),
     }
 
 
@@ -168,6 +197,11 @@ def main() -> None:
         type=Path,
         help="skip measuring and render Markdown from an existing report JSON",
     )
+    parser.add_argument(
+        "--publish",
+        action="store_true",
+        help="also write the report to <prepared>/diagnostics/teacher-yardstick.json",
+    )
     args = parser.parse_args()
 
     if args.render_from is not None:
@@ -269,13 +303,20 @@ def main() -> None:
         values = np.asarray(angles.get(name, []), dtype=np.float64)
         observed = np.asarray(rt_observed.get(name, []), dtype=np.float64)
         predicted = np.asarray(rt_predicted.get(name, []), dtype=np.float64)
-        entry: dict = {
-            "spectra_scored": int(values.size),
+        entry: dict[str, Any] = {
             "spectra_unsupported_by_teacher": unsupported.get(name, 0),
             "unsupported_reasons": dict(refusals.get(name, {})),
-            "spectral_angle_mean": float(values.mean()) if values.size else None,
-            "spectral_angle_quantiles": _quantiles(values) if values.size else None,
         }
+        entry.update(
+            _distribution(values)
+            if values.size
+            else {
+                "spectra_scored": 0,
+                "spectral_angle_mean": None,
+                "spectral_angle_quantiles": None,
+                "spectral_angle_histogram": None,
+            }
+        )
         if observed.size >= 2:
             correlation = np.corrcoef(observed, predicted)[0, 1]
             entry["irt_r_squared"] = float(correlation**2) if np.isfinite(correlation) else None
@@ -314,14 +355,10 @@ def main() -> None:
         },
         "spectral_angle_mean": float(every.mean()) if every.size else None,
         "spectral_angle_quantiles": _quantiles(every) if every.size else None,
+        "histogram_bin_edges": [float(edge) for edge in np.linspace(0.0, 1.0, _HISTOGRAM_BINS + 1)],
         "per_dataset": per_dataset,
         "per_acquisition": {
-            key: {
-                "spectra_scored": len(values),
-                "spectral_angle_mean": float(np.mean(values)),
-                "spectral_angle_quantiles": _quantiles(np.asarray(values)),
-            }
-            for key, values in sorted(acquisition.items())
+            key: _distribution(np.asarray(values)) for key, values in sorted(acquisition.items())
         },
     }
     args.out.parent.mkdir(parents=True, exist_ok=True)
@@ -329,6 +366,13 @@ def main() -> None:
     if args.markdown is not None:
         args.markdown.parent.mkdir(parents=True, exist_ok=True)
         args.markdown.write_text(_markdown_report(report, date.today().isoformat()))
+    if args.publish:
+        # Beside the corpus it describes, so training can load it as a reference line without
+        # being told where it lives. An explicit flag because this writes to the prefix.
+        destination = f"{str(args.prepared).rstrip('/')}/diagnostics/teacher-yardstick.json"
+        with fsspec.open(destination, "w") as handle:
+            handle.write(json.dumps(report, indent=2, sort_keys=True) + "\n")
+        print(f"published {destination}")
 
     print("=" * 72)
     print(f"{'dataset':<30}{'n':>9}{'unsup':>8}{'SA':>8}{'iRT r2':>8}")

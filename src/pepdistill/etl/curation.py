@@ -12,7 +12,10 @@ import numpy as np
 import polars as pl
 
 from ..data.prepared_schema import PREPARED_SPECTRA_SCHEMA, read_prepared_parquet
+from ..diagnostics import SA_HISTOGRAM_EDGES, sa_histogram
 from .config import PrepareCuration
+
+_NO_VALUES = np.empty(0, dtype=np.float64)
 
 
 CURATION_INPUT_SCHEMA = pl.Schema(
@@ -81,37 +84,59 @@ def _quantiles(series: pl.Series) -> dict[str, float | None]:
     }
 
 
-def _mean_leave_one_out_sa(frame: pl.DataFrame, predicate: str | None = None) -> float | None:
-    """Mean SA to the other *retained* spectra of the same peptidoform/acquisition context.
+def _leave_one_out_sa(group: pl.DataFrame) -> np.ndarray:
+    """Each replicate's SA against the consensus of the *other* replicates in its context.
 
-    The subset is taken before the consensus is built. Measuring a filtered subset against a
-    consensus that still contains the rejected spectra would make the three reported numbers
-    incomparable — a policy would be scored against the very observations it discarded, which is
-    why `selected` could previously land below `within_apex_window`.
+    This is the achievable-accuracy ceiling: a model can at best predict the consensus of the
+    replicates, so however well one replicate agrees with its peers bounds how well any model
+    could score against it. The consensus is built only from the rows handed in, so a filtered
+    subset is scored against itself -- measuring a subset against a consensus that still contained
+    the rejected spectra scored *identical* spectra at 0.21.
     """
-    values: list[np.ndarray] = []
+    if group.height < 2:
+        return _NO_VALUES
+    spectra = np.asarray(group["ms2"].to_list(), dtype=np.float64)
+    norms = np.linalg.norm(spectra, axis=1)
+    valid = norms > 0
+    if int(valid.sum()) < 2:
+        return _NO_VALUES
+    unit = spectra[valid] / norms[valid, None]
+    peers = unit.sum(axis=0)[None, :] - unit
+    peer_norms = np.linalg.norm(peers, axis=1)
+    measurable = peer_norms > 0
+    cosine = np.sum(unit[measurable] * peers[measurable], axis=1) / peer_norms[measurable]
+    return 1.0 - 2.0 * np.arccos(np.clip(cosine, -1.0, 1.0)) / pi
+
+
+def _achievable_ceilings(frame: pl.DataFrame) -> dict[str, dict[str, Any]]:
+    """Ceilings for every row, the in-window rows, and the retained rows.
+
+    Partitions once and evaluates all three subsets per context: this runs for every shard in
+    production, so three separate passes over the same partitioning would triple the cost of a
+    diagnostic that is always on.
+    """
+    collected: dict[str, list[np.ndarray]] = {"all": [], "within_apex_window": [], "selected": []}
     for group in frame.partition_by(_CONTEXT_KEY, maintain_order=False):
-        if predicate is not None:
-            group = group.filter(pl.col(predicate).fill_null(False))
-        if group.height < 2:
-            continue
-        spectra = np.asarray(group["ms2"].to_list(), dtype=np.float64)
-        norms = np.linalg.norm(spectra, axis=1)
-        valid = norms > 0
-        if int(valid.sum()) < 2:
-            continue
-        unit = np.zeros_like(spectra)
-        unit[valid] = spectra[valid] / norms[valid, None]
-        peers = unit[valid].sum(axis=0)[None, :] - unit[valid]
-        peer_norms = np.linalg.norm(peers, axis=1)
-        measurable = peer_norms > 0
-        cosine = (
-            np.sum(unit[valid][measurable] * peers[measurable], axis=1) / peer_norms[measurable]
-        )
-        sa = 1.0 - 2.0 * np.arccos(np.clip(cosine, -1.0, 1.0)) / pi
-        if sa.size:
-            values.append(sa)
-    return float(np.concatenate(values).mean()) if values else None
+        for name, predicate in (
+            ("all", None),
+            ("within_apex_window", "_within_apex_window"),
+            ("selected", "_selected"),
+        ):
+            subset = (
+                group if predicate is None else group.filter(pl.col(predicate).fill_null(False))
+            )
+            values = _leave_one_out_sa(subset)
+            if values.size:
+                collected[name].append(values)
+    out: dict[str, dict[str, Any]] = {}
+    for name, chunks in collected.items():
+        values = np.concatenate(chunks) if chunks else _NO_VALUES
+        out[name] = {
+            "mean": float(values.mean()) if values.size else None,
+            "replicates_compared": int(values.size),
+            "histogram": sa_histogram(values) if values.size else None,
+        }
+    return out
 
 
 def curate_prepared_frame(
@@ -124,7 +149,6 @@ def curate_prepared_frame(
     energy_bucket_width: float = 1.0,
     min_run_width_minutes: float = 0.05,
     max_run_width_minutes: float = 0.25,
-    spectral_diagnostics: bool = False,
 ) -> CurationAnalysis:
     """Apply one shared-width window per raw-file peptidoform, then keep top PSMs per context.
 
@@ -371,13 +395,14 @@ def curate_prepared_frame(
             "selected_contexts": int((context_groups["selected_psms"] > 0).sum()),
         },
     }
-    if spectral_diagnostics:
-        report["spectral_consistency"] = {
-            "metric": "mean leave-one-out spectral angle to acquisition-context consensus",
-            "all": _mean_leave_one_out_sa(frame),
-            "within_apex_window": _mean_leave_one_out_sa(frame, "_within_apex_window"),
-            "selected": _mean_leave_one_out_sa(frame, "_selected"),
-        }
+    report["achievable_ceiling"] = {
+        "metric": (
+            "leave-one-out spectral angle of each replicate against the consensus of the other "
+            "replicates in its acquisition context; an upper bound on what any model can score"
+        ),
+        "histogram_bin_edges": list(SA_HISTOGRAM_EDGES),
+        **_achievable_ceilings(frame),
+    }
 
     annotations = frame.select(
         pl.col("spectrum_id").cast(pl.UInt64),
@@ -429,7 +454,7 @@ def analyze_prepared_curation(
     frame = prepared.join(metadata, on=_SPECTRUM_KEY, how="left", validate="1:1").select(
         [pl.col(name).cast(dtype, strict=True) for name, dtype in CURATION_INPUT_SCHEMA.items()]
     )
-    return curate_prepared_frame(frame, spectral_diagnostics=True, **policy)
+    return curate_prepared_frame(frame, **policy)
 
 
 __all__ = [

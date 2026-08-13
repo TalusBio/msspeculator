@@ -284,6 +284,21 @@ def test_fit_from_prebuilt_datasets_trains_and_reports_metrics(tmp_path, capsys)
     ]
     assert records[-1]["validation_check"] == 1
     assert records[-1]["global_step"] == 2
+    # The per-dataset spectral-angle distribution is retained, not just its mean: a mean cannot be
+    # drawn against the published teacher yardstick or the corpus replicate ceiling, and all three
+    # share this grid so they overlay directly.
+    from pepdistill.diagnostics import SA_HISTOGRAM_EDGES
+
+    edges = records[-1]["val_sa_histogram_bin_edges"]
+    assert edges == list(SA_HISTOGRAM_EDGES)
+    counts = records[-1]["val_sa_histogram"]["pool"]
+    assert len(counts) == len(edges) - 1
+    # Every validation row is counted exactly once, and the mean recovered from the histogram
+    # agrees with the logged scalar to within one bin width.
+    assert sum(counts) == int(metrics["val/pool/n"])
+    centers = [(edges[i] + edges[i + 1]) / 2 for i in range(len(counts))]
+    recovered = sum(c * center for c, center in zip(counts, centers)) / sum(counts)
+    assert recovered == pytest.approx(float(metrics["val/pool/spectral_angle"]), abs=0.02)
     progress = capsys.readouterr().out
     assert "approximately 2 batches" in progress
     assert "batch 1/~2 (50.0%)" in progress

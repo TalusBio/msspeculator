@@ -200,13 +200,16 @@ def curation_report(
     )
     analysis.write(out, annotations_out)
     selection = analysis.report["selection"]
-    consistency = analysis.report["spectral_consistency"]
+    ceiling = analysis.report["achievable_ceiling"]
+
+    def mean(key: str) -> float:
+        return ceiling[key]["mean"] or float("nan")
+
     typer.echo(
         f"selected {selection['selected_rows']:,}/{analysis.report['input']['rows']:,} PSMs "
-        f"({selection['selected_fraction_of_rows']:.1%}); "
-        f"context-consensus SA all={consistency['all'] or float('nan'):.4f}, "
-        f"apex-window={consistency['within_apex_window'] or float('nan'):.4f}, "
-        f"selected={consistency['selected'] or float('nan'):.4f} -> {out}"
+        f"({selection['selected_fraction_of_rows']:.1%}); achievable ceiling "
+        f"all={mean('all'):.4f}, apex-window={mean('within_apex_window'):.4f}, "
+        f"selected={mean('selected'):.4f} -> {out}"
     )
 
 
