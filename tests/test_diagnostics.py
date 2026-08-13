@@ -166,3 +166,53 @@ def test_spectral_angle_violins_render_three_series_per_dataset(tmp_path):
 
     with pytest.raises(ValueError, match="at least one group"):
         plot_spectral_angle_violins([], tmp_path / "empty.png")
+
+
+def test_reference_distributions_load_and_panel_uses_them(tmp_path):
+    """The training panel reads whichever reference lines a corpus publishes."""
+    pytest.importorskip("matplotlib")
+    import json
+
+    from pepdistill.diagnostics import SA_HISTOGRAM_BINS, sa_histogram
+    from pepdistill.training_diagnostics import load_reference_distributions
+
+    rng = np.random.default_rng(1)
+    diagnostics = tmp_path / "diagnostics"
+    diagnostics.mkdir()
+
+    def counts(center: float, n: int) -> list[int]:
+        return sa_histogram(np.clip(rng.normal(center, 0.07, n), 0.0, 1.0))["counts"]
+
+    (diagnostics / "teacher-yardstick.json").write_text(
+        json.dumps(
+            {"per_dataset": {"ptm": {"spectral_angle_histogram": {"counts": counts(0.66, 900)}}}}
+        )
+    )
+    (diagnostics / "curation-summary.json").write_text(
+        json.dumps({"achievable_ceiling": {"per_source": {"ptm": {"selected": counts(0.94, 400)}}}})
+    )
+
+    references = load_reference_distributions(str(tmp_path))
+    assert sorted(references["ptm"]) == ["ceiling", "teacher"]
+    # A prefix publishing neither report is not an error; the panel simply has nothing to add.
+    assert load_reference_distributions(str(tmp_path / "absent")) == {}
+
+    # Build the real renderer so the prefix is loaded through its own constructor.
+    from pepdistill.teacher import FakeTeacher
+    from pepdistill.training_diagnostics import TrainingDiagnosticRenderer
+
+    renderer = TrainingDiagnosticRenderer(
+        tmp_path / "out", FakeTeacher(), butterflies=2, reference_prefix=str(tmp_path)
+    )
+    assert sorted(renderer.reference_distributions["ptm"]) == ["ceiling", "teacher"]
+
+    student = {"ptm": counts(0.80, 700), "unknown_dataset": counts(0.5, 10)}
+    path = renderer.spectral_angle_panel(student, tmp_path / "panel.png")
+    assert path is not None and path.exists()
+    # A dataset with no published reference is skipped rather than drawn against nothing.
+    assert (
+        renderer.spectral_angle_panel(
+            {"unknown_dataset": [0] * SA_HISTOGRAM_BINS}, tmp_path / "x.png"
+        )
+        is None
+    )

@@ -574,6 +574,9 @@ def _diagnostic_renderer(cfg: RunConfig, teacher, out: Path):
         ),
         butterflies=cfg.diagnostics.butterflies,
         nce_range=(cfg.pretrain.nce_min, cfg.pretrain.nce_max),
+        # The teacher yardstick and replicate ceiling are published beside the corpus being
+        # trained on, so the panel compares the student against the same data it is fitting.
+        reference_prefix=cfg.train.prepared_prefix,
     )
 
 

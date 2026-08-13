@@ -7,13 +7,15 @@ construction/first render so changes across steps describe the student, not a mo
 
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, TypeVar
+from typing import Any, Callable, TypeVar
 
+import fsspec
 import lightning as L
 import numpy as np
 import torch
@@ -28,11 +30,13 @@ from .diagnostics import (
     LabeledEmbedding,
     PcaBasis,
     RtObservation,
+    SpectralAngleSeries,
     SpectrumComparison,
     irt_regression_metrics,
     normalized_spectral_angle,
     plot_irt_scatter,
     plot_labeled_embedding_pca,
+    plot_spectral_angle_violins,
     plot_spectrum_butterflies,
 )
 from .proforma import proforma_sequence
@@ -63,6 +67,38 @@ class DiagnosticRender:
 
     paths: dict[str, Path]
     metrics: dict[str, float]
+
+
+def load_reference_distributions(prefix: str) -> dict[str, dict[str, list[int]]]:
+    """Read the published spectral-angle reference lines beside a prepared corpus.
+
+    Returns ``{dataset: {series: counts}}`` for whichever of the two reports exist: the teacher
+    yardstick (what distillation alone buys) and the corpus replicate ceiling (what any model can
+    reach at best). Both are optional -- a corpus prepared before they were published, or a local
+    fixture, simply yields no reference series and the panel falls back to the student alone.
+    """
+    out: dict[str, dict[str, list[int]]] = {}
+    sources = {
+        "teacher": (f"{prefix.rstrip('/')}/diagnostics/teacher-yardstick.json", "teacher"),
+        "ceiling": (f"{prefix.rstrip('/')}/diagnostics/curation-summary.json", "ceiling"),
+    }
+    for kind, (uri, series) in sources.items():
+        try:
+            with fsspec.open(uri, "rb") as handle:
+                report = json.load(handle)
+        except (FileNotFoundError, OSError, ValueError):
+            continue
+        if kind == "teacher":
+            for dataset, entry in (report.get("per_dataset") or {}).items():
+                histogram = entry.get("spectral_angle_histogram")
+                if histogram:
+                    out.setdefault(dataset, {})[series] = list(histogram["counts"])
+        else:
+            per_source = (report.get("achievable_ceiling") or {}).get("per_source") or {}
+            for dataset, subsets in per_source.items():
+                if subsets.get("selected"):
+                    out.setdefault(dataset, {})[series] = list(subsets["selected"])
+    return out
 
 
 def _evenly_spaced(values: list[T], count: int) -> list[T]:
@@ -195,6 +231,7 @@ class TrainingDiagnosticRenderer:
         acquisition: DiagnosticAcquisition = DiagnosticAcquisition(),
         butterflies: int = 3,
         nce_range: tuple[float, float] = (20.0, 40.0),
+        reference_prefix: str | None = None,
     ) -> None:
         if nce_range[0] >= nce_range[1]:
             raise ValueError("diagnostic NCE range must be increasing")
@@ -204,6 +241,11 @@ class TrainingDiagnosticRenderer:
         self.out = Path(out)
         self.acquisition = acquisition
         self.nce_range = nce_range
+        # Loaded once: these describe the corpus, not the run, so re-reading them per snapshot
+        # would add S3 latency to every render for values that cannot change mid-training.
+        self.reference_distributions = (
+            load_reference_distributions(reference_prefix) if reference_prefix else {}
+        )
         self.reference_name = getattr(teacher, "name", teacher.__class__.__name__)
         references = [
             Precursor(Peptide(standard.sequence), standard.charge, "diagnostic")
@@ -246,7 +288,39 @@ class TrainingDiagnosticRenderer:
         self._bases.setdefault(key, basis)
         return target
 
-    def render(self, model, encoder, label: str) -> DiagnosticRender:
+    def spectral_angle_panel(
+        self, val_sa_histograms: dict[str, Any], path: str | Path
+    ) -> Path | None:
+        """Draw the student against the teacher and the achievable ceiling, per dataset.
+
+        Only datasets the student actually validated on are drawn, and only when at least one
+        reference series exists for them: a lone student violin is already reported as a scalar,
+        so the panel earns its place by showing how much of the gap to the ceiling is left.
+        """
+        groups: list[tuple[str, list[SpectralAngleSeries]]] = []
+        for dataset in sorted(val_sa_histograms):
+            references = self.reference_distributions.get(dataset, {})
+            if not references:
+                continue
+            series = [SpectralAngleSeries("student", [int(c) for c in val_sa_histograms[dataset]])]
+            series += [
+                SpectralAngleSeries(name, references[name])
+                for name in ("teacher", "ceiling")
+                if name in references
+            ]
+            groups.append((dataset, series))
+        if not groups:
+            return None
+        return plot_spectral_angle_violins(groups, path)
+
+    def render(
+        self,
+        model,
+        encoder,
+        label: str,
+        *,
+        val_sa_histograms: dict[str, Any] | None = None,
+    ) -> DiagnosticRender:
         """Render one snapshot while preserving both modules' live training/eval state."""
         model_was_training = model.training
         encoder_was_training = encoder.training
@@ -365,6 +439,12 @@ class TrainingDiagnosticRenderer:
                 target_dir / "irt-scatter.png",
                 title="Built-in iRT model doctor",
             )
+            if val_sa_histograms:
+                panel = self.spectral_angle_panel(
+                    val_sa_histograms, target_dir / "spectral-angle-violins.png"
+                )
+                if panel is not None:
+                    paths["spectral_angle_violins"] = panel
             rt_metrics = irt_regression_metrics(rt_observations)
             metrics = {
                 "teacher_spectral_angle": float(np.mean(agreements)),
@@ -425,7 +505,13 @@ class TrainingDiagnosticCallback(L.Callback):
         epoch = int(trainer.current_epoch) + 1
         label = f"{self.stage}-step-{step:08d}-epoch-{epoch:04d}"
         model, encoder = self._live_modules(pl_module)
-        result = self.renderer.render(model, encoder, label)
+        # Present only on the real-data regime, and only after a validation check has run.
+        result = self.renderer.render(
+            model,
+            encoder,
+            label,
+            val_sa_histograms=getattr(pl_module, "val_sa_histograms", None),
+        )
         self._last_step = step
         self._last_render_at = time.monotonic()
         if self.artifact_mirror is not None:
