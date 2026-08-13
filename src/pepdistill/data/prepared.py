@@ -13,6 +13,7 @@ import json
 import random
 import time
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
@@ -29,6 +30,16 @@ from ..data.encode import Batch, FRAG_OFFSET
 from ..teacher.base import PrecursorLabels
 from .precursors import Precursor
 from .prepared_schema import read_prepared_parquet, read_validation_winners
+
+try:
+    from s3fs.utils import FileExpired as _FileExpired
+except ImportError:  # a local prefix needs no S3 support installed
+
+    class _FileExpired(Exception):  # type: ignore[no-redef]
+        pass
+
+
+_MANIFEST_READ_ATTEMPTS = 3
 
 if TYPE_CHECKING:
     from ..distill.context_regime import RealBatch, RealExample
@@ -92,6 +103,44 @@ class PreparedManifest:
             split_rows=split_rows,
             split_datasets=split_datasets,
         )
+
+
+def load_shard_manifests(prefix: str, log: Callable[[str], None] | None = None) -> list[dict]:
+    """Read every per-shard manifest under a prepared prefix, read-only.
+
+    Reads the prefix rather than a :class:`~pepdistill.etl.config.PrepareConfig`, so a corpus can be
+    inspected without the current policy matching the one that built it -- a policy change moves the
+    config fingerprint, which would hide every shard -- and so asking a question about a published
+    corpus never rewrites its catalog.
+
+    A prefix can be rewritten while it is being read: the filesystem caches the ETag it saw when
+    listing, and a manifest replaced in between raises rather than returning stale content. Those are
+    re-read, because skipping them would silently under-count.
+    """
+    fs, _, roots = fsspec.get_fs_token_paths(f"{prefix.rstrip('/')}/shards")
+    try:
+        paths = [path for path in fs.find(roots[0]) if path.endswith("manifest.json")]
+    except FileNotFoundError:
+        return []
+    if log is not None:
+        log(f"[prepared] reading {len(paths):,} shard manifest(s) under {prefix}")
+
+    def read(path: str) -> dict:
+        for attempt in range(_MANIFEST_READ_ATTEMPTS):
+            try:
+                with fs.open(path, "rb") as handle:
+                    return json.load(handle)
+            except _FileExpired:
+                if attempt == _MANIFEST_READ_ATTEMPTS - 1:
+                    raise RuntimeError(
+                        f"{path} kept changing while it was read: the prefix is being written to. "
+                        "Wait for the preparation job to finish before reading it."
+                    ) from None
+                fs.invalidate_cache(path)
+        raise AssertionError("unreachable")
+
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        return list(pool.map(read, paths))
 
 
 def _parse_site(token: str):

@@ -11,7 +11,6 @@ from __future__ import annotations
 import argparse
 import json
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -19,57 +18,12 @@ from typing import Any
 import fsspec
 import numpy as np
 
+from pepdistill.data.prepared import load_shard_manifests
 from pepdistill.diagnostics import SA_HISTOGRAM_BINS, SA_HISTOGRAM_EDGES, SpectralAngleSeries
-
-try:
-    from s3fs.utils import FileExpired
-except ImportError:  # a local prefix, or --render-from, needs no S3 support installed
-
-    class FileExpired(Exception):  # type: ignore[no-redef]
-        pass
-
-
-_READ_ATTEMPTS = 3
-
-
-def load_manifests(prefix: str) -> list[dict[str, Any]]:
-    """Read every shard manifest under a prepared prefix, read-only.
-
-    Deliberately does not go through ``PrepareConfig``/``ensure_catalog``: this audits a corpus
-    that already exists, so it must not require the current policy to match the one that built it
-    (a changed policy changes the config fingerprint, which would hide every shard), and must not
-    rewrite the prefix's catalog as a side effect of being asked a question about it.
-    """
-    fs, _, roots = fsspec.get_fs_token_paths(f"{prefix.rstrip('/')}/shards")
-    try:
-        paths = [path for path in fs.find(roots[0]) if path.endswith("manifest.json")]
-    except FileNotFoundError:
-        return []
-    print(f"reading {len(paths):,} shard manifest(s) under {prefix}")
-
-    def read(path: str) -> dict[str, Any]:
-        # A prefix can be rewritten while it is being audited, and the filesystem caches the ETag
-        # it saw when listing; a manifest replaced in between raises rather than returning stale
-        # content. Re-read the new object instead of skipping it, which would silently under-count.
-        for attempt in range(_READ_ATTEMPTS):
-            try:
-                with fs.open(path, "rb") as handle:
-                    return json.load(handle)
-            except FileExpired:
-                if attempt == _READ_ATTEMPTS - 1:
-                    raise RuntimeError(
-                        f"{path} kept changing while it was read: the prefix is being written to. "
-                        "Wait for the preparation job to finish before auditing it."
-                    ) from None
-                fs.invalidate_cache(path)
-        raise AssertionError("unreachable")
-
-    with ThreadPoolExecutor(max_workers=16) as pool:
-        return list(pool.map(read, paths))
 
 
 def collect(prefix: str) -> dict[str, Any]:
-    manifests = load_manifests(prefix)
+    manifests = load_shard_manifests(prefix, log=print)
     per_source: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
     uncurated = 0
     empty_shards: list[str] = []

@@ -468,3 +468,27 @@ def test_balanced_partition_uses_vendored_raw_bytes(monkeypatch):
     )
     assert balanced_partition_range(catalog, 0, 2) == (0, 2, 20)
     assert balanced_partition_range(catalog, 1, 2) == (2, 4, 80)
+
+
+def test_load_shard_manifests_reads_a_prefix_without_a_config(tmp_path):
+    """Auditing a corpus must not require the policy that built it.
+
+    A policy change moves the config fingerprint, so going through PrepareConfig would hide every
+    shard of an older corpus; and answering a question about a published prefix must not rewrite
+    its catalog as a side effect. So this reads the prefix directly.
+    """
+    from pepdistill.data.prepared import load_shard_manifests
+
+    root, stem = _source(tmp_path)
+    out = tmp_path / "prepared-manifests"
+    prepare_range(_config(root, stem, out), log=None)
+
+    logs: list[str] = []
+    manifests = load_shard_manifests(str(out), log=logs.append)
+    assert len(manifests) == 1
+    assert manifests[0]["task"]["dataset"] == "isoform"
+    assert manifests[0]["rows"] == 2
+    assert "1 shard manifest(s)" in logs[0]
+
+    # An absent prefix is empty, not an error: a corpus may simply not exist yet.
+    assert load_shard_manifests(str(tmp_path / "never-prepared")) == []
