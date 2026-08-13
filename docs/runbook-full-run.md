@@ -174,6 +174,32 @@ charge/acquisition context. The annotation Parquet has an explicit schema and jo
 `spectrum_id`; the command does not mutate its input shard. The full preparation config applies
 this policy while building the immutable `v2` corpus.
 
+The estimated width doubles as the acceptance window (`apex_rt ± width/2`), and because it is
+measured from sampled half-height points rather than an integrated peak it is clamped to
+`[--min-run-width-minutes, --max-run-width-minutes]`. Each run records whether the clamp applied,
+so a floored or capped window is never mistaken for a measurement.
+
+### Audit a finished corpus, and the teacher's ceiling on it
+
+Both commands are read-only and regenerate a committed Markdown view beside their JSON, so the
+numbers in `docs/` stay reproducible rather than hand-maintained:
+
+```bash
+# Per-source retention, empty shards, unusable intensity, clamped windows.
+.venv/bin/python tools/prepared_curation_report.py \
+  --prepared s3://bucket/pepdistill-prepared/v2 \
+  --out curation-summary.json --markdown docs/prepared-curation.md
+
+# What AlphaPeptDeep itself scores on the same validation winners as student val_sa.
+.venv/bin/python tools/teacher_yardstick.py \
+  --prepared s3://bucket/pepdistill-prepared/v2 \
+  --out teacher-yardstick.json --markdown docs/teacher-yardstick.md
+```
+
+`prepared_curation_report.py` reads the policy out of the shard manifests rather than the current
+config, so it describes the corpus as built even after the policy changes. Pass `--render-from` to
+either tool to rebuild the Markdown from a saved JSON without repeating the measurement.
+
 ## 3. Run pretrain → train
 
 The checked-in local full-run config streams the prepared corpus from S3 while keeping model
