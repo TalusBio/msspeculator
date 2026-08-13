@@ -20,6 +20,12 @@ class PrepareCuration:
     max_psms_per_context: int = 2
     width_anchor_min_psms: int = 8
     energy_bucket_width: float = 1.0
+    # The estimated width IS the acceptance window (apex +/- width/2), and it is estimated from
+    # sampled half-height points, so it can come out implausible in both directions: a fraction of
+    # a second when a run has no anchors, or minutes when a peptidoform elutes twice. Clamp it to
+    # the range a real chromatographic peak can occupy.
+    min_run_width_minutes: float = 0.05  # 3 s
+    max_run_width_minutes: float = 0.25  # 15 s
 
     def __post_init__(self) -> None:
         if not 0.0 < self.half_max_fraction <= 1.0:
@@ -32,6 +38,12 @@ class PrepareCuration:
             raise ValueError("prepare curation width_anchor_min_psms must be at least two")
         if self.energy_bucket_width <= 0:
             raise ValueError("prepare curation energy_bucket_width must be positive")
+        if self.min_run_width_minutes < 0:
+            raise ValueError("prepare curation min_run_width_minutes must not be negative")
+        if self.max_run_width_minutes < self.min_run_width_minutes:
+            raise ValueError(
+                "prepare curation max_run_width_minutes must not be below min_run_width_minutes"
+            )
 
     def canonical(self) -> dict[str, Any]:
         return asdict(self)

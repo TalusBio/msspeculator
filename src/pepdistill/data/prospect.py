@@ -18,7 +18,9 @@ if TYPE_CHECKING:
     from .meta_index import MetaIndex
 
 
-_UNIMOD_TOKEN = re.compile(r"([A-Z])|\[UNIMOD:(\d+)\]")
+# Group 3 is the ProForma terminal separator: PROSPECT writes `[UNIMOD:737]SEQ` while our own
+# `modified_sequence()` writes the compliant `[UNIMOD:737]-SEQ`, and both must read back.
+_UNIMOD_TOKEN = re.compile(r"([A-Z])|\[UNIMOD:(\d+)\]|(-)")
 
 
 def parse_modseq(modseq: str) -> tuple[str, tuple[tuple, ...]]:
@@ -37,8 +39,23 @@ def parse_modseq(modseq: str) -> tuple[str, tuple[tuple, ...]]:
     residues: list[str] = []
     mods: list[tuple] = []
     pos = -1
+    consumed = 0
     for m in _UNIMOD_TOKEN.finditer(modseq):
+        # Unmatched text between tokens is not skippable: the residue alternative matches bare
+        # capitals, so a descriptor this reader does not understand gets partly reinterpreted as
+        # residues. `AC[Carbamidomethyl@C]DEK` silently became `ACCCDEK` with the modification
+        # dropped, and `P[+79.96633]EPTIDE` became an unmodified `PEPTIDE` -- a wrong peptide with
+        # entirely plausible fragments. Require full coverage so an unsupported notation stops here.
+        if m.start() != consumed:
+            raise ValueError(
+                f"cannot parse {modseq!r}: unexpected {modseq[consumed : m.start()]!r} at offset "
+                f"{consumed}. This reader accepts only ProForma UNIMOD accessions "
+                "(`[UNIMOD:n]`), optionally separated from a terminus by '-'."
+            )
+        consumed = m.end()
         aa = m.group(1)
+        if m.group(3):
+            continue
         if aa:
             residues.append(aa)
             pos += 1
@@ -58,6 +75,11 @@ def parse_modseq(modseq: str) -> tuple[str, tuple[tuple, ...]]:
                 ) from exc
             site = "n" if pos < 0 else pos
             mods.append((site, name))
+    if consumed != len(modseq):
+        raise ValueError(
+            f"cannot parse {modseq!r}: unexpected trailing {modseq[consumed:]!r} at offset "
+            f"{consumed}. This reader accepts only ProForma UNIMOD accessions (`[UNIMOD:n]`)."
+        )
     return "".join(residues), tuple(mods)
 
 

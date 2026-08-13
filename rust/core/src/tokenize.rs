@@ -265,7 +265,9 @@ mod tests {
             "error must name the site: {err}"
         );
         assert!(
-            err.contains("Carbamidomethyl@C"),
+            // Diagnostics use the same ProForma descriptor as emission, so a named mod is
+            // identified by its accession rather than by the internal alias it came in as.
+            err.contains("UNIMOD:4"),
             "error must name the named mod: {err}"
         );
         assert!(

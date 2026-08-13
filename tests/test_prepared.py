@@ -139,7 +139,13 @@ def test_prepare_curation_keeps_top_psms_per_context_and_reports(tmp_path):
         source_prefix=str(root),
         output_prefix=str(out),
         curation=PrepareCuration(
-            enabled=True, min_in_window_psms=3, max_psms_per_context=2, width_anchor_min_psms=4
+            enabled=True,
+            min_in_window_psms=3,
+            max_psms_per_context=2,
+            width_anchor_min_psms=4,
+            # The fixture's replicates are 0.2 min apart for readable arithmetic, so widen the
+            # plausible-width clamp out of the way; clamping is covered in test_curation.py.
+            max_run_width_minutes=60.0,
         ),
         sources=(
             PrepareSource(id="isoform", dataset="isoform", meta="meta.parquet", archive=stem),
@@ -176,8 +182,14 @@ def test_prepare_curation_keeps_top_psms_per_context_and_reports(tmp_path):
     assert any("curation retained 3/8 spectra" in line for line in logs)
 
 
-def test_prepare_curation_reports_sources_without_precursor_intensity(tmp_path):
-    """A source lacking the intensity column must reject transparently, never invent a window."""
+def test_prepare_curation_refuses_sources_without_precursor_intensity(tmp_path):
+    """A source lacking the intensity column must stop the task, not curate away every row.
+
+    Precursor intensity is optional in source metadata, so a renamed or dropped column arrives as
+    all-NaN and curation finds no measurable elution width anywhere. Writing the resulting 0-row
+    shard plus a valid manifest would let a whole source vanish from the corpus while every
+    downstream check reports success.
+    """
     root, stem = _repeated_source(tmp_path)
     meta_path = root / "meta.parquet"
     pd.read_parquet(meta_path).drop(columns=["precursor_intensity"]).to_parquet(
@@ -192,15 +204,10 @@ def test_prepare_curation_reports_sources_without_precursor_intensity(tmp_path):
             PrepareSource(id="isoform", dataset="isoform", meta="meta.parquet", archive=stem),
         ),
     )
-    manifest = prepare_range(config, log=None)[0]
-
-    assert manifest["rows"] == 0
-    report = manifest["curation"]
-    assert report["input"]["rows"] == 8
-    assert report["input"]["missing_precursor_intensity_rows"] == 8
-    assert report["selection"]["selected_rows"] == 0
-    assert report["selection"]["qualifying_peptidoforms"] == 0
-    assert report["chromatography"]["run_widths"]["run1"]["width_minutes"] is None
+    with pytest.raises(ValueError, match="no usable precursor_intensity"):
+        prepare_range(config, log=None)
+    # Nothing was published for the failed task.
+    assert not (out / "shards" / "isoform" / "000000" / "manifest.json").exists()
 
 
 def test_prepare_shards_writes_manifest_and_chunked_rows(tmp_path):

@@ -171,6 +171,18 @@ def curation_report(
         min=0.001,
         help="Collision-energy width used to identify equivalent contexts.",
     ),
+    min_run_width_minutes: float = typer.Option(
+        0.05,
+        "--min-run-width-minutes",
+        min=0.0,
+        help="Narrowest plausible per-run acceptance window (apex +/- width/2).",
+    ),
+    max_run_width_minutes: float = typer.Option(
+        0.25,
+        "--max-run-width-minutes",
+        min=0.0,
+        help="Widest plausible per-run acceptance window (apex +/- width/2).",
+    ),
 ) -> None:
     """Analyze shared apex-window filtering and context deduplication on one shard."""
     from .etl.curation import analyze_prepared_curation
@@ -183,6 +195,8 @@ def curation_report(
         max_psms_per_context=max_psms_per_context,
         width_anchor_min_psms=width_anchor_min_psms,
         energy_bucket_width=energy_bucket_width,
+        min_run_width_minutes=min_run_width_minutes,
+        max_run_width_minutes=max_run_width_minutes,
     )
     analysis.write(out, annotations_out)
     selection = analysis.report["selection"]

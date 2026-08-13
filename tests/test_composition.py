@@ -90,7 +90,9 @@ def test_named_plus_mass_only_on_one_column_is_refused():
     p = Peptide("PEPCIDER", ((3, "Carbamidomethyl@C"), (3, 15.994915)))
     with pytest.raises(Exception) as e:
         collate([Precursor(p, 2, "t")])
-    assert "Carbamidomethyl@C" in str(e.value) and "15.994915" in str(e.value)
+    # Diagnostics quote the same ProForma descriptor as emission, so the named mod appears as
+    # its accession rather than as the internal alias it was supplied with.
+    assert "UNIMOD:4" in str(e.value) and "15.994915" in str(e.value)
     # The mass path must agree, or a library row would carry m/z for an unencodable molecule.
     with pytest.raises(Exception):
         p.mono_mass()

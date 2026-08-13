@@ -17,8 +17,14 @@ use crate::composition::AtomicComposition;
 const ELEMENTS_TSV: &str = include_str!("../data/elements.tsv");
 const UNIMOD_TSV: &str = include_str!("../data/unimod.tsv");
 
-/// Our historical modification names -> UNIMOD accession. These four are a frozen contract:
-/// serialized precursor caches and modified-sequence strings in the wild use them.
+/// Our historical modification names -> UNIMOD accession.
+///
+/// These four are a frozen contract on the **read** side: serialized precursor caches and
+/// prepared `mods` columns in the wild use them, so `by_name` must keep accepting them forever.
+/// They are deliberately *not* a vocabulary we emit. Two of them (`Carbamidomethyl@C`,
+/// `Oxidation@M`) carry alphabase-style `@Site` suffixes that are not valid ProForma descriptors,
+/// so emitting them yields modified sequences our own grammar cannot parse — see
+/// `ModSpec::render`, which resolves every named modification to its accession instead.
 pub const ALIASES: &[(&str, u32)] = &[
     ("Carbamidomethyl@C", 4),
     ("Phospho", 21),

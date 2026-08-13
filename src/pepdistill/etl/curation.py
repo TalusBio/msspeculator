@@ -82,9 +82,19 @@ def _quantiles(series: pl.Series) -> dict[str, float | None]:
 
 
 def _mean_leave_one_out_sa(frame: pl.DataFrame, predicate: str | None = None) -> float | None:
-    """Mean SA to other spectra of the same peptidoform/acquisition context."""
+    """Mean SA to the other *retained* spectra of the same peptidoform/acquisition context.
+
+    The subset is taken before the consensus is built. Measuring a filtered subset against a
+    consensus that still contains the rejected spectra would make the three reported numbers
+    incomparable — a policy would be scored against the very observations it discarded, which is
+    why `selected` could previously land below `within_apex_window`.
+    """
     values: list[np.ndarray] = []
     for group in frame.partition_by(_CONTEXT_KEY, maintain_order=False):
+        if predicate is not None:
+            group = group.filter(pl.col(predicate).fill_null(False))
+        if group.height < 2:
+            continue
         spectra = np.asarray(group["ms2"].to_list(), dtype=np.float64)
         norms = np.linalg.norm(spectra, axis=1)
         valid = norms > 0
@@ -99,9 +109,6 @@ def _mean_leave_one_out_sa(frame: pl.DataFrame, predicate: str | None = None) ->
             np.sum(unit[valid][measurable] * peers[measurable], axis=1) / peer_norms[measurable]
         )
         sa = 1.0 - 2.0 * np.arccos(np.clip(cosine, -1.0, 1.0)) / pi
-        if predicate is not None:
-            mask = group[predicate].fill_null(False).to_numpy().astype(bool)[valid][measurable]
-            sa = sa[mask]
         if sa.size:
             values.append(sa)
     return float(np.concatenate(values).mean()) if values else None
@@ -115,6 +122,8 @@ def curate_prepared_frame(
     max_psms_per_context: int = 2,
     width_anchor_min_psms: int = 8,
     energy_bucket_width: float = 1.0,
+    min_run_width_minutes: float = 0.05,
+    max_run_width_minutes: float = 0.25,
     spectral_diagnostics: bool = False,
 ) -> CurationAnalysis:
     """Apply one shared-width window per raw-file peptidoform, then keep top PSMs per context.
@@ -122,6 +131,13 @@ def curate_prepared_frame(
     Half-height observations establish robust run-level width anchors. Every peptidoform in a
     raw file receives that run's median anchor width, centered on its own intensity apex. This
     avoids the severe observation-count bias of using each peptide's sampled min/max width.
+
+    That single width is used *directly* as the acceptance window: a PSM counts when its RT lies
+    within ``apex_rt +/- run_width_minutes / 2``. Because the width is estimated from sampled
+    half-height points rather than an integrated peak, it is clamped to
+    ``[min_run_width_minutes, max_run_width_minutes]`` -- the range a real chromatographic peak
+    can occupy -- and each run records whether that clamp applied.
+
     Peptidoforms below ``min_in_window_psms`` are rejected; qualifying rows are ranked within a
     charge/acquisition context by score, apex proximity, precursor intensity, then stable ID.
     """
@@ -139,6 +155,10 @@ def curate_prepared_frame(
         raise ValueError("width_anchor_min_psms must be at least two")
     if energy_bucket_width <= 0:
         raise ValueError("energy_bucket_width must be positive")
+    if min_run_width_minutes < 0:
+        raise ValueError("min_run_width_minutes must not be negative")
+    if max_run_width_minutes < min_run_width_minutes:
+        raise ValueError("max_run_width_minutes must not be below min_run_width_minutes")
 
     frame = frame.with_columns(
         pl.when(pl.col("energy").is_finite())
@@ -193,6 +213,23 @@ def curate_prepared_frame(
             pl.col("width_anchor_peptidoforms").fill_null(0),
         )
         .drop("fallback_width_minutes")
+        .with_columns(
+            # The estimate is the RT span between *sampled* half-height points, so it can be
+            # implausible in either direction: a fraction of a second when a run has no anchors,
+            # or minutes when a peptidoform elutes more than once. Clamp into the range a real
+            # peak can occupy and record which runs were clamped -- a clamped width is a stated
+            # prior about chromatography, not a measurement from this run. A run whose width is
+            # not estimable at all stays null and selects nothing; there is no invented width.
+            (
+                (pl.col("run_width_minutes") < min_run_width_minutes)
+                | (pl.col("run_width_minutes") > max_run_width_minutes)
+            )
+            .fill_null(False)
+            .alias("width_clamped"),
+            pl.col("run_width_minutes")
+            .clip(min_run_width_minutes, max_run_width_minutes)
+            .alias("run_width_minutes"),
+        )
     )
     peptidoforms = peptidoforms.join(
         run_widths, on="raw_file", how="left", validate="m:1"
@@ -283,13 +320,19 @@ def curate_prepared_frame(
     report: dict[str, Any] = {
         "policy": {
             "apex_scope": "raw_file+peptidoform (shared across charge and acquisition mode)",
-            "width_scope": "robust median per raw file",
+            "width_scope": (
+                "robust median per raw file, clamped to "
+                f"[{min_run_width_minutes}, {max_run_width_minutes}] minutes and used directly "
+                "as the acceptance window (apex +/- width/2)"
+            ),
             "context_scope": "peptidoform+charge+detector+fragmentation+energy_bucket",
             "half_max_fraction": half_max_fraction,
             "min_in_window_psms": min_in_window_psms,
             "max_psms_per_context": max_psms_per_context,
             "width_anchor_min_psms": width_anchor_min_psms,
             "energy_bucket_width": energy_bucket_width,
+            "min_run_width_minutes": min_run_width_minutes,
+            "max_run_width_minutes": max_run_width_minutes,
         },
         "input": {
             "rows": frame.height,
@@ -306,9 +349,12 @@ def curate_prepared_frame(
                 row["raw_file"]: {
                     "width_minutes": row["run_width_minutes"],
                     "anchor_peptidoforms": row["width_anchor_peptidoforms"],
+                    "width_clamped": row["width_clamped"],
                 }
                 for row in run_widths.to_dicts()
             },
+            "clamped_runs": int(run_widths["width_clamped"].sum()),
+            "runs": run_widths.height,
             "observed_anchor_width_minutes": _quantiles(anchors["observed_width_minutes"]),
         },
         "replication": {

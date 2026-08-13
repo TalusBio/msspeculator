@@ -174,3 +174,42 @@ def test_digest_refuses_an_empty_result_from_real_proteins():
     records = [("p1", "MKWVTFISLLFLFSSAYSRGVFRR")]
     with pytest.raises(ValueError, match="0 peptides"):
         digest_records(records, DigestConfig(min_length=200, max_length=300))
+
+
+def test_parse_modseq_refuses_notation_it_cannot_represent():
+    """Unsupported bracket contents must raise, not be reinterpreted as residues.
+
+    The residue alternative matches bare capitals, so text this reader does not understand used to
+    be absorbed into the sequence: `AC[Carbamidomethyl@C]DEK` parsed as `ACCCDEK` with the
+    modification dropped, and a mass delta vanished entirely. Both produced a wrong peptide with
+    plausible fragments and no error, which is the worst possible failure for a training corpus.
+    """
+    from pepdistill.chem import Peptide
+    from pepdistill.data.prospect import parse_modseq
+
+    # PROSPECT's own notation, and the compliant form our modified_sequence() emits.
+    assert parse_modseq("[UNIMOD:737]ET[UNIMOD:21]TLHLVLR") == (
+        "ETTLHLVLR",
+        (("n", "TMT6plex"), (1, "Phospho")),
+    )
+    assert parse_modseq("[UNIMOD:737]-ET[UNIMOD:21]TLHLVLR") == (
+        "ETTLHLVLR",
+        (("n", "TMT6plex"), (1, "Phospho")),
+    )
+
+    for corrupting in (
+        "AC[Carbamidomethyl@C]DEK",  # was ("ACCCDEK", ())
+        "P[+79.96633]EPTIDE",  # was ("PEPTIDE", ())
+        "AC[Formula:H2O]DEK",
+        "pepTIDE",
+    ):
+        with pytest.raises(ValueError, match="cannot parse"):
+            parse_modseq(corrupting)
+
+    # Whatever we emit, we must be able to read back as the same peptide.
+    for mods in (
+        ((1, "Carbamidomethyl@C"), (4, "Oxidation@M")),
+        (("n", "TMT6plex"), (1, "Phospho")),
+    ):
+        peptide = Peptide("ACDEMK", mods)
+        assert parse_modseq(peptide.modified_sequence()) == ("ACDEMK", mods)

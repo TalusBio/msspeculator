@@ -654,6 +654,17 @@ def prepare_task(
     curation = task.get("curation", {})
     curation_report = None
     if curation.get("enabled", False):
+        # Precursor intensity is optional in source metadata, so a renamed or absent column
+        # arrives as all-NaN. Curation would then find no measurable elution width anywhere and
+        # reject the entire shard, which is indistinguishable from a genuinely poor shard. Refuse
+        # instead: the policy cannot be applied to a source that carries no abundance at all.
+        if not curation_input["precursor_intensity"].is_finite().any():
+            raise ValueError(
+                f"task {task['source_id']}/{task['shard_index']} has no usable "
+                f"precursor_intensity in any of its {curation_input.height:,} spectra; curation "
+                "cannot estimate an elution window. Check that the source metadata still exposes "
+                f"{ProspectSchema().precursor_intensity!r}."
+            )
         policy = {key: value for key, value in curation.items() if key != "enabled"}
         analysis = curate_prepared_frame(curation_input, **policy)
         frame = analysis.selected

@@ -186,10 +186,28 @@ impl ModSpec {
         }
     }
 
-    /// Rendered form inside a modified sequence.
+    /// Rendered form inside a modified sequence: always a ProForma descriptor.
+    ///
+    /// `Named` holds an internal, historical vocabulary (see `unimod::ALIASES`) which is *read*
+    /// but must never be *emitted*: our own grammar accepts only `UNIMOD:`, `Formula:` and mass
+    /// deltas, so a bare name — and especially an alphabase-style `Name@Site` alias — produces a
+    /// modified sequence we cannot parse back. `Carbamidomethyl@C` was worse than unparseable:
+    /// the PROSPECT reader's residue regex consumed the name's own capitals as residues, turning
+    /// `ACDEK` into `ACCCDEK` with the modification silently dropped. Named mods therefore
+    /// resolve to their accession here, which round-trips and is unambiguous downstream.
+    ///
+    /// A consumer that genuinely requires another notation converts at its own boundary rather
+    /// than changing this — peptdeep needs alphabase `Name@Site` names, and that mapping lives in
+    /// the teacher wrapper.
+    ///
+    /// The fallback keeps an unresolvable name visible instead of panicking in an error path;
+    /// such a peptide already fails earlier, when its composition cannot be encoded.
     pub fn render(&self) -> String {
         match self {
-            ModSpec::Named(n) => n.clone(),
+            ModSpec::Named(n) => match crate::unimod::by_name(n) {
+                Some(entry) => format!("UNIMOD:{}", entry.accession),
+                None => n.clone(),
+            },
             ModSpec::Unimod { accession, .. } => format!("UNIMOD:{accession}"),
             ModSpec::Formula { formula, .. } => format!("Formula:{formula}"),
             ModSpec::MassOnly(m) => format!("{m:+}"),
@@ -379,6 +397,35 @@ mod tests {
     }
 
     #[test]
+    fn modified_sequence_round_trips_through_our_own_grammar() {
+        // The alias names are the dangerous case: `Carbamidomethyl@C` inside ProForma brackets
+        // is not a descriptor our grammar accepts, and the PROSPECT reader silently reinterpreted
+        // the name's capitals as residues. Emission must therefore be accession-based, and the
+        // proof is that parsing our own output reconstructs the same peptide.
+        for mods in [
+            vec![(Site::Residue(1), ModSpec::Named("Carbamidomethyl@C".into()))],
+            vec![(Site::Residue(4), ModSpec::Named("Oxidation@M".into()))],
+            vec![(Site::NTerm, ModSpec::Named("TMT6plex".into()))],
+            vec![
+                (Site::NTerm, ModSpec::Named("TMT6plex".into())),
+                (Site::Residue(2), ModSpec::Named("Phospho".into())),
+            ],
+        ] {
+            let peptide = Peptide::new("ACDEMK".into(), mods);
+            let rendered = peptide.modified_sequence();
+            assert!(
+                !rendered.contains('@'),
+                "emitted {rendered:?} still carries an alphabase-style site suffix"
+            );
+            let reparsed = crate::proforma::parse_peptide(&rendered)
+                .unwrap_or_else(|err| panic!("cannot reparse our own output {rendered:?}: {err}"));
+            assert_eq!(reparsed.sequence, peptide.sequence);
+            assert_eq!(reparsed.mono_mass().unwrap(), peptide.mono_mass().unwrap());
+            assert_eq!(reparsed.modified_sequence(), rendered);
+        }
+    }
+
+    #[test]
     fn modified_sequence_renders_termini_and_mass_only() {
         let p = Peptide::new(
             "ETTLHLVLR".into(),
@@ -387,7 +434,8 @@ mod tests {
                 (Site::NTerm, ModSpec::Named("TMT6plex".into())),
             ],
         );
-        assert_eq!(p.modified_sequence(), "[TMT6plex]-ET[Phospho]TLHLVLR");
+        // Internal names are read, never emitted: output carries accessions so it round-trips.
+        assert_eq!(p.modified_sequence(), "[UNIMOD:737]-ET[UNIMOD:21]TLHLVLR");
 
         let q = Peptide::new(
             "PEPTIDE".into(),
@@ -399,7 +447,7 @@ mod tests {
             "PEK".into(),
             vec![(Site::CTerm, ModSpec::Named("Phospho".into()))],
         );
-        assert_eq!(r.modified_sequence(), "PEK-[Phospho]");
+        assert_eq!(r.modified_sequence(), "PEK-[UNIMOD:21]");
     }
 
     #[test]
