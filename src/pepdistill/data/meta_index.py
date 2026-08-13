@@ -144,27 +144,20 @@ def _canonical_modseq(modseq: str) -> str:
 
 
 def _verified_peptide(modseq: str) -> Peptide:
-    """Parse one modified sequence, and require that it renders back to the same molecule.
+    """Parse a modified sequence, rejecting one whose mods land somewhere the source did not say.
 
-    Parsing succeeding is not the same as parsing being right. A malformed token already fails
-    loudly, but a *misplaced* one does not: a C-terminal ``-[UNIMOD:21]`` once read as a mod on the
-    final residue, which produced a perfectly valid peptide carrying the phosphate in the wrong
-    place, and nothing downstream could tell -- the mass is identical, so even the teacher agreed.
-    Re-rendering the parsed peptide and comparing against the source is what separates those cases.
+    The bug this catches, which parsing alone did not::
 
-    Compared canonically rather than literally, which measurement forced: an exact string
-    comparison rejects 139,435 of the 2,067,007 distinct PROSPECT peptidoforms (6.7%) purely over
-    the N-terminal separator and the order of two mods on one residue. All 139,435 were verified
-    equivalent and none was a placement error, so a literal check here would have failed valid data
-    on 6.7% of the corpus while catching nothing.
+        "PEPTIDEK-[UNIMOD:21]"  parsed to  ("PEPTIDEK", [(7, "Phospho")])  # on the lysine
+                                renders    "PEPTIDEK[UNIMOD:21]"          # != input -> raise
 
-    This belongs here, at the one point where a source sequence becomes a peptide, rather than in a
-    tool run afterwards. An audit comparing stored shards against the current parser can only
-    detect a parser that has *changed*: it is tautological when both sides are the same code, and
-    it cannot fail a shard while that shard is being written.
+    Both weigh the same, so no mass check, and no teacher comparison, can tell them apart.
 
-    Costs one render per distinct peptidoform (about 11k per source against ~450k rows), because
-    the caller caches on the modified sequence.
+    Canonical rather than literal comparison, because both spellings below occur in PROSPECT and
+    mean the same molecule. A literal comparison rejects 6.7% of the corpus on these alone::
+
+        "[UNIMOD:737]SEQ"          == "[UNIMOD:737]-SEQ"           # N-term separator omitted
+        "K[UNIMOD:737][UNIMOD:1]"  == "K[UNIMOD:1][UNIMOD:737]"    # one site, either order
     """
     stripped, mods = parse_modseq(modseq)
     peptide = Peptide(stripped, mods)
