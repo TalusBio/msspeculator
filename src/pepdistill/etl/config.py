@@ -9,6 +9,26 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+#: Version of the *code* that turns a source into a shard -- the localization rule, the curation
+#: window, the label columns -- as opposed to the knobs a config file can set. It participates in
+#: :attr:`PrepareConfig.fingerprint`, so bumping it marks every published shard stale and the next
+#: ``prepare`` run rebuilds them.
+#:
+#: Bump it in the same commit as any change that would make a rebuilt shard differ from a published
+#: one. Without this, such a change is invisible to the staleness check: the fingerprint covers the
+#: config, so a policy that moved in code leaves a corpus that reports itself complete and current
+#: while holding rows the current code would never emit. Do *not* bump it for a change that cannot
+#: alter shard contents -- a faster expression, an added statistic, a log line -- because every bump
+#: costs a full re-prep.
+#:
+#: Version 1 is encoded as the absence of the field rather than as ``1``, so it reproduces the
+#: fingerprints of shards published before the field existed. The first real bump is therefore the
+#: first one to move any fingerprint.
+#:
+#: Annotated ``int`` rather than left to inference so that the comparison below stays live code: a
+#: checker that narrows the constant to ``Literal[1]`` otherwise reports the bump path unreachable.
+PREPARE_POLICY_VERSION: int = 1
+
 
 @dataclass(frozen=True, slots=True)
 class PrepareCuration:
@@ -168,7 +188,7 @@ class PrepareConfig:
         )
 
     def canonical(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "source_prefix": self.source_prefix,
             "cache_prefix": self.cache_prefix,
             "output_prefix": self.output_prefix,
@@ -176,6 +196,9 @@ class PrepareConfig:
             "sources": [source.canonical() for source in self.sources],
             "groups": [group.canonical() for group in self.groups],
         }
+        if PREPARE_POLICY_VERSION > 1:
+            payload["policy_version"] = PREPARE_POLICY_VERSION
+        return payload
 
     @property
     def fingerprint(self) -> str:

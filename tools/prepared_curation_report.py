@@ -98,9 +98,16 @@ def collect(prefix: str) -> dict[str, Any]:
     policies = {
         json.dumps(m["curation"]["policy"], sort_keys=True) for m in manifests if "curation" in m
     }
+    # The knobs above are only half the policy; the rest is the code that applied them, which the
+    # config cannot express. Shards built before the version was recorded report it as absent
+    # rather than as a number, since guessing one would claim knowledge the manifest does not have.
+    versions = sorted(
+        {m.get("task", {}).get("policy_version", "unrecorded") for m in manifests}, key=str
+    )
     return {
         "prepared_prefix": prefix,
         "policy": json.loads(next(iter(policies))) if len(policies) == 1 else None,
+        "policy_versions": versions,
         "distinct_policies": len(policies),
         "shards": total("shards"),
         "manifests_without_curation": uncurated,
@@ -156,6 +163,8 @@ def render_markdown(summary: dict[str, Any], generated_on: str) -> str:
     else:
         lines += ["| knob | value |", "| --- | --- |"]
         lines += [f"| {key} | {value} |" for key, value in policy.items()]
+        versions = ", ".join(str(version) for version in summary["policy_versions"])
+        lines.append(f"| policy_version (code) | {versions} |")
 
     retention = summary["retention"]
     lines += [

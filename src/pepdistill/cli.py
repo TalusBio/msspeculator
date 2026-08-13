@@ -11,6 +11,7 @@ is standalone inference: generate a spectral library from an already-trained mod
 
 from __future__ import annotations
 
+import importlib.util
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -25,8 +26,25 @@ from .data.precursors import enumerate_precursors, frame_to_precursors
 # torch, pandas and the training pipeline are imported inside the commands that use them, as the
 # other commands here already do. At module scope they made `pepdistill prepare` load the whole
 # training stack: an ETL worker paid seconds of import and a GB of memory for a path that never
-# touches a tensor. (Installation still pulls them -- that needs torch behind an extra.)
+# touches a tensor. Torch is also an optional dependency (the `torch` extra), so importing it here
+# would make every command require an install the preparation commands do not need.
 from .util import resolve_device
+
+
+def _require_torch(command: str) -> None:
+    """Fail with the command that installs torch, rather than a missing-module traceback.
+
+    Torch lives behind an extra so preparation workers can skip the CUDA wheels, which means a
+    valid install can be missing it. Checked by spec so the message arrives before a partial
+    import leaves a stack trace pointing at whichever module happened to import torch first.
+    """
+    if importlib.util.find_spec("torch") is None:
+        raise SystemExit(
+            f"`pepdistill {command}` needs PyTorch, which is not installed. It lives behind the "
+            "`torch` extra so preparation workers can skip the CUDA wheels:\n"
+            "    uv sync --extra torch"
+        )
+
 
 app = typer.Typer(add_completion=False, help="Distill AlphaPeptDeep into fast spectral libraries.")
 
@@ -226,6 +244,7 @@ def run(
     no_train: bool = typer.Option(False, help="Disable the real-speclib train stage."),
 ) -> None:
     """Run the training pipeline described by a TOML config."""
+    _require_torch("run")
     from .distill.pipeline import RunConfig, run_pipeline
 
     cfg = RunConfig.from_toml(config)
@@ -276,6 +295,7 @@ def predict(
     max_var_mods: int = 1,
 ) -> None:
     """Predict a spectral library from a trained student (vectorized, length-bucketed)."""
+    _require_torch("predict")
     import pandas as pd
     import torch
 
@@ -365,6 +385,7 @@ def export_rust(
     out: Path = typer.Option(..., "--out", "-o", help="Output .safetensors artifact."),
 ) -> None:
     """Export a checkpoint to a self-contained .safetensors for the Rust predict CLI."""
+    _require_torch("export-rust")
     from .export import export_safetensors
 
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -381,6 +402,7 @@ def diagnose(
     device: str = typer.Option("cpu", help="auto | cpu | mps | cuda"),
 ) -> None:
     """Render the same fixed diagnostic panel used during training for one checkpoint."""
+    _require_torch("diagnose")
     from .models.context import MSContextEncoder
     from .models.registry import load_checkpoint, load_context
     from .teacher import get_teacher

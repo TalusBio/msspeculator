@@ -456,6 +456,38 @@ def test_group_catalog_v1_is_rebuilt_for_shared_metadata_fix(tmp_path):
     assert catalog["tasks"][0]["meta_url"].endswith("TUM_isoform_meta_data.parquet/content")
 
 
+def test_policy_version_bump_restages_published_shards(tmp_path, monkeypatch):
+    """A policy that moves in code must invalidate the shards built by the old one.
+
+    The fingerprint covers the config, so before this a labelling change left a corpus reporting
+    itself complete and current while holding rows the new code would never emit. Both halves are
+    pinned: the bump has to move the fingerprint, and the baseline has to leave it alone, because
+    version 1 is encoded as absence so it reproduces fingerprints from before the field existed.
+    """
+    root, stem = _source(tmp_path)
+    out = tmp_path / "prepared-policy"
+    config = _config(root, stem, out)
+    baseline = config.fingerprint
+    assert "policy_version" not in config.canonical()
+
+    first = prepare_range(config, log=None)
+    assert [entry.get("_skipped") for entry in first] == [None]
+    # Unchanged policy: the shard is complete and stays that way.
+    assert [entry.get("_skipped") for entry in prepare_range(config, log=None)] == [True]
+
+    monkeypatch.setattr("pepdistill.etl.config.PREPARE_POLICY_VERSION", 2)
+    monkeypatch.setattr("pepdistill.etl.prospect.PREPARE_POLICY_VERSION", 2)
+    assert config.canonical()["policy_version"] == 2
+    assert config.fingerprint != baseline
+
+    # The moved fingerprint restages the catalog, which restages the shard: rebuilt, not skipped.
+    assert discover_catalog(config)["policy_version"] == 2
+    assert [entry.get("_skipped") for entry in prepare_range(config, log=None)] == [None]
+
+    manifest = json.loads((out / "shards" / "isoform" / "000000" / "manifest.json").read_text())
+    assert manifest["task"]["policy_version"] == 2
+
+
 def test_balanced_partition_uses_vendored_raw_bytes(monkeypatch):
     catalog = {
         "tasks": [{"record": "r", "archive": "a", "shard_index": index} for index in range(4)]

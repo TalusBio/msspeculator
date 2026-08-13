@@ -29,6 +29,8 @@ def main() -> None:
             "run",
             "--project",
             ".",
+            # See launchpad_prospect_etl: `etl` only, and without the torch-bearing dev group.
+            "--no-default-groups",
             "--extra",
             "etl",
             "pepdistill",

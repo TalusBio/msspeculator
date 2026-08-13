@@ -62,6 +62,8 @@ def main() -> None:
         "--project",
         ".",
         "--extra",
+        "torch",
+        "--extra",
         "teacher",
         "--extra",
         "etl",

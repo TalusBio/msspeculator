@@ -41,7 +41,13 @@ from ..data.prepared_schema import (
 from ..data.prospect import ProspectSchema, decode_fragments
 from ..data.storage import parquet_storage_options
 from ..data.prospect_catalog import load_catalog, load_shard_index
-from .config import PrepareConfig, PrepareCuration, PrepareGroup, PrepareSource
+from .config import (
+    PREPARE_POLICY_VERSION,
+    PrepareConfig,
+    PrepareCuration,
+    PrepareGroup,
+    PrepareSource,
+)
 
 _CATALOG_VERSION = 2
 
@@ -525,12 +531,17 @@ def discover_catalog(config: PrepareConfig) -> dict[str, Any]:
                     "archive_url": source.archive_url,
                     "meta_url": source.meta_url,
                     "config_fingerprint": config.fingerprint,
+                    # Recorded beside the fingerprint, not folded into it, so a shard says which
+                    # code built it. A hash mismatch only reports that something moved; this
+                    # reports what.
+                    "policy_version": PREPARE_POLICY_VERSION,
                     "curation": config.curation.canonical(),
                 }
             )
     return {
         "version": _CATALOG_VERSION,
         "config_fingerprint": config.fingerprint,
+        "policy_version": PREPARE_POLICY_VERSION,
         "output_prefix": config.output_prefix,
         "tasks": tasks,
     }
@@ -803,7 +814,11 @@ def finalize_catalog(
         "irt_stats": list(_irt_stats(chunk_uris)),
         "split_rows": _split_rows(chunk_uris),
         "split_datasets": _split_datasets(chunk_uris),
-        "source": {"config_fingerprint": config.fingerprint, "shards": len(chunks)},
+        "source": {
+            "config_fingerprint": config.fingerprint,
+            "policy_version": PREPARE_POLICY_VERSION,
+            "shards": len(chunks),
+        },
     }
     _write_json(_uri_join(config.output_prefix, "manifest.json"), manifest)
     if log is not None:

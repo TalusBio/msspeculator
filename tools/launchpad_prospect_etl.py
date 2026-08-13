@@ -41,11 +41,15 @@ def main() -> None:
     args = parser.parse_args()
     if not Path("pyproject.toml").exists():
         raise SystemExit("stage is incomplete; run tools/prepare_launchpad_full_run.py first")
+    # `etl` alone, and explicitly without the default `dev` group: dev pulls in every extra,
+    # including torch, which would put the ~3 GB of CUDA wheels back on a worker that never builds
+    # a tensor. Downloading those is what timed out and killed 12 of 40 children of one array job.
     command = [
         "uv",
         "run",
         "--project",
         ".",
+        "--no-default-groups",
         "--extra",
         "etl",
         "pepdistill",

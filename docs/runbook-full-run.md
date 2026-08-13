@@ -8,7 +8,7 @@ test.
 ## 0. Prerequisites
 
 ```bash
-uv sync --extra teacher --extra etl --extra tracking  # teacher + ETL + W&B/diagnostics
+uv sync --extra torch --extra teacher --extra etl --extra tracking  # teacher + ETL + W&B/diagnostics
 ```
 
 Reading the S3 prefixes **locally** also needs AWS credentials in the environment, not only in the
@@ -48,6 +48,20 @@ The current catalog contains 5,174 shards. That number is descriptive, not a par
 contract: use the count reported by the command when scripting ranges. A completed shard is
 skipped unless `--force` is passed. Finalization refuses to publish `manifest.json` until every
 expected shard asset is complete.
+
+### Changing what a shard contains
+
+The skip above is decided by `config_fingerprint`, which hashes the config — so a labelling or
+curation change made *in code* is invisible to it, and the corpus keeps reporting itself complete
+while holding rows the new code would never emit. When you make such a change, bump
+`PREPARE_POLICY_VERSION` in `src/pepdistill/etl/config.py` in the same commit. That moves the
+fingerprint, which restages every shard on the next run; the version is also recorded in each
+manifest, so `tools/prepared_curation_report.py` reports which code built the corpus.
+
+Leave it alone for changes that cannot alter shard contents — a faster expression, an added
+statistic, a log line — because every bump costs a full re-prep. To rebuild without a version
+change, delete the prefix's shards rather than passing `--force`: the remaining assets then
+describe what is actually present, so an interrupted rebuild resumes correctly.
 
 For the Launchpad array wrapper used by this repository:
 
@@ -218,7 +232,7 @@ artifacts on the local machine:
 
 ```bash
 WANDB_API_KEY="$(tr -d '\r\n' < WANDB_SECRET)" \
-  uv run --extra teacher --extra etl --extra tracking \
+  uv run --extra torch --extra teacher --extra etl --extra tracking \
   pepdistill run runs/full-local.toml
 ```
 
@@ -230,7 +244,7 @@ GPU. To reuse an existing checkpoint and skip teacher pretraining:
 
 ```bash
 WANDB_API_KEY="$(tr -d '\r\n' < WANDB_SECRET)" \
-  uv run --extra teacher --extra etl --extra tracking \
+  uv run --extra torch --extra teacher --extra etl --extra tracking \
   pepdistill run runs/full-local.toml --no-pretrain --model-in s3://bucket/path/model.ckpt
 ```
 
