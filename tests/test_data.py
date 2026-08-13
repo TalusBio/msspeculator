@@ -318,5 +318,32 @@ def test_meta_index_drops_ties_when_no_score_is_recorded():
     )
     # Every spectrum being unlocalizable is a real property of a source, so it is named rather
     # than reported as the generic "contains no rows".
-    with pytest.raises(ValueError, match="more than one equally scored"):
+    with pytest.raises(ValueError, match="cannot be localized"):
         build_meta_index_from_frame(frame)
+
+
+def test_meta_index_drops_a_scan_reported_with_two_peptides():
+    """One spectrum cannot carry two identities, and the loser must not be overwritten silently.
+
+    The index is keyed on (raw_file, scan_number), so two different peptides for one scan would
+    both write to the same slot and whichever came last would win with nothing raising. Nothing
+    distinguishes the candidates, so the spectrum is dropped and counted apart from a localization
+    tie, whose cause is different.
+    """
+    from pepdistill.data.meta_index import build_meta_index_from_frame
+
+    index = build_meta_index_from_frame(
+        _meta_rows(
+            [
+                # Two peptides, different scores: still ambiguous, because the score ranks
+                # placements within a peptide, not one peptide against another.
+                (1, "SAMPLER", 90.0),
+                (1, "PEPTIDEK", 10.0),
+                (2, "VAMPLER", 20.0),
+            ]
+        )
+    )
+
+    assert index.ambiguous_identification_spectra == 1
+    assert index.ambiguous_localization_spectra == 0
+    assert sorted(scan for _, scan in index.by_key) == [2]

@@ -34,6 +34,9 @@ class MetaIndex:
     #: Spectra dropped because the same peptide was reported with more than one modification
     #: placement. Reported so the loss is visible rather than inferred from a row count.
     ambiguous_localization_spectra: int = 0
+    #: Spectra dropped because more than one *peptide* was reported for them. Counted apart from
+    #: localization because the cause differs: nothing at all distinguishes the candidates.
+    ambiguous_identification_spectra: int = 0
 
     def irt_stats(self, splits: frozenset[str]) -> tuple[int, float, float]:
         """Return ``(count, sum, sum_of_squares)`` for the selected split(s)."""
@@ -48,14 +51,21 @@ class MetaIndex:
 _MOD_TOKEN_PATTERN = r"\[UNIMOD:\d+\]|-"
 
 
-def _fill_optional(frame: pl.DataFrame, s: ProspectSchema) -> pl.DataFrame:
+def _fill_optional(
+    frame: pl.DataFrame, s: ProspectSchema, retention: tuple[str, ...]
+) -> pl.DataFrame:
     """Give the optional columns their absent-value defaults, as columns.
 
     An unrecorded measurement becomes NaN and an unrecorded label an empty string. Done here so
     the row loop is pure reads: as a per-row conditional this was five branches per spectrum, and
     as a helper call it was five calls, either of which costs more than filling a column once.
+
+    Retention time is in this group rather than treated as required. One source carries 100 null
+    retention times, and ``finalize_catalog`` already excludes non-finite RT rows from the corpus,
+    so a missing one is a row to drop later rather than a reason to fail a whole shard. Pandas
+    surfaced these as NaN, which is why they never surfaced before.
     """
-    numeric = (s.collision_energy, s.andromeda_score, s.precursor_intensity)
+    numeric = (s.collision_energy, s.andromeda_score, s.precursor_intensity, *retention)
     labels = (s.mass_analyzer, s.fragmentation)
     return frame.with_columns(
         [
@@ -73,17 +83,25 @@ def _fill_optional(frame: pl.DataFrame, s: ProspectSchema) -> pl.DataFrame:
     )
 
 
-def _resolve_localizations(frame: pl.DataFrame, s: ProspectSchema) -> tuple[pl.DataFrame, int]:
-    """Keep one best-scoring localization per spectrum, dropping the ones that cannot be localized.
+def _resolve_localizations(frame: pl.DataFrame, s: ProspectSchema) -> tuple[pl.DataFrame, int, int]:
+    """Reduce a source to one labelled row per spectrum, dropping the spectra nothing can label.
 
-    PROSPECT reports a spectrum once per candidate placement. Where the scores differ the engine
-    did localize and the best row is the label; where the maximum is tied it did not, and keeping
-    whichever row came first in the file would teach a site-specific model a coin flip.
+    PROSPECT reports a spectrum once per candidate assignment. Two kinds of ambiguity follow, and
+    neither can be resolved by picking a row:
+
+    * the same peptide with the modification placed differently. Where the scores differ the engine
+      did localize and the best row is the label; where the maximum is tied it did not.
+    * two different peptides for one spectrum. There is no basis at all for choosing, and the
+      spectrum's identity is what everything downstream keys on.
+
+    Both are dropped and counted. The result is exactly one row per ``(raw_file, scan_number)``, so
+    the caller cannot silently overwrite one label with another.
 
     Expressed over columns rather than in a row loop: this decides which of ~500k rows per source
     survive, and the surviving rows are the only ones worth building Python objects for.
     """
-    group = [s.raw_file, s.scan_number, "_stripped"]
+    spectrum = [s.raw_file, s.scan_number]
+    group = spectrum + ["_stripped"]
     scored = frame.with_columns(
         pl.col(s.modified_sequence).str.replace_all(_MOD_TOKEN_PATTERN, "").alias("_stripped")
     )
@@ -98,8 +116,14 @@ def _resolve_localizations(frame: pl.DataFrame, s: ProspectSchema) -> tuple[pl.D
         pl.col(s.modified_sequence).n_unique().alias("_localizations"),
         pl.all().exclude(group).first(),
     )
-    ambiguous = int((best["_localizations"] > 1).sum())
-    return best.filter(pl.col("_localizations") == 1), ambiguous
+    # Both counts are in spectra, not rows: one spectrum reported with two peptides is one loss,
+    # and it contributes two rows here.
+    unlocalizable = best.filter(pl.col("_localizations") > 1).select(spectrum).n_unique()
+    localized = best.filter(pl.col("_localizations") == 1).with_columns(
+        pl.col("_stripped").n_unique().over(spectrum).alias("_peptides")
+    )
+    unidentifiable = localized.filter(pl.col("_peptides") > 1).select(spectrum).n_unique()
+    return localized.filter(pl.col("_peptides") == 1), unlocalizable, unidentifiable
 
 
 def build_meta_index_from_frame(
@@ -124,13 +148,13 @@ def build_meta_index_from_frame(
     if irt_col not in frame or raw_col not in frame:
         raise ValueError(f"metadata frame missing retention-time columns {irt_col!r}/{raw_col!r}")
 
-    localized, ambiguous = _resolve_localizations(frame, s)
-    localized = _fill_optional(localized, s)
+    localized, unlocalizable, unidentifiable = _resolve_localizations(frame, s)
+    localized = _fill_optional(localized, s, (irt_col, raw_col))
     # Checked once over columns rather than by casting every field of every row: Polars already
     # hands back str/int/float, so those casts only ever served as a null guard, and paying one
-    # per field per row for it cost more than the rest of the loop body.
-    required_values = [s.raw_file, s.scan_number, s.modified_sequence, s.charge, irt_col, raw_col]
-    null_counts = localized.select(pl.col(required_values).null_count()).row(0, named=True)
+    # per field per row for it cost more than the rest of the loop body. Only the columns that
+    # identify a spectrum are required; a missing measurement is filled above.
+    null_counts = localized.select(pl.col(required).null_count()).row(0, named=True)
     empty = {name: count for name, count in null_counts.items() if count}
     if empty:
         raise ValueError(f"metadata frame has null values in required columns: {empty}")
@@ -140,7 +164,10 @@ def build_meta_index_from_frame(
     # per spectrum. The peptide is immutable (Rust-backed, read-only properties), so sharing is
     # safe; the split depends only on the stripped sequence by definition.
     peptides: dict[str, tuple[Peptide, str]] = {}
-    index = MetaIndex(ambiguous_localization_spectra=ambiguous)
+    index = MetaIndex(
+        ambiguous_localization_spectra=unlocalizable,
+        ambiguous_identification_spectra=unidentifiable,
+    )
     for values in localized.iter_rows(named=True):
         modseq = values[s.modified_sequence]
         cached = peptides.get(modseq)
@@ -162,12 +189,14 @@ def build_meta_index_from_frame(
             precursor_intensity=values[s.precursor_intensity],
         )
     if not index.by_key:
-        # Distinguish the two ways this ends up empty: an empty selection is a caller error, while
-        # every spectrum being unlocalizable is a real (if extreme) property of the source.
-        if ambiguous:
+        # Distinguish the ways this ends up empty: an empty selection is a caller error, while
+        # every spectrum being ambiguous is a real (if extreme) property of the source.
+        dropped = unlocalizable + unidentifiable
+        if dropped:
             raise ValueError(
-                f"all {ambiguous:,} spectra in the metadata frame report more than one equally "
-                "scored modification placement, so none can be localized"
+                f"every one of the {dropped:,} spectra in the metadata frame is ambiguous "
+                f"({unlocalizable:,} cannot be localized, {unidentifiable:,} report more than one "
+                "peptide), so none can be labelled"
             )
         raise ValueError("metadata frame contains no rows")
     return index

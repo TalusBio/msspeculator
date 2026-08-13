@@ -183,11 +183,17 @@ def _rows_for_shard(
             f"metadata {meta_uri!r} has no rows for shard {shard_uri!r} raw_files={raw_files!r}"
         )
     index = build_meta_index_from_frame(meta, schema=schema)
-    if index.ambiguous_localization_spectra and log is not None:
-        log(
-            f"dropped {index.ambiguous_localization_spectra:,} spectra whose modification "
-            "placement the search engine could not localize"
-        )
+    if log is not None:
+        if index.ambiguous_localization_spectra:
+            log(
+                f"dropped {index.ambiguous_localization_spectra:,} spectra whose modification "
+                "placement the search engine could not localize"
+            )
+        if index.ambiguous_identification_spectra:
+            log(
+                f"dropped {index.ambiguous_identification_spectra:,} spectra reported with more "
+                "than one peptide"
+            )
 
     s = schema
     fragments = (
