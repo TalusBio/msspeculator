@@ -20,7 +20,7 @@ from pepdistill.data.prepared_schema import (
 )
 from pepdistill.distill.context_regime import MSContextEncoder
 from pepdistill.distill.dataset import BatchIterable
-from pepdistill.etl.config import PrepareConfig, PrepareGroup, PrepareSource
+from pepdistill.etl.config import PrepareConfig, PrepareCuration, PrepareGroup, PrepareSource
 from pepdistill.etl.prospect import (
     balanced_partition_range,
     catalog_status,
@@ -86,6 +86,121 @@ def _config(root, stem, out):
             PrepareSource(id="isoform", dataset="isoform", meta="meta.parquet", archive=stem),
         ),
     )
+
+
+def _repeated_source(tmp_path):
+    """A run where one peptidoform is sampled repeatedly across its elution and two charges."""
+    stem = "TUM_isoform_1"
+    root = tmp_path / "source"
+    shard_dir = root / stem / stem
+    shard_dir.mkdir(parents=True)
+    # PEPTIDEK apexes at scan 4; scans 1 and 6 sit on the tails below half maximum. Scan 7 is
+    # the same peptidoform at charge 3, so it must share the charge-independent window.
+    scans = [1, 2, 3, 4, 5, 6, 7, 8]
+    pd.DataFrame(
+        {
+            "raw_file": ["run1"] * len(scans),
+            "scan_number": scans,
+            "modified_sequence": ["PEPTIDEK"] * 7 + ["ACDEK"],
+            "precursor_charge": [2, 2, 2, 2, 2, 2, 3, 2],
+            "retention_time": [10.0, 10.2, 10.4, 10.6, 10.8, 11.0, 10.5, 20.0],
+            "indexed_retention_time": [20.0, 20.2, 20.4, 20.6, 20.8, 21.0, 20.5, 40.0],
+            "aligned_collision_energy": [30.0] * len(scans),
+            "mass_analyzer": ["FTMS"] * len(scans),
+            "fragmentation": ["HCD"] * len(scans),
+            "andromeda_score": [10.0, 20.0, 50.0, 90.0, 70.0, 30.0, 100.0, 60.0],
+            "precursor_intensity": [10.0, 60.0, 90.0, 100.0, 70.0, 20.0, 80.0, 100.0],
+        }
+    ).to_parquet(root / "meta.parquet", index=False)
+    rows = []
+    for scan in scans:
+        rows.extend(
+            [
+                {
+                    "raw_file": "run1",
+                    "scan_number": scan,
+                    "ion_type": ion,
+                    "no": 1,
+                    "charge": 1,
+                    "intensity": intensity,
+                    "neutral_loss": None,
+                }
+                for ion, intensity in (("b", 1.0), ("y", 0.5))
+            ]
+        )
+    pd.DataFrame(rows).to_parquet(shard_dir / "run1.parquet", index=False)
+    return root, stem
+
+
+def test_prepare_curation_keeps_top_psms_per_context_and_reports(tmp_path):
+    root, stem = _repeated_source(tmp_path)
+    out = tmp_path / "prepared-curated"
+    config = PrepareConfig(
+        source_prefix=str(root),
+        output_prefix=str(out),
+        curation=PrepareCuration(
+            enabled=True, min_in_window_psms=3, max_psms_per_context=2, width_anchor_min_psms=4
+        ),
+        sources=(
+            PrepareSource(id="isoform", dataset="isoform", meta="meta.parquet", archive=stem),
+        ),
+    )
+    logs: list[str] = []
+    manifest = prepare_range(config, log=logs.append)[0]
+
+    data = out / "shards" / "isoform" / "000000" / "data.parquet"
+    assert pl.read_parquet_schema(data) == PREPARED_SPECTRA_SCHEMA
+    selected = pl.read_parquet(data).sort("scan_number")
+    # Half-maximum support spans scans 2-5 and 7 (>= 50 of the 100 apex), so the shared window
+    # is 0.6 min wide centered on scan 4 at 10.6: scans 3, 4, 5 and 7 fall inside it. The
+    # charge-2 context keeps its two best-scoring members; charge 3 is a separate context.
+    assert selected["scan_number"].to_list() == [4, 5, 7]
+    assert selected["charge"].to_list() == [2, 2, 3]
+    # The single-PSM peptidoform cannot meet in-window replication and is dropped entirely.
+    assert "ACDEK" not in selected["sequence"].to_list()
+    assert manifest["rows"] == 3
+
+    report = manifest["curation"]
+    assert report["policy"]["min_in_window_psms"] == 3
+    assert report["policy"]["max_psms_per_context"] == 2
+    assert report["input"]["rows"] == 8
+    assert report["input"]["missing_precursor_intensity_rows"] == 0
+    assert report["chromatography"]["run_widths"]["run1"]["width_minutes"] == pytest.approx(0.6)
+    # Four PEPTIDEK PSMs plus the lone ACDEK PSM, which sits inside its own window but is
+    # rejected by the replication floor rather than by the window itself.
+    assert report["selection"]["apex_window_rows"] == 5
+    assert report["selection"]["qualifying_peptidoforms"] == 1
+    assert report["selection"]["rejected_peptidoforms"] == 1
+    assert report["selection"]["selected_rows"] == 3
+    assert report["selection"]["selected_contexts"] == 2
+    assert any("curation retained 3/8 spectra" in line for line in logs)
+
+
+def test_prepare_curation_reports_sources_without_precursor_intensity(tmp_path):
+    """A source lacking the intensity column must reject transparently, never invent a window."""
+    root, stem = _repeated_source(tmp_path)
+    meta_path = root / "meta.parquet"
+    pd.read_parquet(meta_path).drop(columns=["precursor_intensity"]).to_parquet(
+        meta_path, index=False
+    )
+    out = tmp_path / "prepared-no-intensity"
+    config = PrepareConfig(
+        source_prefix=str(root),
+        output_prefix=str(out),
+        curation=PrepareCuration(enabled=True, min_in_window_psms=3, width_anchor_min_psms=4),
+        sources=(
+            PrepareSource(id="isoform", dataset="isoform", meta="meta.parquet", archive=stem),
+        ),
+    )
+    manifest = prepare_range(config, log=None)[0]
+
+    assert manifest["rows"] == 0
+    report = manifest["curation"]
+    assert report["input"]["rows"] == 8
+    assert report["input"]["missing_precursor_intensity_rows"] == 8
+    assert report["selection"]["selected_rows"] == 0
+    assert report["selection"]["qualifying_peptidoforms"] == 0
+    assert report["chromatography"]["run_widths"]["run1"]["width_minutes"] is None
 
 
 def test_prepare_shards_writes_manifest_and_chunked_rows(tmp_path):

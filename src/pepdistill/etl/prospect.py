@@ -33,9 +33,9 @@ import pyarrow.parquet as pq
 
 from ..data.meta_index import build_meta_index_from_frame
 from ..data.prepared_schema import (
+    PREPARED_SPECTRA_SCHEMA,
     VALIDATION_WINNER_SCHEMA,
     canonical_prepared_scan,
-    prepared_frame,
     require_schema,
 )
 from ..data.prospect import ProspectSchema, decode_fragments
@@ -139,6 +139,7 @@ def _meta_columns(meta_uri: str, schema: ProspectSchema) -> list[str]:
         schema.mass_analyzer,
         schema.fragmentation,
         schema.andromeda_score,
+        schema.precursor_intensity,
     ]
     available = set(pl.scan_parquet(meta_uri).collect_schema().names())
     missing = [name for name in required if name not in available]
@@ -219,6 +220,7 @@ def _rows_for_shard(
                 "energy": float(spectrum.energy),
                 "andromeda_score": float(spectrum.andromeda),
                 "ms2": label.ms2.reshape(-1).astype(np.float32).tolist(),
+                "precursor_intensity": float(spectrum.precursor_intensity),
             }
         )
     return rows
@@ -510,6 +512,7 @@ def discover_catalog(config: PrepareConfig) -> dict[str, Any]:
                     "archive_url": source.archive_url,
                     "meta_url": source.meta_url,
                     "config_fingerprint": config.fingerprint,
+                    "curation": config.curation.canonical(),
                 }
             )
     return {
@@ -645,7 +648,27 @@ def prepare_task(
         raise ValueError(
             f"task {task['source_id']}/{task['shard_index']} produced no usable spectra"
         )
-    frame = prepared_frame(rows)
+    from .curation import curate_prepared_frame, curation_input_frame
+
+    curation_input = curation_input_frame(rows)
+    curation = task.get("curation", {})
+    curation_report = None
+    if curation.get("enabled", False):
+        policy = {key: value for key, value in curation.items() if key != "enabled"}
+        analysis = curate_prepared_frame(curation_input, **policy)
+        frame = analysis.selected
+        curation_report = analysis.report
+        emit(
+            f"curation retained {frame.height:,}/{curation_input.height:,} spectra from "
+            f"{analysis.report['selection']['qualifying_peptidoforms']:,} peptidoforms"
+        )
+    else:
+        frame = curation_input.select(
+            [
+                pl.col(name).cast(dtype, strict=True)
+                for name, dtype in PREPARED_SPECTRA_SCHEMA.items()
+            ]
+        )
     _write_parquet(frame, data_uri)
     emit(f"wrote {frame.height:,} spectra in {time.perf_counter() - started:.1f}s")
     manifest = {
@@ -655,6 +678,8 @@ def prepare_task(
         "rows": frame.height,
         "source_shard": Path(task["shard_uri"]).name,
     }
+    if curation_report is not None:
+        manifest["curation"] = curation_report
     _write_json(manifest_uri, manifest)
     return manifest
 

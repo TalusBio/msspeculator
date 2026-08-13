@@ -3,7 +3,7 @@ import json
 import polars as pl
 import pytest
 
-from pepdistill.data.prepared_schema import prepared_frame
+from pepdistill.data.prepared_schema import PREPARED_SPECTRA_SCHEMA, prepared_frame
 from pepdistill.etl.curation import CURATION_ANNOTATION_SCHEMA, analyze_prepared_curation
 
 
@@ -37,7 +37,7 @@ def _row(
     }
 
 
-def test_curation_uses_half_max_cap_and_missing_intensity_fallback(tmp_path):
+def test_curation_uses_shared_window_replication_filter_and_context_cap(tmp_path):
     prepared = prepared_frame(
         [
             _row(1, 1, "PEPTIDE", 10.0, [1.0, 0.0]),
@@ -66,44 +66,50 @@ def test_curation_uses_half_max_cap_and_missing_intensity_fallback(tmp_path):
     prepared.write_parquet(prepared_path)
     metadata.write_parquet(metadata_path)
 
-    analysis = analyze_prepared_curation(prepared_path, metadata_path, cap_per_context=1)
+    analysis = analyze_prepared_curation(
+        prepared_path,
+        metadata_path,
+        min_in_window_psms=2,
+        max_psms_per_context=1,
+        width_anchor_min_psms=2,
+    )
     assert analysis.annotations.schema == CURATION_ANNOTATION_SCHEMA
+    assert analysis.selected.schema == PREPARED_SPECTRA_SCHEMA
     selected = analysis.annotations.filter(pl.col("selected")).sort("spectrum_id")
-    # Of the two half-max PEPTIDE rows, higher score wins. OTHER has no intensity and falls back.
-    assert selected["spectrum_id"].to_list() == [2, 4, 6]
-    assert selected["selection_reason"].to_list() == [
-        "apex_window_top_score",
-        "apex_window_top_score",
-        "context_best_score_fallback",
-    ]
+    # One shared PEPTIDE window includes both acquisition modes; the intensity-less OTHER
+    # peptidoform is rejected rather than receiving a fabricated chromatographic window.
+    assert selected["spectrum_id"].to_list() == [1, 4]
+    assert selected["selection_reason"].to_list() == ["top_context_psm", "top_context_psm"]
     assert analysis.annotations.filter(pl.col("spectrum_id") == 4)["supports_half_max"][0] is False
     assert analysis.annotations.filter(pl.col("spectrum_id") == 4)["within_apex_window"][0] is True
-    assert analysis.report["selection"]["half_max_support_rows"] == 2
-    assert analysis.report["selection"]["apex_window_rows"] == 3
-    assert analysis.report["selection"]["selected_rows"] == 3
-    assert analysis.report["selection"]["fallback_contexts"] == 1
-    assert analysis.report["selection"]["contexts_preserved"] == 3
+    rejected = analysis.annotations.filter(pl.col("spectrum_id") == 6)
+    assert rejected["selection_reason"][0] == "insufficient_in_window_replication"
+    assert analysis.report["selection"]["apex_window_rows"] == 2
+    assert analysis.report["selection"]["selected_rows"] == 2
+    assert analysis.report["selection"]["qualifying_peptidoforms"] == 1
+    assert analysis.report["selection"]["rejected_peptidoforms"] == 1
     assert analysis.report["spectral_consistency"]["all"] is not None
-    assert analysis.report["replication"]["selected_psms_per_peptidoform"]["p50"] == 1.5
-    assert analysis.report["chromatography"]["window_width_minutes"]["p50"] == 1.0
-    assert analysis.report["chromatography"]["missing_windows"] == 1
+    assert analysis.report["replication"]["selected_psms_per_peptidoform"]["p50"] == 1.0
+    assert analysis.report["chromatography"]["run_widths"]["run"]["width_minutes"] == 1.0
 
     report_path = tmp_path / "report.json"
     annotations_path = tmp_path / "annotations.parquet"
     analysis.write(report_path, annotations_path)
-    assert json.loads(report_path.read_text())["policy"]["cap_per_context"] == 1
+    assert json.loads(report_path.read_text())["policy"]["max_psms_per_context"] == 1
     assert pl.read_parquet(annotations_path).schema == CURATION_ANNOTATION_SCHEMA
 
 
 @pytest.mark.parametrize(
-    ("half_max_fraction", "cap"),
-    [(0.0, 8), (1.1, 8), (0.5, 0)],
+    ("half_max_fraction", "minimum", "maximum", "anchor"),
+    [(0.0, 4, 2, 8), (1.1, 4, 2, 8), (0.5, 0, 2, 8), (0.5, 4, 0, 8), (0.5, 4, 2, 1)],
 )
-def test_curation_rejects_invalid_policy(tmp_path, half_max_fraction, cap):
+def test_curation_rejects_invalid_policy(tmp_path, half_max_fraction, minimum, maximum, anchor):
     with pytest.raises(ValueError):
         analyze_prepared_curation(
             tmp_path / "unused-prepared.parquet",
             tmp_path / "unused-metadata.parquet",
             half_max_fraction=half_max_fraction,
-            cap_per_context=cap,
+            min_in_window_psms=minimum,
+            max_psms_per_context=maximum,
+            width_anchor_min_psms=anchor,
         )

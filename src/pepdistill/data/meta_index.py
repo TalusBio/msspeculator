@@ -25,6 +25,7 @@ class SpectrumMeta:
     fragmentation: str
     energy: float
     andromeda: float
+    precursor_intensity: float
 
 
 @dataclass
@@ -79,6 +80,11 @@ def build_meta_index_from_frame(
             andromeda=(
                 float(values[s.andromeda_score])
                 if s.andromeda_score in values and values[s.andromeda_score] is not None
+                else float("nan")
+            ),
+            precursor_intensity=(
+                float(values[s.precursor_intensity])
+                if s.precursor_intensity in values and values[s.precursor_intensity] is not None
                 else float("nan")
             ),
         )

@@ -147,18 +147,42 @@ def curation_report(
     half_max_fraction: float = typer.Option(
         0.5, min=0.0, max=1.0, help="Observed apex-intensity fraction to retain."
     ),
-    cap_per_context: int = typer.Option(
-        8, min=1, help="Maximum retained PSMs per precursor/acquisition context."
+    min_in_window_psms: int = typer.Option(
+        4,
+        "--min-in-window-psms",
+        min=1,
+        help="Minimum PSMs in the shared apex window required for a peptidoform.",
+    ),
+    max_psms_per_context: int = typer.Option(
+        2,
+        "--max-psms-per-context",
+        min=1,
+        help="Maximum retained PSMs per charge/acquisition context.",
+    ),
+    width_anchor_min_psms: int = typer.Option(
+        8,
+        "--width-anchor-min-psms",
+        min=2,
+        help="Minimum half-height observations for a run-width anchor.",
+    ),
+    energy_bucket_width: float = typer.Option(
+        1.0,
+        "--energy-bucket-width",
+        min=0.001,
+        help="Collision-energy width used to identify equivalent contexts.",
     ),
 ) -> None:
-    """Analyze apex-window and replicate-cap curation on one prepared shard."""
+    """Analyze shared apex-window filtering and context deduplication on one shard."""
     from .etl.curation import analyze_prepared_curation
 
     analysis = analyze_prepared_curation(
         prepared,
         metadata,
         half_max_fraction=half_max_fraction,
-        cap_per_context=cap_per_context,
+        min_in_window_psms=min_in_window_psms,
+        max_psms_per_context=max_psms_per_context,
+        width_anchor_min_psms=width_anchor_min_psms,
+        energy_bucket_width=energy_bucket_width,
     )
     analysis.write(out, annotations_out)
     selection = analysis.report["selection"]
@@ -166,9 +190,9 @@ def curation_report(
     typer.echo(
         f"selected {selection['selected_rows']:,}/{analysis.report['input']['rows']:,} PSMs "
         f"({selection['selected_fraction_of_rows']:.1%}); "
-        f"context-consensus SA all={consistency['all']:.4f}, "
-        f"apex-window={consistency['within_apex_window']:.4f}, "
-        f"selected={consistency['selected']:.4f} -> {out}"
+        f"context-consensus SA all={consistency['all'] or float('nan'):.4f}, "
+        f"apex-window={consistency['within_apex_window'] or float('nan'):.4f}, "
+        f"selected={consistency['selected'] or float('nan'):.4f} -> {out}"
     )
 
 

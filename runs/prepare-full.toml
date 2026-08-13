@@ -5,7 +5,15 @@
 
 [prepare]
 cache_prefix = "s3://terraform-workstations-bucket/jspaezp/20241022_prospect"
-output_prefix = "s3://terraform-workstations-bucket/jspaezp/pepdistill-prepared/v1"
+output_prefix = "s3://terraform-workstations-bucket/jspaezp/pepdistill-prepared/v2"
+
+[prepare.curation]
+enabled = true
+half_max_fraction = 0.5
+min_in_window_psms = 4
+max_psms_per_context = 2
+width_anchor_min_psms = 8
+energy_bucket_width = 1.0
 
 [[prepare.groups]]
 record = "prospect"

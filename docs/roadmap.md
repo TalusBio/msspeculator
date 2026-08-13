@@ -73,17 +73,12 @@ deferred until it solves a measured deployment need.
    substitution run against an unaugmented control before changing its rate or policy.
 7. **Regenerate vendored UNIMOD assets reproducibly.** Refresh the generation logic from the
    upstream source and verify the checked-in result.
-8. **Evaluate prepared-data curation on a modification-rich source.** Start with a non-test
-   `multi_ptm` phosphopeptide shard. Materialize PSM score, RT-density/apex distance, elution
-   width, and replicate-support statistics; first establish whether the source carries a usable
-   abundance/XIC field for a true chromatographic apex. Estimate one chromatographic window per
-   raw-file peptidoform and apply it unchanged across charge states and acquisition modes; those
-   factors may define replicate caps but must not define separate apexes. Compare raw
-   observations, apex/FWHM-like
-   filtering, capped replicate weighting, and replicate-consensus targets without sacrificing
-   singleton coverage by default. Fit thresholds from the train split only, preserve the
-   unfiltered immutable prepared assets, and publish curation diagnostics beside any derived
-   manifest.
+8. **Validate prepared-data curation across the full corpus.** The `v2` preparation path now
+   estimates one robust peak width per raw file, centers it on each peptidoform apex across all
+   charge/acquisition modes, requires four in-window PSMs, and retains the best two PSMs per
+   charge/acquisition context. Compare its per-source retention and spectral-consistency reports
+   with the unfiltered `v1` assets before making `v2` the training default. Replicate-consensus
+   targets remain deferred.
 9. **Use richer teacher supervision for modification pretraining.** Inventory what the parent
    model exposes for modified peptides, then deliberately sample supported modification/site
    combinations instead of relying mostly on incidental variable modifications. Measure

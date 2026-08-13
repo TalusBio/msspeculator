@@ -11,6 +11,33 @@ from typing import Any
 
 
 @dataclass(frozen=True, slots=True)
+class PrepareCuration:
+    """Chromatographic confidence filter applied while producing each immutable shard."""
+
+    enabled: bool = False
+    half_max_fraction: float = 0.5
+    min_in_window_psms: int = 4
+    max_psms_per_context: int = 2
+    width_anchor_min_psms: int = 8
+    energy_bucket_width: float = 1.0
+
+    def __post_init__(self) -> None:
+        if not 0.0 < self.half_max_fraction <= 1.0:
+            raise ValueError("prepare curation half_max_fraction must be in (0, 1]")
+        if self.min_in_window_psms < 1:
+            raise ValueError("prepare curation min_in_window_psms must be positive")
+        if self.max_psms_per_context < 1:
+            raise ValueError("prepare curation max_psms_per_context must be positive")
+        if self.width_anchor_min_psms < 2:
+            raise ValueError("prepare curation width_anchor_min_psms must be at least two")
+        if self.energy_bucket_width <= 0:
+            raise ValueError("prepare curation energy_bucket_width must be positive")
+
+    def canonical(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True, slots=True)
 class PrepareSource:
     id: str
     dataset: str
@@ -97,6 +124,7 @@ class PrepareConfig:
     output_prefix: str
     source_prefix: str | None = None
     cache_prefix: str | None = None
+    curation: PrepareCuration = PrepareCuration()
     sources: tuple[PrepareSource, ...] = ()
     groups: tuple[PrepareGroup, ...] = ()
 
@@ -122,6 +150,7 @@ class PrepareConfig:
                 if section.get("cache_prefix")
                 else (str(section["source_prefix"]) if section.get("source_prefix") else None)
             ),
+            curation=PrepareCuration(**section.get("curation", {})),
             sources=sources,
             groups=groups,
         )
@@ -131,6 +160,7 @@ class PrepareConfig:
             "source_prefix": self.source_prefix,
             "cache_prefix": self.cache_prefix,
             "output_prefix": self.output_prefix,
+            "curation": self.curation.canonical(),
             "sources": [source.canonical() for source in self.sources],
             "groups": [group.canonical() for group in self.groups],
         }

@@ -50,7 +50,7 @@ max_var_mods = 1
 
 [train]
 enabled = true
-prepared_prefix = "s3://terraform-workstations-bucket/jspaezp/pepdistill-prepared/v1"
+prepared_prefix = "s3://terraform-workstations-bucket/jspaezp/pepdistill-prepared/v2"
 epochs = 60
 batch_size = 256
 num_workers = 0

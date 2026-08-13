@@ -66,10 +66,9 @@ class ProspectSchema:
     """Column-name mapping. Defaults follow the documented PROSPECT columns; override per
     file if a variant differs (validated at read time)."""
 
-    # Defaults verified against a real test_ptm meta file (columns: modified_sequence,
-    # precursor_charge, aligned/orig_collision_energy, mass_analyzer, fragmentation,
-    # retention_time, indexed_retention_time, ...). Meta files carry NO stripped `sequence`
-    # column and NO intensities — intensities live in the annotation parquet (a .zip).
+    # Defaults verified against real PROSPECT metadata. Meta files carry no stripped `sequence`
+    # column. They do carry precursor-level intensity used for chromatographic curation; fragment
+    # intensities remain in the long annotation Parquet inside the archive.
     modified_sequence: str = "modified_sequence"
     sequence: str = "sequence"  # absent in meta; strip modified_sequence when missing
     charge: str = "precursor_charge"
@@ -87,6 +86,7 @@ class ProspectSchema:
     ann_intensity: str = "intensity"
     ann_neutral_loss: str = "neutral_loss"
     andromeda_score: str = "andromeda_score"  # val dedup quality
+    precursor_intensity: str = "precursor_intensity"
 
     # Columns required to even treat a file as PROSPECT (identity + acquisition context).
     def required(self) -> list[str]:

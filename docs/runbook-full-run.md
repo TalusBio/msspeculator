@@ -161,14 +161,18 @@ pepdistill curation-report prepared.parquet source_meta_data.parquet \
   --out curation-report.json \
   --annotations-out curation-annotations.parquet \
   --half-max-fraction 0.5 \
-  --cap-per-context 8
+  --min-in-window-psms 4 \
+  --max-psms-per-context 2 \
+  --width-anchor-min-psms 8
 ```
 
-The report estimates one sampled apex interval per raw-file peptidoform and applies the same RT
-window across every charge state and acquisition mode. The cap is applied only afterward, per
-supervised acquisition context. Contexts with no in-window observation retain their highest
-Andromeda-score PSM. The annotation Parquet has an explicit schema and joins back by
-`spectrum_id`; neither command mutates the immutable prepared shard.
+The report estimates one robust width per raw file from sufficiently replicated half-height
+peptidoforms. It centers that width on each peptidoform's own apex and applies the resulting RT
+window unchanged across every charge state and acquisition mode. Peptidoforms with fewer than
+four in-window PSMs are rejected; the remaining rows are capped afterward at the best two per
+charge/acquisition context. The annotation Parquet has an explicit schema and joins back by
+`spectrum_id`; the command does not mutate its input shard. The full preparation config applies
+this policy while building the immutable `v2` corpus.
 
 ## 3. Run pretrain → train
 
