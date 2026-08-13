@@ -84,23 +84,20 @@ def _quantiles(series: pl.Series) -> dict[str, float | None]:
     }
 
 
-def _leave_one_out_sa(group: pl.DataFrame) -> np.ndarray:
-    """Each replicate's SA against the consensus of the *other* replicates in its context.
+def _leave_one_out_sa(unit: np.ndarray) -> np.ndarray:
+    """Each replicate's SA against the consensus of the *other* replicates handed in.
 
-    This is the achievable-accuracy ceiling: a model can at best predict the consensus of the
-    replicates, so however well one replicate agrees with its peers bounds how well any model
-    could score against it. The consensus is built only from the rows handed in, so a filtered
-    subset is scored against itself -- measuring a subset against a consensus that still contained
-    the rejected spectra scored *identical* spectra at 0.21.
+    This estimates the achievable-accuracy ceiling: a model can at best predict the consensus of
+    the replicates, so how well one replicate agrees with its peers bounds how well any model could
+    score against it. Takes pre-normalized rows so a caller comparing several nested subsets of one
+    context normalizes the spectra once.
+
+    The consensus is built only from the rows handed in, so a filtered subset is scored against
+    itself -- measuring a subset against a consensus that still contained the rejected spectra
+    scored *identical* spectra at 0.21.
     """
-    if group.height < 2:
+    if unit.shape[0] < 2:
         return _NO_VALUES
-    spectra = np.asarray(group["ms2"].to_list(), dtype=np.float64)
-    norms = np.linalg.norm(spectra, axis=1)
-    valid = norms > 0
-    if int(valid.sum()) < 2:
-        return _NO_VALUES
-    unit = spectra[valid] / norms[valid, None]
     peers = unit.sum(axis=0)[None, :] - unit
     peer_norms = np.linalg.norm(peers, axis=1)
     measurable = peer_norms > 0
@@ -111,21 +108,31 @@ def _leave_one_out_sa(group: pl.DataFrame) -> np.ndarray:
 def _achievable_ceilings(frame: pl.DataFrame) -> dict[str, dict[str, Any]]:
     """Ceilings for every row, the in-window rows, and the retained rows.
 
-    Partitions once and evaluates all three subsets per context: this runs for every shard in
-    production, so three separate passes over the same partitioning would triple the cost of a
-    diagnostic that is always on.
+    The three subsets are nested, so each context is decoded and unit-normalized once and the
+    subsets are taken as boolean masks over that. This runs for every shard in production, so
+    re-decoding the same spectra per subset would triple the cost of an always-on diagnostic.
     """
     collected: dict[str, list[np.ndarray]] = {"all": [], "within_apex_window": [], "selected": []}
     for group in frame.partition_by(_CONTEXT_KEY, maintain_order=False):
+        if group.height < 2:
+            continue
+        spectra = np.asarray(group["ms2"].to_list(), dtype=np.float64)
+        norms = np.linalg.norm(spectra, axis=1)
+        usable = norms > 0
+        if int(usable.sum()) < 2:
+            continue
+        unit = spectra[usable] / norms[usable, None]
         for name, predicate in (
             ("all", None),
             ("within_apex_window", "_within_apex_window"),
             ("selected", "_selected"),
         ):
-            subset = (
-                group if predicate is None else group.filter(pl.col(predicate).fill_null(False))
-            )
-            values = _leave_one_out_sa(subset)
+            if predicate is None:
+                rows = unit
+            else:
+                mask = group[predicate].fill_null(False).to_numpy().astype(bool)[usable]
+                rows = unit[mask]
+            values = _leave_one_out_sa(rows)
             if values.size:
                 collected[name].append(values)
     out: dict[str, dict[str, Any]] = {}
@@ -388,7 +395,11 @@ def curate_prepared_frame(
     report["achievable_ceiling"] = {
         "metric": (
             "leave-one-out spectral angle of each replicate against the consensus of the other "
-            "replicates in its acquisition context; an upper bound on what any model can score"
+            "replicates in its acquisition context; an estimate of what any model can score at "
+            "best. It improves with replicate count: with only two replicates it degenerates to "
+            "pairwise agreement, which sits below agreement with the truth both approximate, so "
+            "the capped 'selected' subset understates the bound and 'within_apex_window' is the "
+            "series to compare a model against"
         ),
         "histogram_bin_edges": list(SA_HISTOGRAM_EDGES),
         **_achievable_ceilings(frame),

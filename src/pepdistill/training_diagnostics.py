@@ -11,6 +11,7 @@ import json
 import os
 import tempfile
 import time
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, TypeVar
@@ -78,11 +79,20 @@ def load_reference_distributions(prefix: str) -> dict[str, dict[str, list[int]]]
     fixture, simply yields no reference series and the panel falls back to the student alone.
     """
 
+    missing: list[str] = []
+
     def published(name: str) -> dict[str, Any]:
+        # Absence is tolerated but never silent. A corpus can legitimately predate these reports
+        # (v1 published neither) and this runs for every training run, so raising would let a
+        # missing diagnostic abort training -- but a panel that quietly loses its reference line
+        # is indistinguishable from one that was never configured, so the gap is announced.
+        # Anything other than absence still raises: a truncated or half-written report (an
+        # interrupted `--publish`) is corruption, not a corpus that opted out.
         try:
             with fsspec.open(f"{prefix.rstrip('/')}/diagnostics/{name}", "rb") as handle:
                 return json.load(handle)
-        except (FileNotFoundError, OSError, ValueError):
+        except FileNotFoundError:
+            missing.append(name)
             return {}
 
     yardstick = published("teacher-yardstick.json")
@@ -94,9 +104,22 @@ def load_reference_distributions(prefix: str) -> dict[str, dict[str, list[int]]]
             per_dataset.setdefault(dataset, {})["teacher"] = list(histogram["counts"])
     ceilings = (summary.get("achievable_ceiling") or {}).get("per_source") or {}
     for dataset, subsets in ceilings.items():
-        # The retained subset, because that is the population a trained student sees.
-        if subsets.get("selected"):
-            per_dataset.setdefault(dataset, {})["ceiling"] = list(subsets["selected"])
+        # The in-window subset, not the retained one. Retention caps a context at two PSMs, so the
+        # retained subset's leave-one-out score is agreement between exactly two noisy replicates,
+        # which sits *below* agreement with the truth they both approximate -- a well-fit student
+        # would legitimately cross a line drawn there and look broken. The in-window subset keeps
+        # every replicate of the same peptidoform, so its consensus is closer to the truth and the
+        # bound is the one a model can actually be measured against.
+        if subsets.get("within_apex_window"):
+            per_dataset.setdefault(dataset, {})["ceiling"] = list(subsets["within_apex_window"])
+    if missing:
+        warnings.warn(
+            f"{prefix} publishes no {' or '.join(missing)}, so the spectral-angle panel will omit "
+            "those reference series. Run tools/teacher_yardstick.py and "
+            "tools/prepared_curation_report.py with --publish against this prefix.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
     return per_dataset
 
 

@@ -39,6 +39,7 @@ _REFUSAL_REASONS = (
     "unsupported_by_wrapper",
     "mass_only_modification",
     "unresolved_modification_name",
+    "non_finite_collision_energy",
     "teacher_returned_none",
 )
 
@@ -130,8 +131,11 @@ def _markdown_report(report: dict, measured_on: str) -> str:
         f"{report['val_winners_in_manifest']:,} validation winners |",
         "| --- | --- |",
         f"| unsupported by teacher | {report['spectra_unsupported_by_teacher']:,} |",
-        f"| spectral angle (mean) | {report['spectral_angle_mean']:.4f} |",
     ]
+    # None when every candidate was refused, which is reachable for a source alphabase cannot
+    # name; the document should say so rather than fail to render.
+    mean = report["spectral_angle_mean"]
+    lines.append(f"| spectral angle (mean) | {'-' if mean is None else f'{mean:.4f}'} |")
     quantiles = report.get("spectral_angle_quantiles") or {}
     for key in sorted(quantiles):
         lines.append(f"| spectral angle ({key}) | {quantiles[key]:.4f} |")
@@ -241,7 +245,14 @@ def main() -> None:
         askable = []
         for example in batch:
             name = names.get(example.dataset_id, str(example.dataset_id))
-            reason = _teacher_refusal(example.precursor)
+            # A spectrum with no recorded collision energy carries NaN through the corpus by
+            # design. Handing that to the teacher as an NCE yields a NaN spectral angle, and one
+            # such row turns the mean, every quantile and the headline into NaN with nothing
+            # raising -- so it is a coverage gap to report, not a value to feed forward.
+            if not np.isfinite(example.energy):
+                reason = "non_finite_collision_energy"
+            else:
+                reason = _teacher_refusal(example.precursor)
             if reason is None:
                 askable.append(example)
             else:

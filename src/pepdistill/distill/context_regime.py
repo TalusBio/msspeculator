@@ -283,6 +283,10 @@ class RealSpeclibModule(L.LightningModule):
             # A mean cannot be drawn against the teacher yardstick or the replicate ceiling, both
             # of which ship a distribution. Accumulate counts on the shared grid so all three
             # overlay exactly; 50 ints per dataset per check costs nothing.
+            # Lightning's sanity check runs this before training, so accumulating there would draw
+            # a handful of untrained spectra as the student series in the first published panel.
+            if self.trainer.sanity_checking:
+                continue
             counts = self.val_sa_histograms.setdefault(
                 name, np.zeros(SA_HISTOGRAM_BINS, dtype=np.int64)
             )

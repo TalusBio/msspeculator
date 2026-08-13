@@ -173,7 +173,7 @@ def test_reference_distributions_load_and_panel_uses_them(tmp_path):
     pytest.importorskip("matplotlib")
     import json
 
-    from pepdistill.diagnostics import SA_HISTOGRAM_BINS, sa_histogram
+    from pepdistill.diagnostics import SA_HISTOGRAM_BINS, SpectralAngleSeries, sa_histogram
     from pepdistill.training_diagnostics import load_reference_distributions
 
     rng = np.random.default_rng(1)
@@ -188,14 +188,33 @@ def test_reference_distributions_load_and_panel_uses_them(tmp_path):
             {"per_dataset": {"ptm": {"spectral_angle_histogram": {"counts": counts(0.66, 900)}}}}
         )
     )
+    # Both subsets are published and the loader must take the in-window one: retention caps a
+    # context at two PSMs, so the retained subset's leave-one-out score is pairwise agreement
+    # between two noisy replicates and sits below what a model can actually reach.
     (diagnostics / "curation-summary.json").write_text(
-        json.dumps({"achievable_ceiling": {"per_source": {"ptm": {"selected": counts(0.94, 400)}}}})
+        json.dumps(
+            {
+                "achievable_ceiling": {
+                    "per_source": {
+                        "ptm": {
+                            "within_apex_window": counts(0.94, 400),
+                            "selected": counts(0.70, 200),
+                        }
+                    }
+                }
+            }
+        )
     )
 
     references = load_reference_distributions(str(tmp_path))
     assert sorted(references["ptm"]) == ["ceiling", "teacher"]
-    # A prefix publishing neither report is not an error; the panel simply has nothing to add.
-    assert load_reference_distributions(str(tmp_path / "absent")) == {}
+    ceiling = SpectralAngleSeries("ceiling", references["ptm"]["ceiling"])
+    assert ceiling.total() == 400 and ceiling.mean() == pytest.approx(0.94, abs=0.02)
+
+    # A prefix publishing neither report must not abort a training run -- but it must not be
+    # silent either, or a missing panel is indistinguishable from an unconfigured one.
+    with pytest.warns(RuntimeWarning, match="publishes no"):
+        assert load_reference_distributions(str(tmp_path / "absent")) == {}
 
     # Build the real renderer so the prefix is loaded through its own constructor.
     from pepdistill.teacher import FakeTeacher

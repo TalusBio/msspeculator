@@ -197,11 +197,21 @@ def test_parse_modseq_refuses_notation_it_cannot_represent():
         (("n", "TMT6plex"), (1, "Phospho")),
     )
 
+    # A C-terminal modification belongs to the terminus, not to the last residue. Accepting the
+    # separator as a token anywhere silently relocated it and swallowed stray hyphens.
+    assert parse_modseq("PEK-[UNIMOD:21]") == ("PEK", (("c", "Phospho"),))
+    assert parse_modseq("[UNIMOD:737]-PEK-[UNIMOD:21]") == (
+        "PEK",
+        (("n", "TMT6plex"), ("c", "Phospho")),
+    )
+
     for corrupting in (
         "AC[Carbamidomethyl@C]DEK",  # was ("ACCCDEK", ())
         "P[+79.96633]EPTIDE",  # was ("PEPTIDE", ())
         "AC[Formula:H2O]DEK",
         "pepTIDE",
+        "PEP-TIDE",  # was ("PEPTIDE", ())
+        "P-E-P",  # was ("PEP", ())
     ):
         with pytest.raises(ValueError, match="cannot parse"):
             parse_modseq(corrupting)
@@ -210,6 +220,8 @@ def test_parse_modseq_refuses_notation_it_cannot_represent():
     for mods in (
         ((1, "Carbamidomethyl@C"), (4, "Oxidation@M")),
         (("n", "TMT6plex"), (1, "Phospho")),
+        (("c", "Phospho"),),
+        (("n", "TMT6plex"), (2, "Phospho"), ("c", "Phospho")),
     ):
         peptide = Peptide("ACDEMK", mods)
         assert parse_modseq(peptide.modified_sequence()) == ("ACDEMK", mods)
