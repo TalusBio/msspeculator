@@ -177,6 +177,43 @@ pub fn parse_peptide(input: &str) -> Result<Peptide> {
     Ok(Peptide::new(sequence, mods))
 }
 
+/// Parse a PROSPECT modified sequence, tolerating the one way PROSPECT departs from ProForma.
+///
+/// PROSPECT writes an N-terminal modification without the separator that ProForma requires:
+/// `[UNIMOD:737]SEQ` rather than `[UNIMOD:737]-SEQ`. Censused over all 2,067,007 distinct
+/// PROSPECT peptidoforms, that is the *only* departure — 133,890 sequences. Specifically absent:
+/// stacked N-terminal modifications, C-terminal modifications in any spelling, lowercase residues,
+/// and non-UNIMOD descriptors. Two modifications on one residue occur (39,574) and are already
+/// legal ProForma, needing no repair.
+///
+/// So the tolerance is one rewrite, applied here and nowhere else, after which the strict parser
+/// does the work. Degenerate input is accepted at this boundary only; everything downstream holds
+/// the canonical form that [`Peptide::modified_sequence`] emits, and anything PROSPECT did not
+/// actually contain stays an error rather than becoming a second dialect to support forever.
+pub fn parse_prospect_peptide(input: &str) -> Result<Peptide> {
+    parse_peptide(&insert_missing_nterm_separator(input))
+        .with_context(|| format!("invalid PROSPECT modified sequence {input:?}"))
+}
+
+/// Insert the ProForma N-terminal separator when a leading modification lacks it.
+///
+/// Deliberately narrow: it fires only for a single leading `[...]` group that is not already
+/// followed by `-`. Stacked leading groups are left alone so the strict parser rejects them, since
+/// PROSPECT does not produce them and guessing which one is terminal would be inventing chemistry.
+fn insert_missing_nterm_separator(input: &str) -> String {
+    let Some(close) = input.find(']') else {
+        return input.to_string();
+    };
+    if !input.starts_with('[') {
+        return input.to_string();
+    }
+    let rest = &input[close + 1..];
+    if rest.starts_with('-') || rest.starts_with('[') {
+        return input.to_string();
+    }
+    format!("{}-{}", &input[..=close], rest)
+}
+
 pub fn parse_modification_rule(input: &str) -> Result<ModificationRule> {
     let mut parsed = ProFormaParser::parse(Rule::modification_rule, input)
         .map_err(|err| anyhow::anyhow!("invalid modification rule {input:?}: {err}"))?;
@@ -220,6 +257,51 @@ pub fn parse_modification_rule(input: &str) -> Result<ModificationRule> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prospect_tolerance_is_the_missing_nterm_separator_and_nothing_else() {
+        // The one departure: 133,890 of PROSPECT's 2,067,007 distinct peptidoforms spell an
+        // N-terminal modification without the separator. It must mean the terminus, not residue 0.
+        let loose = parse_prospect_peptide("[UNIMOD:737]NWIQYKETIAK[UNIMOD:737]").unwrap();
+        let strict = parse_peptide("[UNIMOD:737]-NWIQYKETIAK[UNIMOD:737]").unwrap();
+        assert_eq!(loose, strict);
+        assert_eq!(loose.mods[0].0, Site::NTerm);
+        assert_eq!(loose.sequence, "NWIQYKETIAK");
+
+        // Two modifications on one residue are legal ProForma already, and canonically ordered.
+        let stacked = parse_prospect_peptide("[UNIMOD:737]K[UNIMOD:737][UNIMOD:1]LLEEDVK").unwrap();
+        assert_eq!(
+            stacked.modified_sequence(),
+            "[UNIMOD:737]-K[UNIMOD:1][UNIMOD:737]LLEEDVK"
+        );
+
+        // Everything PROSPECT does not contain stays an error rather than a second dialect.
+        // Stacked N-terminal groups: which one is terminal would have to be guessed.
+        assert!(parse_prospect_peptide("[UNIMOD:737][UNIMOD:1]SEQK").is_err());
+        assert!(parse_prospect_peptide("seqk").is_err());
+        assert!(parse_prospect_peptide("SEQ[Phospho]K").is_err());
+
+        // A C-terminal modification is spelled with its separator or not at all. PROSPECT has
+        // none, so tolerating a bare trailing group would silently move it onto the last residue.
+        let cterm = parse_prospect_peptide("SEQK-[UNIMOD:21]").unwrap();
+        assert_eq!(cterm.mods[0].0, Site::CTerm);
+        let on_residue = parse_prospect_peptide("SEQK[UNIMOD:21]").unwrap();
+        assert_eq!(on_residue.mods[0].0, Site::Residue(3));
+        assert_ne!(cterm, on_residue);
+    }
+
+    #[test]
+    fn residue_set_rule_targets_every_listed_residue() {
+        // `STY[UNIMOD:21]` is the variable-modification notation: one rule, three target residues.
+        let rule = parse_modification_rule("STY[UNIMOD:21]").unwrap();
+        match rule.target {
+            ModificationTarget::Residues(residues) => {
+                assert_eq!(residues.into_iter().collect::<String>(), "STY");
+            }
+            other => panic!("expected a residue set, got {other:?}"),
+        }
+        assert_eq!(rule.spec.render(), "UNIMOD:21");
+    }
 
     #[test]
     fn parses_unimod_mass_formula_and_unambiguous_termini() {
