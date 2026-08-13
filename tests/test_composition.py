@@ -19,7 +19,7 @@ def test_unmodified_peptide_has_no_mod_signal():
 
 
 def test_named_mod_populates_comp_and_mass_at_its_column():
-    b = collate([Precursor(Peptide("ACDEK", ((1, "Carbamidomethyl@C"),)), 2, "t")])
+    b = collate([Precursor(Peptide("ACDEK", ((1, "UNIMOD:4"),)), 2, "t")])
     col = 1 + 1  # N-term token at 0, residue i at 1+i
     assert bool(b.mod_present[0, col]) and bool(b.mod_has_composition[0, col])
     # Carbamidomethyl is C2H3NO; ELEMENTS order is C, H, N, O, S, P.
@@ -29,18 +29,18 @@ def test_named_mod_populates_comp_and_mass_at_its_column():
 
 
 def test_mass_is_unscaled_daltons():
-    b = collate([Precursor(Peptide("PEPTIDEK", (("n", "TMT6plex"),)), 2, "t")])
+    b = collate([Precursor(Peptide("PEPTIDEK", (("n", "UNIMOD:737"),)), 2, "t")])
     assert abs(float(b.mod_mass[0, 0]) - TMT_MASS) < 1e-3
 
 
 def test_tmt_comp_and_mass_diverge_as_designed():
-    b = collate([Precursor(Peptide("PEPTIDEK", (("n", "TMT6plex"),)), 2, "t")])
+    b = collate([Precursor(Peptide("PEPTIDEK", (("n", "UNIMOD:737"),)), 2, "t")])
     assert b.mod_comp[0, 0].tolist() == [12.0, 20.0, 2.0, 2.0, 0.0, 0.0]
     assert abs(float(b.mod_mass[0, 0]) - TMT_MASS) < 1e-3  # not the element view's 224.15
 
 
 def test_nterm_and_residue_zero_occupy_different_columns():
-    p = Peptide("KPEPTIDE", (("n", "TMT6plex"), (0, "TMT6plex")))
+    p = Peptide("KPEPTIDE", (("n", "UNIMOD:737"), (0, "UNIMOD:737")))
     b = collate([Precursor(p, 2, "t")])
     assert bool(b.mod_present[0, 0]) and bool(b.mod_present[0, 1])
     assert abs(float(b.mod_mass[0, 0]) - TMT_MASS) < 1e-3
@@ -48,7 +48,7 @@ def test_nterm_and_residue_zero_occupy_different_columns():
 
 
 def test_cterm_mod_lands_on_the_last_column():
-    p = Peptide("PEK", (("c", "Phospho"),))
+    p = Peptide("PEK", (("c", "UNIMOD:21"),))
     b = collate([Precursor(p, 2, "t")])
     col = 1 + 3  # [N] P E K [C] -> C-term token at index 4
     assert bool(b.mod_present[0, col])
@@ -65,7 +65,7 @@ def test_mass_only_mod_is_present_but_not_named():
 
 
 def test_two_named_mods_on_one_column_accumulate_comp_and_mass():
-    p = Peptide("CPEPTIDE", ((0, "Carbamidomethyl@C"), (0, "Oxidation@M")))
+    p = Peptide("CPEPTIDE", ((0, "UNIMOD:4"), (0, "UNIMOD:35")))
     b = collate([Precursor(p, 2, "t")])
     col = 1
     assert bool(b.mod_has_composition[0, col]) and bool(b.mod_present[0, col])
@@ -87,7 +87,7 @@ def test_named_plus_mass_only_on_one_column_is_refused():
     """`mod_has_composition` is one boolean per column, so the column routes wholly through comp_enc or
     wholly through mass_enc. A site holding one of each would drop a channel from the model
     input while still moving mono_mass and every fragment m/z — refuse instead."""
-    p = Peptide("PEPCIDER", ((3, "Carbamidomethyl@C"), (3, 15.994915)))
+    p = Peptide("PEPCIDER", ((3, "UNIMOD:4"), (3, 15.994915)))
     with pytest.raises(Exception) as e:
         collate([Precursor(p, 2, "t")])
     # Diagnostics quote the same ProForma descriptor as emission, so the named mod appears as
@@ -101,7 +101,7 @@ def test_named_plus_mass_only_on_one_column_is_refused():
 def test_nterm_named_plus_residue_zero_mass_only_stays_legal():
     """The refusal is per SITE, not per residue index: these are two different columns even
     though residue_masses folds an N-terminal delta onto residue 0."""
-    p = Peptide("KPEPTIDE", (("n", "TMT6plex"), (0, 15.994915)))
+    p = Peptide("KPEPTIDE", (("n", "UNIMOD:737"), (0, 15.994915)))
     b = collate([Precursor(p, 2, "t")])
     assert bool(b.mod_has_composition[0, 0]) and not bool(b.mod_has_composition[0, 1])
     assert abs(float(b.mod_mass[0, 1]) - 15.994915) < 1e-5

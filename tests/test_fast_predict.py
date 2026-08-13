@@ -15,7 +15,7 @@ def _precs():
     seqs = ["SAMPLER", "ACDEMKPEPTIDEK", "MYK", "AACDEFGHIKLMNR", "SAMPLERR"]
     out = []
     for s in seqs:
-        mods = tuple((i, "Carbamidomethyl@C") for i, a in enumerate(s) if a == "C")
+        mods = tuple((i, "UNIMOD:4") for i, a in enumerate(s) if a == "C")
         for z in (2, 3):
             out.append(Precursor(Peptide(s, mods), z, "train"))
     return out

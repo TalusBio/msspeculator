@@ -136,9 +136,9 @@ def test_precursor_frame_roundtrips_terminal_and_mass_only_mods():
     )
 
     precs = [
-        Precursor(Peptide("ETTLHLVLR", (("n", "TMT6plex"), (1, "Phospho"))), 2, "train"),
+        Precursor(Peptide("ETTLHLVLR", (("n", "UNIMOD:737"), (1, "UNIMOD:21"))), 2, "train"),
         Precursor(Peptide("PEPTIDE", ((2, 42.010565),)), 3, "train"),
-        Precursor(Peptide("PEK", (("c", "Phospho"),)), 2, "train"),
+        Precursor(Peptide("PEK", (("c", "UNIMOD:21"),)), 2, "train"),
     ]
     back = frame_to_precursors(precursors_to_frame(precs))
     assert back == precs
@@ -147,7 +147,7 @@ def test_precursor_frame_roundtrips_terminal_and_mass_only_mods():
 def test_nterm_and_side_chain_mods_are_distinct_sites():
     from pepdistill.chem import Peptide
 
-    p = Peptide("KPEPTIDE", (("n", "TMT6plex"), (0, "TMT6plex")))
+    p = Peptide("KPEPTIDE", (("n", "UNIMOD:737"), (0, "UNIMOD:737")))
     assert len(p.mods) == 2
     bare = Peptide("KPEPTIDE").mono_mass()
     assert abs(p.mono_mass() - bare - 2 * 229.1629321) < 1e-4
@@ -234,10 +234,10 @@ def test_two_parsers_one_strict_one_tolerant_of_prospect_only():
     # Whatever we emit, the strict reader must read back as the same peptide. This is the property
     # the prepared schema depends on: it stores exactly this string and nothing else.
     for mods in (
-        ((1, "Carbamidomethyl@C"), (4, "Oxidation@M")),
-        (("n", "TMT6plex"), (1, "Phospho")),
-        (("c", "Phospho"),),
-        (("n", "TMT6plex"), (2, "Phospho"), ("c", "Phospho")),
+        ((1, "UNIMOD:4"), (4, "UNIMOD:35")),
+        (("n", "UNIMOD:737"), (1, "UNIMOD:21")),
+        (("c", "UNIMOD:21"),),
+        (("n", "UNIMOD:737"), (2, "UNIMOD:21"), ("c", "UNIMOD:21")),
     ):
         canonical = Peptide("ACDEMK", mods).modified_sequence()
         reread = Peptide.from_string(canonical)

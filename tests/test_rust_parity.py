@@ -290,23 +290,23 @@ def test_parity_chrom_context(artifact, capsys):
 @pytest.mark.parametrize(
     "label,modseq,canonical,mods",
     [
-        ("side-chain", "PEPC[UNIMOD:4]IDER", "PEPC[UNIMOD:4]IDER", ((3, "Carbamidomethyl@C"),)),
-        ("n-terminal", "[UNIMOD:737]-PEPTIDER", "[UNIMOD:737]-PEPTIDER", (("n", "TMT6plex"),)),
+        ("side-chain", "PEPC[UNIMOD:4]IDER", "PEPC[UNIMOD:4]IDER", ((3, "UNIMOD:4"),)),
+        ("n-terminal", "[UNIMOD:737]-PEPTIDER", "[UNIMOD:737]-PEPTIDER", (("n", "UNIMOD:737"),)),
         ("mass-only", "PEP[+42.010565]TIDER", "PEP[+42.010565]TIDER", ((2, 42.010565),)),
         (
             "terminal-plus-side-chain",
             "[UNIMOD:737]-PEPC[UNIMOD:4]IDER",
             "[UNIMOD:737]-PEPC[UNIMOD:4]IDER",
-            (("n", "TMT6plex"), (3, "Carbamidomethyl@C")),
+            (("n", "UNIMOD:737"), (3, "UNIMOD:4")),
         ),
-        # Two named mods on ONE site: torch accumulates the compositions and runs comp_enc
+        # Two composition-routed mods on ONE site: torch accumulates the compositions and runs comp_enc
         # once, so the site gets ONE comp_enc.bias. Encoding each mod separately and summing
         # the vectors would add the bias twice — a whole-bias-sized error, not a rounding one.
         (
             "co-sited",
             "PEPC[UNIMOD:35][UNIMOD:21]IDER",
             "PEPC[UNIMOD:21][UNIMOD:35]IDER",
-            ((3, "Oxidation@M"), (3, "Phospho")),
+            ((3, "UNIMOD:35"), (3, "UNIMOD:21")),
         ),
     ],
 )

@@ -155,6 +155,29 @@ fn parse_modification(pair: Pair<'_, Rule>) -> Result<ModSpec> {
     }
 }
 
+/// Parse one modification descriptor written *without* its ProForma brackets: `"UNIMOD:4"`,
+/// `"Formula:H2O"`, `"+15.994915"`.
+///
+/// This is the site-at-a-time entry point used by the Python `(site, spec)` tuple API, and it goes
+/// through the same grammar rule as a bracketed modification inside a peptide. Sharing the rule is
+/// the point: the two ways a modification can arrive cannot drift into two vocabularies.
+pub fn parse_descriptor(input: &str) -> Result<ModSpec> {
+    let bracketed = format!("[{input}]");
+    let pair = ProFormaParser::parse(Rule::modification, &bracketed)
+        .ok()
+        .and_then(|mut parsed| parsed.next())
+        // A prefix match leaves a tail: pest only anchors at the start without SOI/EOI, so
+        // "UNIMOD:4junk" would otherwise parse as accession 4 with the tail silently dropped.
+        .filter(|pair| pair.as_str().len() == bracketed.len())
+        .with_context(|| {
+            format!(
+                "invalid modification {input:?}: expected a UNIMOD accession (\"UNIMOD:35\"), an \
+                 elemental formula (\"Formula:H2O\"), or a signed mass delta (\"+15.994915\")"
+            )
+        })?;
+    parse_modification(pair)
+}
+
 pub fn parse_peptide(input: &str) -> Result<Peptide> {
     let mut parsed = ProFormaParser::parse(Rule::peptide, input)
         .map_err(|err| anyhow::anyhow!("invalid modified peptide {input:?}: {err}"))?;

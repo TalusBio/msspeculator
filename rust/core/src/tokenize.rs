@@ -155,7 +155,7 @@ pub fn collate(peptides: &[Peptide], charges: &[i64]) -> anyhow::Result<CollateA
 mod tests {
     use super::*;
     use crate::chem;
-    use crate::peptide::ModSpec;
+    use crate::peptide::{EncodingRoute, ModSpec};
 
     #[test]
     fn collate_shapes_and_tokens() {
@@ -179,10 +179,7 @@ mod tests {
         let a = collate(
             &[Peptide::new(
                 "AC".into(),
-                vec![(
-                    Site::Residue(1),
-                    ModSpec::Named("Carbamidomethyl@C".to_string()),
-                )],
+                vec![(Site::Residue(1), crate::proforma::unimod_spec(4).unwrap())],
             )],
             &[2],
         )
@@ -252,7 +249,7 @@ mod tests {
         let p = Peptide::new(
             "PEPCIDER".into(),
             vec![
-                (Site::Residue(3), ModSpec::Named("Carbamidomethyl@C".into())),
+                (Site::Residue(3), crate::proforma::unimod_spec(4).unwrap()),
                 (Site::Residue(3), ModSpec::MassOnly(15.994915)),
             ],
         );
@@ -287,7 +284,7 @@ mod tests {
             let p = Peptide::new(
                 "PEPTIDE".into(),
                 vec![
-                    (site, ModSpec::Named("TMT6plex".into())),
+                    (site, crate::proforma::unimod_spec(737).unwrap()),
                     (site, ModSpec::MassOnly(1.5)),
                 ],
             );
@@ -309,7 +306,7 @@ mod tests {
         let p = Peptide::new(
             "KPEPTIDE".into(),
             vec![
-                (Site::NTerm, ModSpec::Named("TMT6plex".into())),
+                (Site::NTerm, crate::proforma::unimod_spec(737).unwrap()),
                 (Site::Residue(0), ModSpec::MassOnly(15.994915)),
             ],
         );
@@ -327,8 +324,8 @@ mod tests {
             &[Peptide::new(
                 "CPEPTIDE".into(),
                 vec![
-                    (Site::Residue(0), ModSpec::Named("Carbamidomethyl@C".into())),
-                    (Site::Residue(0), ModSpec::Named("Oxidation@M".into())),
+                    (Site::Residue(0), crate::proforma::unimod_spec(4).unwrap()),
+                    (Site::Residue(0), crate::proforma::unimod_spec(35).unwrap()),
                 ],
             )],
             &[2],
@@ -370,7 +367,13 @@ mod tests {
         let res = collate(
             &[Peptide::new(
                 "AC".into(),
-                vec![(Site::Residue(0), ModSpec::Named("NotAMod".to_string()))],
+                vec![(
+                    Site::Residue(0),
+                    ModSpec::Unimod {
+                        accession: 999_999,
+                        route: EncodingRoute::Composition,
+                    },
+                )],
             )],
             &[2],
         );

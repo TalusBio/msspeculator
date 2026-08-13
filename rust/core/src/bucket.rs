@@ -113,7 +113,6 @@ pub fn bucket_fragment_mz(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::peptide::ModSpec;
 
     #[test]
     fn bucket_fragment_mz_matches_scalar() {
@@ -132,10 +131,7 @@ mod tests {
         let ba = bucket_arrays(
             &[Peptide::new(
                 "AC".into(),
-                vec![(
-                    Site::Residue(1),
-                    ModSpec::Named("Carbamidomethyl@C".to_string()),
-                )],
+                vec![(Site::Residue(1), crate::proforma::unimod_spec(4).unwrap())],
             )],
             &[2],
             2,

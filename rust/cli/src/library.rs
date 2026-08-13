@@ -167,41 +167,35 @@ fn target_overlap(a: &ModificationTarget, b: &ModificationTarget) -> bool {
     }
 }
 
-fn annotation(spec: &ModSpec) -> Result<String> {
-    Ok(match spec {
+fn annotation(spec: &ModSpec) -> String {
+    match spec {
         ModSpec::Unimod { accession, .. } => format!("(UniMod:{accession})"),
         ModSpec::MassOnly(mass) => format!("({mass:+})"),
         ModSpec::Formula { formula, .. } => format!("[Formula:{formula}]"),
-        ModSpec::Named(name) => {
-            let accession = pepdistill_core::unimod::by_name(name)
-                .with_context(|| format!("named modification {name:?} has no UNIMOD accession"))?
-                .accession;
-            format!("(UniMod:{accession})")
-        }
-    })
+    }
 }
 
-fn render_diann(sequence: &str, mods: &[(Site, ModSpec)]) -> Result<String> {
+fn render_diann(sequence: &str, mods: &[(Site, ModSpec)]) -> String {
     let mut diann = String::new();
     for (site, spec) in mods {
         if *site == Site::NTerm {
-            diann.push_str(&annotation(spec)?);
+            diann.push_str(&annotation(spec));
         }
     }
     for (i, aa) in sequence.chars().enumerate() {
         diann.push(aa);
         for (site, spec) in mods {
             if *site == Site::Residue(i) {
-                diann.push_str(&annotation(spec)?);
+                diann.push_str(&annotation(spec));
             }
         }
     }
     for (site, spec) in mods {
         if *site == Site::CTerm {
-            diann.push_str(&annotation(spec)?);
+            diann.push_str(&annotation(spec));
         }
     }
-    Ok(diann)
+    diann
 }
 
 fn modified_forms(
@@ -260,7 +254,7 @@ fn modified_forms(
                 fixed.iter().cloned().chain(variable).collect(),
             );
             peptide.validate_mod_specs()?;
-            let diann = render_diann(sequence, &peptide.mods)?;
+            let diann = render_diann(sequence, &peptide.mods);
             Ok((peptide, diann))
         })
         .collect()

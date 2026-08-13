@@ -40,8 +40,8 @@ def test_substitution_preserves_effective_composition_and_mass():
     assert not original.mod_present.any(), "augmentation must not mutate the source batch"
 
 
-def test_named_modification_accumulates_with_compensating_delta():
-    original = _batch("C", ((0, "Carbamidomethyl@C"),))
+def test_composition_routed_modification_accumulates_with_compensating_delta():
+    original = _batch("C", ((0, "UNIMOD:4"),))
     torch.manual_seed(3)
     augmented = substitute_residues(original, 1.0)
     new = _amino_acid(int(augmented.tokens[0, 1]))

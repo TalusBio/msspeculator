@@ -36,19 +36,12 @@ fn parse_site(obj: &Bound<'_, PyAny>) -> PyResult<Site> {
     Ok(Site::Residue(obj.extract::<usize>()?))
 }
 
-/// Python-side `spec` is `str | float`. A `"UNIMOD:<accession>"` string is the canonical identity
-/// and becomes a real accession spec; anything else remains a historical name.
+/// Python-side `spec` is `str | float`: one unbracketed ProForma descriptor (`"UNIMOD:35"`,
+/// `"Formula:H2O"`), or a bare mass delta. A string that is no descriptor is refused here rather
+/// than kept as a name — identity is a controlled vocabulary everywhere past ingest.
 fn parse_spec(obj: &Bound<'_, PyAny>) -> PyResult<ModSpec> {
-    if let Ok(name) = obj.extract::<String>() {
-        if let Some(digits) = name.strip_prefix("UNIMOD:") {
-            let accession = digits.parse::<u32>().map_err(|_| {
-                pyo3::exceptions::PyValueError::new_err(format!(
-                    "invalid UNIMOD accession {name:?}"
-                ))
-            })?;
-            return proforma::unimod_spec(accession).map_err(to_pyerr);
-        }
-        return Ok(ModSpec::Named(name));
+    if let Ok(descriptor) = obj.extract::<String>() {
+        return proforma::parse_descriptor(&descriptor).map_err(to_pyerr);
     }
     Ok(ModSpec::MassOnly(obj.extract::<f64>()?))
 }
@@ -68,10 +61,9 @@ fn site_to_py(site: &Site, py: Python<'_>) -> PyObject {
     }
 }
 
-/// Inverse of `parse_spec`: `Named(n) -> n`, `MassOnly(m) -> m`.
+/// Inverse of `parse_spec`: a descriptor string back out, or `MassOnly(m) -> m`.
 fn spec_to_py(spec: &ModSpec, py: Python<'_>) -> PyObject {
     match spec {
-        ModSpec::Named(n) => n.clone().into_py(py),
         ModSpec::Unimod { .. } | ModSpec::Formula { .. } => spec.render().into_py(py),
         ModSpec::MassOnly(m) => m.into_py(py),
     }

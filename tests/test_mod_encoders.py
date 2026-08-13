@@ -11,7 +11,7 @@ from pepdistill.models.registry import build_student
 def _batch():
     return collate(
         [
-            Precursor(Peptide("ACDEK", ((1, "Carbamidomethyl@C"),)), 2, "t"),
+            Precursor(Peptide("ACDEK", ((1, "UNIMOD:4"),)), 2, "t"),
             Precursor(Peptide("PEPTK", ((2, 42.010565),)), 2, "t"),
         ]
     )

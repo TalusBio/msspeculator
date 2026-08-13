@@ -192,11 +192,11 @@ mod tests {
 
     #[test]
     fn fixed_mod_shifts_mass() {
-        use crate::peptide::{ModSpec, Peptide, Site};
+        use crate::peptide::{Peptide, Site};
         let base = mono_mass(&residue_masses(b"ACDEK").unwrap());
         let p = Peptide::new(
             "ACDEK".into(),
-            vec![(Site::Residue(1), ModSpec::Named("Carbamidomethyl@C".into()))],
+            vec![(Site::Residue(1), crate::proforma::unimod_spec(4).unwrap())],
         );
         let modded = p.mono_mass().unwrap();
         approx(modded - base, 57.021_463_723, 1e-6);

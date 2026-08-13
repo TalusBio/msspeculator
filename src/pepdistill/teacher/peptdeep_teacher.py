@@ -43,7 +43,8 @@ def _modification_title(pep, spec) -> str:
     if not spec.startswith("UNIMOD:"):
         raise ValueError(
             f"peptide {pep.modified_sequence()!r} carries {spec!r}, which is not a UNIMOD "
-            "accession. Modification identity is an accession everywhere past ingest."
+            "accession. peptdeep keys its table on UNIMOD titles, so an elemental formula has "
+            "no name to translate to even though it is a perfectly good modification for us."
         )
     title = unimod_title(int(spec.removeprefix("UNIMOD:")))
     if title is None:

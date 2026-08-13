@@ -127,11 +127,11 @@ def test_peptdeep_frame_refuses_mods_it_cannot_represent():
     with pytest.raises(ValueError, match="mass-only"):
         _modification_title(mass_only, mass_only.mods[0][1])
 
-    # A legacy name is refused for what it is, rather than searched for: identity is an accession
-    # everywhere past ingest, so a name here means something upstream skipped the boundary.
-    named = Peptide("PEPTIDE", ((2, "NotARealModification"),))
-    with pytest.raises(ValueError, match="not a UNIMOD accession"):
-        _alphabase_mod(named, *named.mods[0])
+    # A bare name never reaches this boundary: identity is a controlled vocabulary from
+    # construction onwards, so `Peptide` refuses the name itself rather than the teacher
+    # discovering it later.
+    with pytest.raises(ValueError, match="invalid modification"):
+        Peptide("PEPTIDE", ((2, "NotARealModification"),))
 
     # An accession the vendored table does know, but alphabase does not register for that residue,
     # is refused after the candidate search rather than relocated.

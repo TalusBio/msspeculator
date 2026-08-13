@@ -10,7 +10,7 @@ from pepdistill.models.registry import PRESETS, build_student
 def _precs():
     return [
         Precursor(Peptide("SAMPLER"), 2, "train"),
-        Precursor(Peptide("ACDEMKPEPTIDE", ((1, "Carbamidomethyl@C"),)), 3, "train"),
+        Precursor(Peptide("ACDEMKPEPTIDE", ((1, "UNIMOD:4"),)), 3, "train"),
     ]
 
 

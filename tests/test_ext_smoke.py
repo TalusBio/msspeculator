@@ -9,13 +9,13 @@ def test_peptide_via_ext():
     p = rs.Peptide("PEPTIDE")
     assert math.isclose(p.mono_mass(), 799.35997, abs_tol=0.01)
     assert math.isclose(p.precursor_mz(2), (799.35997 + 2 * rs.PROTON) / 2, abs_tol=0.01)
-    q = rs.Peptide("ACDEMK", [(1, "Carbamidomethyl@C"), (4, "Oxidation@M")])
+    q = rs.Peptide("ACDEMK", [(1, "UNIMOD:4"), (4, "UNIMOD:35")])
     # Internal alias names are accepted on input but never emitted: a ProForma descriptor must
     # parse back, and "[Carbamidomethyl@C]" does not.
     assert q.modified_sequence() == "AC[UNIMOD:4]DEM[UNIMOD:35]K"
     # hashable + value equality (canonical mods)
-    assert hash(q) == hash(rs.Peptide("ACDEMK", [(4, "Oxidation@M"), (1, "Carbamidomethyl@C")]))
-    assert q == rs.Peptide("ACDEMK", [(4, "Oxidation@M"), (1, "Carbamidomethyl@C")])
+    assert hash(q) == hash(rs.Peptide("ACDEMK", [(4, "UNIMOD:35"), (1, "UNIMOD:4")]))
+    assert q == rs.Peptide("ACDEMK", [(4, "UNIMOD:35"), (1, "UNIMOD:4")])
 
 
 def test_collate_prepared_matches_object_collate():
@@ -26,8 +26,8 @@ def test_collate_prepared_matches_object_collate():
     prepared = rs.collate_prepared(proforma, charges)
     objects = rs.collate(
         [
-            rs.Peptide("ACDEMK", [(1, "Carbamidomethyl@C"), (4, "Oxidation@M")]),
-            rs.Peptide("PEPTID", [("n", "TMT6plex"), (2, 15.5)]),
+            rs.Peptide("ACDEMK", [(1, "UNIMOD:4"), (4, "UNIMOD:35")]),
+            rs.Peptide("PEPTID", [("n", "UNIMOD:737"), (2, 15.5)]),
         ],
         charges,
     )

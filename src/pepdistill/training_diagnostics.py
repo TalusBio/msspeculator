@@ -40,7 +40,6 @@ from .diagnostics import (
     plot_spectral_angle_violins,
     plot_spectrum_butterflies,
 )
-from .proforma import proforma_sequence
 
 
 T = TypeVar("T")
@@ -431,7 +430,7 @@ class TrainingDiagnosticRenderer:
                 ]
                 comparisons.append(
                     SpectrumComparison(
-                        proforma_sequence=proforma_sequence(precursor.peptide),
+                        proforma_sequence=precursor.peptide.modified_sequence(),
                         charge=precursor.charge,
                         fragment_mz=np.asarray(
                             fragment_mz_matrix(precursor.peptide.sequence, precursor.peptide.mods),
