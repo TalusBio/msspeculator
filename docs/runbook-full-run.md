@@ -68,9 +68,14 @@ For the Launchpad array wrapper used by this repository:
 ```bash
 .venv/bin/python tools/prepare_launchpad_full_run.py
 launchpad run tools/launchpad_prospect_etl.py \
-  --stage .launchpad/full-run-stage --array-size 10 \
-  --env PEPDISTILL_PREPARE_ARRAY_SIZE=10
+  --stage .launchpad/full-run-stage --array-size 40 \
+  --env PEPDISTILL_PREPARE_ARRAY_SIZE=40
 ```
+
+Keep the array at 40 or below. Batch packs several array children onto one host and each child
+installs its own venv, so an 80-way array exhausted the host disk unpacking pyarrow and every
+child died with `No space left on device`. Forty finishes the full corpus in about 20 minutes,
+so the larger array buys little even where it fits.
 
 Each array task derives a contiguous global range from its array index, balancing boundaries by
 the vendored raw Parquet byte sizes rather than shard count. The prepared output is identical
