@@ -11,6 +11,17 @@ test.
 uv sync --extra teacher --extra etl --extra tracking  # teacher + ETL + W&B/diagnostics
 ```
 
+Reading the S3 prefixes **locally** also needs AWS credentials in the environment, not only in the
+SSO cache. Polars reads `s3://` through its own object store, which consults the environment and
+instance metadata but not `~/.aws/sso`; without this it retries instance metadata and fails with a
+`169.254.169.254` timeout even though `aws s3 ls` works. Cloud workers use an instance role and
+need nothing:
+
+```bash
+aws sso login
+set -a; eval "$(aws configure export-credentials --format env)"; set +a
+```
+
 Inputs:
 - **Pretrain FASTA** — a proteome to digest and stream. The cloud staging helper downloads and
   caches the pinned E. coli K-12 reference proteome from UniProt when it is absent.

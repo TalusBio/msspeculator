@@ -39,6 +39,7 @@ from ..data.prepared_schema import (
     require_schema,
 )
 from ..data.prospect import ProspectSchema, decode_fragments
+from ..data.storage import parquet_storage_options
 from ..data.prospect_catalog import load_catalog, load_shard_index
 from .config import PrepareConfig, PrepareCuration, PrepareGroup, PrepareSource
 
@@ -141,7 +142,8 @@ def _meta_columns(meta_uri: str, schema: ProspectSchema) -> list[str]:
         schema.andromeda_score,
         schema.precursor_intensity,
     ]
-    available = set(pl.scan_parquet(meta_uri).collect_schema().names())
+    options = parquet_storage_options(meta_uri)
+    available = set(pl.scan_parquet(meta_uri, storage_options=options).collect_schema().names())
     missing = [name for name in required if name not in available]
     if missing:
         raise ValueError(f"metadata {meta_uri!r} missing required columns {missing}")
@@ -170,7 +172,7 @@ def _rows_for_shard(
 ) -> list[dict[str, Any]]:
     available_meta = _meta_columns(meta_uri, schema)
     meta = (
-        pl.scan_parquet(meta_uri)
+        pl.scan_parquet(meta_uri, storage_options=parquet_storage_options(meta_uri))
         .select(available_meta)
         .filter(pl.col(schema.raw_file).is_in(raw_files))
         .collect(engine="streaming")
@@ -184,7 +186,7 @@ def _rows_for_shard(
 
     s = schema
     fragments = (
-        pl.scan_parquet(shard_uri)
+        pl.scan_parquet(shard_uri, storage_options=parquet_storage_options(shard_uri))
         .select(_fragment_columns(s))
         .filter(
             pl.col(s.ann_ion_type).is_in(["b", "y"])

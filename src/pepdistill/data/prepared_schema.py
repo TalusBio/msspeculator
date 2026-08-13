@@ -7,6 +7,8 @@ from typing import Any
 
 import polars as pl
 
+from .storage import parquet_storage_options
+
 
 PREPARED_SPECTRA_SCHEMA = pl.Schema(
     {
@@ -42,14 +44,21 @@ def _canonical_projection(schema: pl.Schema) -> list[pl.Expr]:
 
 def canonical_prepared_scan(sources: str | Sequence[str]) -> pl.LazyFrame:
     """Read prepared shards through an explicit ordered projection and strict casts."""
-    return pl.scan_parquet(sources, extra_columns="raise", missing_columns="raise").select(
-        _canonical_projection(PREPARED_SPECTRA_SCHEMA)
-    )
+    return pl.scan_parquet(
+        sources,
+        extra_columns="raise",
+        missing_columns="raise",
+        storage_options=parquet_storage_options(sources),
+    ).select(_canonical_projection(PREPARED_SPECTRA_SCHEMA))
 
 
 def _read_canonical_parquet(source: Any, expected: pl.Schema) -> pl.DataFrame:
     """Validate physical columns, read explicitly, and canonicalize legacy ID types."""
-    physical = pl.read_parquet_schema(source)
+    # `read_parquet_schema` takes no storage options, so a remote read through it cannot be given
+    # credentials; a scan can, and reading the schema off the scan is equivalent.
+    physical = pl.scan_parquet(
+        source, storage_options=parquet_storage_options(source)
+    ).collect_schema()
     if list(physical) != list(expected):
         raise ValueError(
             f"prepared Parquet columns differ from the contract: "
@@ -66,7 +75,9 @@ def _read_canonical_parquet(source: Any, expected: pl.Schema) -> pl.DataFrame:
         )
     if hasattr(source, "seek"):
         source.seek(0)
-    frame = pl.read_parquet(source, schema=physical)
+    frame = pl.read_parquet(
+        source, schema=physical, storage_options=parquet_storage_options(source)
+    )
     return frame.select(_canonical_projection(expected))
 
 

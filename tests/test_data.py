@@ -1,4 +1,5 @@
 import io
+from pathlib import Path
 
 import pytest
 
@@ -225,3 +226,29 @@ def test_parse_modseq_refuses_notation_it_cannot_represent():
     ):
         peptide = Peptide("ACDEMK", mods)
         assert parse_modseq(peptide.modified_sequence()) == ("ACDEMK", mods)
+
+
+def test_parquet_storage_options_are_explicit_for_remote_targets():
+    """Polars must be handed credentials, not left to resolve them.
+
+    Its object store reads the environment and instance metadata but not the AWS SSO cache, so a
+    bare remote read works on a Batch worker and fails on a laptop. botocore resolves all of those,
+    so passing what it finds makes the same call work everywhere; `ast-grep` enforces that every
+    Polars read does so.
+    """
+    from pepdistill.data.storage import is_remote, parquet_storage_options
+
+    assert is_remote("s3://bucket/key.parquet")
+    assert is_remote(["s3://bucket/a.parquet", "s3://bucket/b.parquet"])
+    assert not is_remote("/tmp/local.parquet")
+    assert not is_remote(Path("/tmp/local.parquet"))
+
+    # A local path needs no credentials, and must not acquire any: resolving them would make an
+    # offline unit test depend on an AWS session.
+    assert parquet_storage_options("/tmp/local.parquet") == {}
+    assert parquet_storage_options(Path("/tmp/local.parquet")) == {}
+
+    options = parquet_storage_options("s3://bucket/key.parquet")
+    if not options:
+        pytest.skip("no AWS credentials resolvable in this environment")
+    assert {"aws_access_key_id", "aws_secret_access_key", "aws_region"} <= set(options)

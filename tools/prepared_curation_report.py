@@ -228,8 +228,9 @@ def render_markdown(summary: dict[str, Any], generated_on: str) -> str:
         "",
         "## By source",
         "",
-        "| source | shards | empty | rows in | retained | no usable intensity | clamped runs |"
-        " ceiling |",
+        "| source | shards | empty shards | rows in | rows retained (%) |"
+        " rows without usable intensity (%) | runs clamped / runs |"
+        " ceiling SA mean (in-window) |",
         "| --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for name, entry in sorted(
@@ -237,7 +238,9 @@ def render_markdown(summary: dict[str, Any], generated_on: str) -> str:
     ):
         keep = entry["retention"]
         noint = entry["missing_intensity_fraction"]
-        ceiling = entry.get("ceiling_selected_mean")
+        # The in-window subset, matching the series the training panel draws: the retained subset
+        # is capped at two PSMs, so its leave-one-out score is pairwise and understates the bound.
+        ceiling = entry.get("ceiling_within_apex_window_mean")
         lines.append(
             f"| {name} | {entry['shards']:,} | {entry['empty_shards']:,} | "
             f"{entry['rows_in']:,} | {'-' if keep is None else f'{keep:.2%}'} | "

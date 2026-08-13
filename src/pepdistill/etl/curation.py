@@ -12,6 +12,7 @@ import numpy as np
 import polars as pl
 
 from ..data.prepared_schema import PREPARED_SPECTRA_SCHEMA, read_prepared_parquet
+from ..data.storage import parquet_storage_options
 from ..diagnostics import SA_HISTOGRAM_EDGES, sa_histogram
 from .config import PrepareCuration
 
@@ -445,13 +446,14 @@ def analyze_prepared_curation(
     """
     resolved = PrepareCuration(**policy)
     prepared = read_prepared_parquet(prepared_path)
-    metadata_schema = pl.read_parquet_schema(metadata_path)
+    options = parquet_storage_options(metadata_path)
+    metadata_schema = pl.scan_parquet(metadata_path, storage_options=options).collect_schema()
     required = {*_SPECTRUM_KEY, "precursor_intensity"}
     missing = sorted(required - set(metadata_schema))
     if missing:
         raise ValueError(f"source metadata is missing curation columns: {missing}")
     metadata = (
-        pl.scan_parquet(metadata_path)
+        pl.scan_parquet(metadata_path, storage_options=options)
         .select(*_SPECTRUM_KEY, "precursor_intensity")
         .filter(pl.col("raw_file").is_in(prepared["raw_file"].unique().to_list()))
         .unique(_SPECTRUM_KEY, keep="first", maintain_order=True)

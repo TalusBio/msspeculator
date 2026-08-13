@@ -19,6 +19,8 @@ tasks:
     desc: Run Python and Rust static checks
     cmds:
       - uv run python -m ruff check .
+      # Structural rules ruff cannot express; see .ast-grep/rules/.
+      - ast-grep scan
       - PYO3_PYTHON="{{.VENV_PYTHON}}" cargo clippy --manifest-path rust/Cargo.toml --workspace --all-targets -- -D warnings
 
   check:

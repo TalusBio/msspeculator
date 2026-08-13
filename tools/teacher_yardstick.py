@@ -135,10 +135,13 @@ def _markdown_report(report: dict, measured_on: str) -> str:
     # None when every candidate was refused, which is reachable for a source alphabase cannot
     # name; the document should say so rather than fail to render.
     mean = report["spectral_angle_mean"]
-    lines.append(f"| spectral angle (mean) | {'-' if mean is None else f'{mean:.4f}'} |")
+    lines.append(f"| spectral angle mean | {'-' if mean is None else f'{mean:.4f}'} |")
     quantiles = report.get("spectral_angle_quantiles") or {}
     for key in sorted(quantiles):
-        lines.append(f"| spectral angle ({key}) | {quantiles[key]:.4f} |")
+        # Every label names its own aggregation: a bare "SA" in a table of many statistics is
+        # read as whichever one the reader expects.
+        percentile = f"{key} (median)" if key == "p50" else key
+        lines.append(f"| spectral angle {percentile} | {quantiles[key]:.4f} |")
     lines += ["", "## Caveats", ""]
     lines += [f"- {caveat}" for caveat in report.get("caveats", [])]
 
@@ -152,32 +155,36 @@ def _markdown_report(report: dict, measured_on: str) -> str:
             "analyzer nor the activation type is expressible to it. Label state is read from the",
             "modifications, and crossed with acquisition so the two penalties can be separated.",
             "",
-            "| detector / fragmentation | n | SA | p50 |",
+            "| detector / fragmentation | spectra scored | SA mean | SA median |",
             "| --- | --- | --- | --- |",
         ]
         for key, entry in sorted(acquisition.items(), key=lambda kv: -kv[1]["spectral_angle_mean"]):
-            p50 = entry["spectral_angle_quantiles"]["p50"]
+            median = entry["spectral_angle_quantiles"]["p50"]
             lines.append(
                 f"| {key} | {entry['spectra_scored']:,} | "
-                f"{entry['spectral_angle_mean']:.4f} | {p50:.4f} |"
+                f"{entry['spectral_angle_mean']:.4f} | {median:.4f} |"
             )
 
     lines += [
         "",
         "## By dataset",
         "",
-        "| dataset | n | unsupported | SA | iRT r2 |",
-        "| --- | --- | --- | --- | --- |",
+        "| dataset | spectra scored | spectra unsupported | SA mean | SA median | iRT r2 |",
+        "| --- | --- | --- | --- | --- | --- |",
     ]
     for name, entry in sorted(
         report["per_dataset"].items(), key=lambda kv: -(kv[1]["spectral_angle_mean"] or 0.0)
     ):
-        sa = entry["spectral_angle_mean"]
+        mean_sa = entry["spectral_angle_mean"]
+        quantiles = entry.get("spectral_angle_quantiles") or {}
+        median_sa = quantiles.get("p50")
         r2 = entry.get("irt_r_squared")
         lines.append(
             f"| {name} | {entry['spectra_scored']:,} | "
             f"{entry['spectra_unsupported_by_teacher']:,} | "
-            f"{'-' if sa is None else f'{sa:.4f}'} | {'-' if r2 is None else f'{r2:.3f}'} |"
+            f"{'-' if mean_sa is None else f'{mean_sa:.4f}'} | "
+            f"{'-' if median_sa is None else f'{median_sa:.4f}'} | "
+            f"{'-' if r2 is None else f'{r2:.3f}'} |"
         )
     return "\n".join(lines) + "\n"
 
@@ -380,7 +387,7 @@ def main() -> None:
         print(f"published {destination}")
 
     print("=" * 72)
-    print(f"{'dataset':<30}{'n':>9}{'unsup':>8}{'SA':>8}{'iRT r2':>8}")
+    print(f"{'dataset':<30}{'scored':>9}{'unsup':>8}{'SA mean':>9}{'iRT r2':>8}")
     for name, entry in sorted(
         per_dataset.items(), key=lambda kv: -(kv[1]["spectral_angle_mean"] or 0)
     ):
@@ -393,7 +400,7 @@ def main() -> None:
             f"{(f'{r2:.3f}' if r2 is not None else '-'):>8}"
         )
     print("=" * 72)
-    print(f"{'detector/fragmentation':<30}{'n':>9}{'SA':>8}{'p50':>8}")
+    print(f"{'detector/fragmentation':<30}{'scored':>9}{'SA mean':>9}{'SA med':>8}")
     for key, values in sorted(acquisition.items(), key=lambda kv: -float(np.mean(kv[1]))):
         cell = np.asarray(values)
         print(f"{key:<30}{cell.size:>9,}{cell.mean():>8.4f}{np.quantile(cell, 0.5):>8.4f}")
