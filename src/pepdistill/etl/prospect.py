@@ -40,7 +40,7 @@ from ..data.prepared_schema import (
 )
 from ..data.prospect import ProspectSchema, decode_fragments
 from ..data.prospect_catalog import load_catalog, load_shard_index
-from .config import PrepareConfig, PrepareGroup, PrepareSource
+from .config import PrepareConfig, PrepareCuration, PrepareGroup, PrepareSource
 
 _CATALOG_VERSION = 2
 
@@ -665,8 +665,7 @@ def prepare_task(
                 "cannot estimate an elution window. Check that the source metadata still exposes "
                 f"{ProspectSchema().precursor_intensity!r}."
             )
-        policy = {key: value for key, value in curation.items() if key != "enabled"}
-        analysis = curate_prepared_frame(curation_input, **policy)
+        analysis = curate_prepared_frame(curation_input, PrepareCuration(**curation))
         frame = analysis.selected
         curation_report = analysis.report
         emit(

@@ -28,9 +28,19 @@ import fsspec
 import numpy as np
 
 from pepdistill.data.prepared import PreparedManifest, PreparedStreamingDataset
-from pepdistill.diagnostics import normalized_spectral_angle
+from pepdistill.diagnostics import SA_HISTOGRAM_EDGES, normalized_spectral_angle, sa_histogram
 from pepdistill.models.context import MSContextEncoder
 from pepdistill.teacher import get_teacher
+
+
+# Every reason `_teacher_refusal` can return. Listed once so the report always accounts for all of
+# them: a reason added to the classifier but forgotten in the summary would vanish from the totals.
+_REFUSAL_REASONS = (
+    "unsupported_by_wrapper",
+    "mass_only_modification",
+    "unresolved_modification_name",
+    "teacher_returned_none",
+)
 
 
 def _teacher_refusal(precursor) -> str | None:
@@ -60,36 +70,25 @@ def _teacher_refusal(precursor) -> str | None:
     return None
 
 
-# Spectral angle is bounded in [0, 1] for non-negative intensities, so a fixed grid is shared by
-# every group. 50 bins is enough to redraw the distribution as a violin while keeping the whole
-# per-dataset record a few kilobytes -- small enough to publish beside a prepared corpus and load
-# during training as a reference line.
-_HISTOGRAM_BINS = 50
-
-
 def _quantiles(values: np.ndarray) -> dict[str, float]:
     return {
         f"p{int(q * 100):02d}": float(np.quantile(values, q)) for q in (0.05, 0.25, 0.5, 0.75, 0.95)
     }
 
 
-def _histogram(values: np.ndarray) -> dict[str, Any]:
-    """Counts on the shared [0, 1] grid, plus enough to verify nothing was dropped."""
-    counts, _ = np.histogram(values, bins=_HISTOGRAM_BINS, range=(0.0, 1.0))
-    return {
-        "counts": [int(count) for count in counts],
-        "counted": int(counts.sum()),
-        "total": int(values.size),
-    }
-
-
 def _distribution(values: np.ndarray) -> dict[str, Any]:
-    """The per-group record: summary statistics plus a redrawable distribution."""
+    """The per-group record: summary statistics plus a redrawable distribution.
+
+    Binning comes from ``sa_histogram`` rather than being repeated here. The point of the shared
+    grid is that this report, the curation ceiling and the student's validation can be drawn on
+    top of each other; a second bin count in this file would be free to drift from the first and
+    would misalign every overlay without failing anything.
+    """
     return {
         "spectra_scored": int(values.size),
         "spectral_angle_mean": float(values.mean()),
         "spectral_angle_quantiles": _quantiles(values),
-        "spectral_angle_histogram": _histogram(values),
+        "spectral_angle_histogram": sa_histogram(values),
     }
 
 
@@ -346,16 +345,11 @@ def main() -> None:
         "spectra_unsupported_by_teacher": int(sum(unsupported.values())),
         "unsupported_reasons": {
             reason: sum(counts.get(reason, 0) for counts in refusals.values())
-            for reason in (
-                "unsupported_by_wrapper",
-                "mass_only_modification",
-                "unresolved_modification_name",
-                "teacher_returned_none",
-            )
+            for reason in _REFUSAL_REASONS
         },
         "spectral_angle_mean": float(every.mean()) if every.size else None,
         "spectral_angle_quantiles": _quantiles(every) if every.size else None,
-        "histogram_bin_edges": [float(edge) for edge in np.linspace(0.0, 1.0, _HISTOGRAM_BINS + 1)],
+        "histogram_bin_edges": list(SA_HISTOGRAM_EDGES),
         "per_dataset": per_dataset,
         "per_acquisition": {
             key: _distribution(np.asarray(values)) for key, values in sorted(acquisition.items())

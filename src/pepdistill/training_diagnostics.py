@@ -77,28 +77,27 @@ def load_reference_distributions(prefix: str) -> dict[str, dict[str, list[int]]]
     reach at best). Both are optional -- a corpus prepared before they were published, or a local
     fixture, simply yields no reference series and the panel falls back to the student alone.
     """
-    out: dict[str, dict[str, list[int]]] = {}
-    sources = {
-        "teacher": (f"{prefix.rstrip('/')}/diagnostics/teacher-yardstick.json", "teacher"),
-        "ceiling": (f"{prefix.rstrip('/')}/diagnostics/curation-summary.json", "ceiling"),
-    }
-    for kind, (uri, series) in sources.items():
+
+    def published(name: str) -> dict[str, Any]:
         try:
-            with fsspec.open(uri, "rb") as handle:
-                report = json.load(handle)
+            with fsspec.open(f"{prefix.rstrip('/')}/diagnostics/{name}", "rb") as handle:
+                return json.load(handle)
         except (FileNotFoundError, OSError, ValueError):
-            continue
-        if kind == "teacher":
-            for dataset, entry in (report.get("per_dataset") or {}).items():
-                histogram = entry.get("spectral_angle_histogram")
-                if histogram:
-                    out.setdefault(dataset, {})[series] = list(histogram["counts"])
-        else:
-            per_source = (report.get("achievable_ceiling") or {}).get("per_source") or {}
-            for dataset, subsets in per_source.items():
-                if subsets.get("selected"):
-                    out.setdefault(dataset, {})[series] = list(subsets["selected"])
-    return out
+            return {}
+
+    yardstick = published("teacher-yardstick.json")
+    summary = published("curation-summary.json")
+    per_dataset: dict[str, dict[str, list[int]]] = {}
+    for dataset, entry in (yardstick.get("per_dataset") or {}).items():
+        histogram = entry.get("spectral_angle_histogram")
+        if histogram:
+            per_dataset.setdefault(dataset, {})["teacher"] = list(histogram["counts"])
+    ceilings = (summary.get("achievable_ceiling") or {}).get("per_source") or {}
+    for dataset, subsets in ceilings.items():
+        # The retained subset, because that is the population a trained student sees.
+        if subsets.get("selected"):
+            per_dataset.setdefault(dataset, {})["ceiling"] = list(subsets["selected"])
+    return per_dataset
 
 
 def _evenly_spaced(values: list[T], count: int) -> list[T]:

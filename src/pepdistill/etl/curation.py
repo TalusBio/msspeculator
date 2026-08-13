@@ -140,17 +140,13 @@ def _achievable_ceilings(frame: pl.DataFrame) -> dict[str, dict[str, Any]]:
 
 
 def curate_prepared_frame(
-    frame: pl.DataFrame,
-    *,
-    half_max_fraction: float = 0.5,
-    min_in_window_psms: int = 4,
-    max_psms_per_context: int = 2,
-    width_anchor_min_psms: int = 8,
-    energy_bucket_width: float = 1.0,
-    min_run_width_minutes: float = 0.05,
-    max_run_width_minutes: float = 0.25,
+    frame: pl.DataFrame, policy: PrepareCuration = PrepareCuration()
 ) -> CurationAnalysis:
     """Apply one shared-width window per raw-file peptidoform, then keep top PSMs per context.
+
+    The policy arrives as a :class:`PrepareCuration` rather than as loose keywords so its defaults
+    and its bounds are defined exactly once. Restating them in this signature meant a new knob had
+    to be added in four places, and nothing made the two copies agree.
 
     Half-height observations establish robust run-level width anchors. Every peptidoform in a
     raw file receives that run's median anchor width, centered on its own intensity apex. This
@@ -169,20 +165,14 @@ def curate_prepared_frame(
         raise ValueError(
             f"curation input schema differs: {frame.schema} != {CURATION_INPUT_SCHEMA}"
         )
-    if not 0.0 < half_max_fraction <= 1.0:
-        raise ValueError("half_max_fraction must be in (0, 1]")
-    if min_in_window_psms < 1:
-        raise ValueError("min_in_window_psms must be positive")
-    if max_psms_per_context < 1:
-        raise ValueError("max_psms_per_context must be positive")
-    if width_anchor_min_psms < 2:
-        raise ValueError("width_anchor_min_psms must be at least two")
-    if energy_bucket_width <= 0:
-        raise ValueError("energy_bucket_width must be positive")
-    if min_run_width_minutes < 0:
-        raise ValueError("min_run_width_minutes must not be negative")
-    if max_run_width_minutes < min_run_width_minutes:
-        raise ValueError("max_run_width_minutes must not be below min_run_width_minutes")
+    # Bounds are enforced by PrepareCuration.__post_init__, so an instance is already valid.
+    half_max_fraction = policy.half_max_fraction
+    min_in_window_psms = policy.min_in_window_psms
+    max_psms_per_context = policy.max_psms_per_context
+    width_anchor_min_psms = policy.width_anchor_min_psms
+    energy_bucket_width = policy.energy_bucket_width
+    min_run_width_minutes = policy.min_run_width_minutes
+    max_run_width_minutes = policy.max_run_width_minutes
 
     frame = frame.with_columns(
         pl.when(pl.col("energy").is_finite())
@@ -436,8 +426,13 @@ def analyze_prepared_curation(
     metadata_path: str | Path,
     **policy: Any,
 ) -> CurationAnalysis:
-    """Join one prepared shard to source intensity metadata and evaluate the production policy."""
-    PrepareCuration(**policy)  # reject an invalid policy before reading any shard
+    """Join one prepared shard to source intensity metadata and evaluate the production policy.
+
+    Keeps loose keywords because it is the interactive entry point, where naming one knob and
+    taking defaults for the rest is the common case. Building the policy here also rejects an
+    invalid one before any shard is read.
+    """
+    resolved = PrepareCuration(**policy)
     prepared = read_prepared_parquet(prepared_path)
     metadata_schema = pl.read_parquet_schema(metadata_path)
     required = {*_SPECTRUM_KEY, "precursor_intensity"}
@@ -454,7 +449,7 @@ def analyze_prepared_curation(
     frame = prepared.join(metadata, on=_SPECTRUM_KEY, how="left", validate="1:1").select(
         [pl.col(name).cast(dtype, strict=True) for name, dtype in CURATION_INPUT_SCHEMA.items()]
     )
-    return curate_prepared_frame(frame, **policy)
+    return curate_prepared_frame(frame, resolved)
 
 
 __all__ = [
