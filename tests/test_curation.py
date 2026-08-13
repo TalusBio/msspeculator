@@ -84,6 +84,9 @@ def test_curation_uses_half_max_cap_and_missing_intensity_fallback(tmp_path):
     assert analysis.report["selection"]["fallback_contexts"] == 1
     assert analysis.report["selection"]["contexts_preserved"] == 3
     assert analysis.report["spectral_consistency"]["all"] is not None
+    assert analysis.report["replication"]["selected_psms_per_peptidoform"]["p50"] == 1.5
+    assert analysis.report["chromatography"]["window_width_minutes"]["p50"] == 1.0
+    assert analysis.report["chromatography"]["missing_windows"] == 1
 
     report_path = tmp_path / "report.json"
     annotations_path = tmp_path / "annotations.parquet"

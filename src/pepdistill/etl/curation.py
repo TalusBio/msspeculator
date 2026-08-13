@@ -211,10 +211,17 @@ def analyze_prepared_curation(
         )
     )
 
-    peptidoform_groups = frame.group_by(_PEPTIDOFORM_KEY).agg(
-        pl.len().cast(pl.Int64).alias("psms"),
-        pl.col("_supports_half_max").sum().cast(pl.Int64).alias("half_max_support_psms"),
-        pl.col("_within_apex_window").sum().cast(pl.Int64).alias("window_psms"),
+    peptidoform_groups = (
+        frame.group_by(_PEPTIDOFORM_KEY)
+        .agg(
+            pl.len().cast(pl.Int64).alias("psms"),
+            pl.col("_supports_half_max").sum().cast(pl.Int64).alias("half_max_support_psms"),
+            pl.col("_within_apex_window").sum().cast(pl.Int64).alias("window_psms"),
+            pl.col("_selected").sum().cast(pl.Int64).alias("selected_psms"),
+            pl.col("_apex_window_start").first().alias("window_start"),
+            pl.col("_apex_window_end").first().alias("window_end"),
+        )
+        .with_columns((pl.col("window_end") - pl.col("window_start")).alias("window_width_minutes"))
     )
     context_groups = frame.group_by(_CONTEXT_KEY).agg(
         pl.len().cast(pl.Int64).alias("psms"),
@@ -245,7 +252,15 @@ def analyze_prepared_curation(
                 peptidoform_groups["half_max_support_psms"]
             ),
             "window_psms_per_peptidoform": _quantiles(peptidoform_groups["window_psms"]),
+            "selected_psms_per_peptidoform": _quantiles(peptidoform_groups["selected_psms"]),
             "window_psms_per_context": _quantiles(context_groups["window_psms"]),
+        },
+        "chromatography": {
+            "window_width_minutes": _quantiles(
+                peptidoform_groups["window_width_minutes"].drop_nulls()
+            ),
+            "missing_windows": int(peptidoform_groups["window_width_minutes"].null_count()),
+            "single_rt_windows": int((peptidoform_groups["window_width_minutes"] == 0).sum()),
         },
         "selection": {
             "half_max_support_rows": support_rows,
