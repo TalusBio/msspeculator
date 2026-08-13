@@ -109,3 +109,60 @@ def test_irt_regression_metrics_are_reusable_without_plotting():
     assert metrics.intercept == pytest.approx(1.0)
     assert metrics.r_squared == pytest.approx(1.0)
     assert metrics.mae == pytest.approx(1.0)
+
+
+def test_spectral_angle_series_recovers_its_mean_from_counts():
+    from pepdistill.diagnostics import SA_HISTOGRAM_BINS, SpectralAngleSeries, sa_histogram
+
+    values = np.concatenate([np.full(300, 0.92), np.full(100, 0.41)])
+    series = SpectralAngleSeries("student", sa_histogram(values)["counts"])
+    assert series.total() == 400
+    # Binned, so the recovered mean is accurate to within one bin width rather than exactly.
+    assert series.mean() == pytest.approx(float(values.mean()), abs=1.0 / SA_HISTOGRAM_BINS)
+    assert SpectralAngleSeries("empty", [0] * SA_HISTOGRAM_BINS).mean() is None
+
+
+def test_spectral_angle_violins_render_three_series_per_dataset(tmp_path):
+    """The panel the corpus, the teacher and the student are all binned for.
+
+    All three arrive as counts on the same grid, so the figure is the only place they meet; this
+    checks the renderer accepts that shape and tolerates a series that is missing for a dataset.
+    """
+    pytest.importorskip("matplotlib")
+    from pepdistill.diagnostics import (
+        SA_HISTOGRAM_BINS,
+        SpectralAngleSeries,
+        plot_spectral_angle_violins,
+        sa_histogram,
+    )
+
+    rng = np.random.default_rng(0)
+
+    def series(label: str, center: float, n: int) -> SpectralAngleSeries:
+        values = np.clip(rng.normal(center, 0.08, n), 0.0, 1.0)
+        return SpectralAngleSeries(label, sa_histogram(values)["counts"])
+
+    groups = [
+        (
+            "prospect_tum_hla",
+            [
+                series("student", 0.78, 4000),
+                series("teacher", 0.66, 4000),
+                series("ceiling", 0.95, 900),
+            ],
+        ),
+        (
+            # A dataset the teacher cannot be asked about still has a student and a ceiling.
+            "tmt_tum_hla",
+            [
+                series("student", 0.60, 2000),
+                SpectralAngleSeries("teacher", [0] * SA_HISTOGRAM_BINS),
+                series("ceiling", 0.93, 500),
+            ],
+        ),
+    ]
+    path = plot_spectral_angle_violins(groups, tmp_path / "violins.png")
+    assert path.exists() and path.stat().st_size > 5_000
+
+    with pytest.raises(ValueError, match="at least one group"):
+        plot_spectral_angle_violins([], tmp_path / "empty.png")

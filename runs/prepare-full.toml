@@ -14,6 +14,10 @@ min_in_window_psms = 4
 max_psms_per_context = 2
 width_anchor_min_psms = 8
 energy_bucket_width = 1.0
+# The estimated width doubles as the acceptance window (apex +/- width/2) and is measured from
+# sampled half-height points, so it is clamped to the range a real chromatographic peak occupies.
+min_run_width_minutes = 0.05  # 3 s
+max_run_width_minutes = 0.25  # 15 s
 
 [[prepare.groups]]
 record = "prospect"

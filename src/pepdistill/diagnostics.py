@@ -355,6 +355,113 @@ def plot_labeled_embedding_pca(
     return target, basis
 
 
+@dataclass(frozen=True)
+class SpectralAngleSeries:
+    """One named distribution of spectral angles for one group, as counts on the shared grid."""
+
+    label: str
+    counts: Sequence[int]
+
+    def mean(self) -> float | None:
+        counts = np.asarray(self.counts, dtype=np.float64)
+        if counts.sum() <= 0:
+            return None
+        centers = (np.asarray(SA_HISTOGRAM_EDGES[:-1]) + np.asarray(SA_HISTOGRAM_EDGES[1:])) / 2
+        return float((counts * centers).sum() / counts.sum())
+
+    def total(self) -> int:
+        return int(sum(self.counts))
+
+
+def plot_spectral_angle_violins(
+    groups: Sequence[tuple[str, Sequence[SpectralAngleSeries]]],
+    path: str | Path,
+    *,
+    title: str = "Spectral angle: student vs teacher vs achievable ceiling",
+) -> Path:
+    """Grouped violins of spectral angle per group, drawn from histogram counts.
+
+    The shape is built directly from the counts rather than from a kernel density estimate: the
+    inputs are already binned on :data:`SA_HISTOGRAM_EDGES`, and smoothing a diagnostic would
+    invent density near 1.0 where the real distribution is a hard edge.
+
+    Each series is annotated with its mean and the number of spectra behind it, because the three
+    are not measured on the same population size -- the ceiling needs replicates, the teacher and
+    student need one spectrum -- and a violin with no ``n`` invites reading a handful of points as
+    a distribution.
+    """
+    if not groups:
+        raise ValueError("at least one group is required")
+    plt = _pyplot()
+    edges = np.asarray(SA_HISTOGRAM_EDGES, dtype=np.float64)
+    centers = (edges[:-1] + edges[1:]) / 2
+    names = list(dict.fromkeys(series.label for _, group in groups for series in group))
+    palette = plt.get_cmap("tab10")
+    colors = {name: palette(index % 10) for index, name in enumerate(names)}
+
+    fig, ax = plt.subplots(figsize=(max(7.0, 1.9 * len(groups)), 6.5), constrained_layout=True)
+    slot = 1.0 / (len(names) + 1)
+    for group_index, (_, group) in enumerate(groups):
+        for series in group:
+            counts = np.asarray(series.counts, dtype=np.float64)
+            if counts.sum() <= 0:
+                continue
+            offset = (names.index(series.label) - (len(names) - 1) / 2) * slot
+            x = group_index + offset
+            # Normalize each violin to its own peak so shape stays readable when the three
+            # series differ in count by orders of magnitude.
+            half = 0.45 * slot * counts / counts.max()
+            ax.fill_betweenx(
+                centers,
+                x - half,
+                x + half,
+                color=colors[series.label],
+                alpha=0.75,
+                linewidth=0,
+            )
+            mean = series.mean()
+            if mean is None:
+                continue
+            ax.hlines(mean, x - 0.5 * slot, x + 0.5 * slot, color="black", linewidth=1.0)
+            # Mean and n share one label: these distributions reach 0, so a separate annotation
+            # along the bottom axis would sit on top of the violin bodies. Flip the label above
+            # the line for a low mean so it cannot fall off the axis.
+            below = mean > 0.12
+            ax.annotate(
+                f"{mean:.3f}\nn={series.total():,}",
+                xy=(x, mean),
+                xytext=(0, -4 if below else 4),
+                textcoords="offset points",
+                ha="center",
+                va="top" if below else "bottom",
+                fontsize=6.5,
+            )
+    ax.set_xticks(range(len(groups)))
+    ax.set_xticklabels([label for label, _ in groups], rotation=30, ha="right")
+    ax.set_ylim(0.0, 1.0)
+    ax.set_ylabel("Spectral angle")
+    handles = [
+        plt.Line2D([], [], color=colors[name], linewidth=6, alpha=0.75, label=name)
+        for name in names
+    ]
+    # Above the axes: every series can occupy any part of [0, 1], so no corner is reliably free.
+    ax.legend(
+        handles=handles,
+        loc="lower center",
+        bbox_to_anchor=(0.5, 1.0),
+        ncol=len(names),
+        fontsize=8,
+        frameon=False,
+    )
+    ax.set_title(title, pad=26)
+    ax.grid(axis="y", alpha=0.25)
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+    return path
+
+
 def plot_irt_scatter(
     observations: Sequence[RtObservation],
     path: str | Path,
@@ -504,6 +611,8 @@ __all__ = [
     "ReferenceSpectrum",
     "SA_HISTOGRAM_BINS",
     "SA_HISTOGRAM_EDGES",
+    "SpectralAngleSeries",
+    "plot_spectral_angle_violins",
     "sa_histogram",
     "RtObservation",
     "RtRegressionMetrics",
