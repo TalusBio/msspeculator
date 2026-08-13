@@ -17,6 +17,19 @@ from pathlib import Path
 from typing import Any
 
 import fsspec
+import numpy as np
+
+from pepdistill.diagnostics import SA_HISTOGRAM_BINS, SA_HISTOGRAM_EDGES, SpectralAngleSeries
+
+try:
+    from s3fs.utils import FileExpired
+except ImportError:  # a local prefix, or --render-from, needs no S3 support installed
+
+    class FileExpired(Exception):  # type: ignore[no-redef]
+        pass
+
+
+_READ_ATTEMPTS = 3
 
 
 def load_manifests(prefix: str) -> list[dict[str, Any]]:
@@ -35,8 +48,21 @@ def load_manifests(prefix: str) -> list[dict[str, Any]]:
     print(f"reading {len(paths):,} shard manifest(s) under {prefix}")
 
     def read(path: str) -> dict[str, Any]:
-        with fs.open(path, "rb") as handle:
-            return json.load(handle)
+        # A prefix can be rewritten while it is being audited, and the filesystem caches the ETag
+        # it saw when listing; a manifest replaced in between raises rather than returning stale
+        # content. Re-read the new object instead of skipping it, which would silently under-count.
+        for attempt in range(_READ_ATTEMPTS):
+            try:
+                with fs.open(path, "rb") as handle:
+                    return json.load(handle)
+            except FileExpired:
+                if attempt == _READ_ATTEMPTS - 1:
+                    raise RuntimeError(
+                        f"{path} kept changing while it was read: the prefix is being written to. "
+                        "Wait for the preparation job to finish before auditing it."
+                    ) from None
+                fs.invalidate_cache(path)
+        raise AssertionError("unreachable")
 
     with ThreadPoolExecutor(max_workers=16) as pool:
         return list(pool.map(read, paths))
@@ -47,6 +73,12 @@ def collect(prefix: str) -> dict[str, Any]:
     per_source: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
     uncurated = 0
     empty_shards: list[str] = []
+    # Per-dataset achievable ceiling. Histogram counts over a shared grid are additive, so shards
+    # sum to the exact corpus distribution -- no averaging of per-shard means, which would weight
+    # a shard with ten replicate comparisons the same as one with ten thousand.
+    ceilings: dict[str, dict[str, np.ndarray]] = defaultdict(
+        lambda: defaultdict(lambda: np.zeros(SA_HISTOGRAM_BINS, dtype=np.int64))
+    )
 
     for manifest in manifests:
         report = manifest.get("curation")
@@ -69,6 +101,12 @@ def collect(prefix: str) -> dict[str, Any]:
         if report["selection"]["selected_rows"] == 0:
             bucket["empty_shards"] += 1
             empty_shards.append(f"{task.get('source_id')}/{task.get('shard_index')}")
+        # Absent from corpora built before the ceiling became mandatory.
+        ceiling = report.get("achievable_ceiling") or {}
+        for subset in ("all", "within_apex_window", "selected"):
+            histogram = (ceiling.get(subset) or {}).get("histogram")
+            if histogram:
+                ceilings[source][subset] += np.asarray(histogram["counts"], dtype=np.int64)
 
     # Totals come from the numeric accumulator rather than from the presentation dict below,
     # which deliberately carries None for undefined ratios and is not summable.
@@ -95,6 +133,10 @@ def collect(prefix: str) -> dict[str, Any]:
             "runs": int(bucket["runs"]),
             "clamped_runs": int(bucket["clamped_runs"]),
         }
+        for subset, counts in ceilings.get(source, {}).items():
+            series = SpectralAngleSeries(subset, [int(count) for count in counts])
+            per_source_out[source][f"ceiling_{subset}_mean"] = series.mean()
+            per_source_out[source][f"ceiling_{subset}_replicates"] = series.total()
 
     # Report the policy the shards were actually built with, taken from the manifests themselves.
     # A corpus should describe itself; reading it from the current config would silently relabel
@@ -115,6 +157,23 @@ def collect(prefix: str) -> dict[str, Any]:
         "peptidoform_instances_retained": peptidoforms - total("rejected_peptidoforms"),
         "empty_shards": empty_shards,
         "per_source": per_source_out,
+        # Kept separate from per_source so the tables above stay scalar and this stays directly
+        # usable as a violin series: same grid as the published teacher yardstick and the
+        # student's validation histograms.
+        "achievable_ceiling": {
+            "metric": (
+                "leave-one-out spectral angle of each replicate against the consensus of the "
+                "other replicates in its acquisition context"
+            ),
+            "histogram_bin_edges": list(SA_HISTOGRAM_EDGES),
+            "per_source": {
+                source: {
+                    subset: [int(count) for count in counts]
+                    for subset, counts in sorted(subsets.items())
+                }
+                for source, subsets in sorted(ceilings.items())
+            },
+        },
     }
 
 
@@ -169,19 +228,22 @@ def render_markdown(summary: dict[str, Any], generated_on: str) -> str:
         "",
         "## By source",
         "",
-        "| source | shards | empty | rows in | retained | no usable intensity | clamped runs |",
-        "| --- | --- | --- | --- | --- | --- | --- |",
+        "| source | shards | empty | rows in | retained | no usable intensity | clamped runs |"
+        " ceiling |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for name, entry in sorted(
         summary["per_source"].items(), key=lambda kv: -(kv[1]["retention"] or 0.0)
     ):
         keep = entry["retention"]
         noint = entry["missing_intensity_fraction"]
+        ceiling = entry.get("ceiling_selected_mean")
         lines.append(
             f"| {name} | {entry['shards']:,} | {entry['empty_shards']:,} | "
             f"{entry['rows_in']:,} | {'-' if keep is None else f'{keep:.2%}'} | "
             f"{'-' if noint is None else f'{noint:.2%}'} | "
-            f"{entry['clamped_runs']:,} / {entry['runs']:,} |"
+            f"{entry['clamped_runs']:,} / {entry['runs']:,} | "
+            f"{'-' if ceiling is None else f'{ceiling:.4f}'} |"
         )
     if summary["empty_shards"]:
         lines += ["", "## Shards that retained nothing", ""]
@@ -196,6 +258,11 @@ def main() -> None:
     parser.add_argument("--markdown", type=Path, help="write a committable Markdown view here")
     parser.add_argument(
         "--render-from", type=Path, help="skip reading manifests and render from a summary JSON"
+    )
+    parser.add_argument(
+        "--publish",
+        action="store_true",
+        help="also write the summary to <prepared>/diagnostics/curation-summary.json",
     )
     args = parser.parse_args()
 
@@ -214,6 +281,14 @@ def main() -> None:
         args.markdown.parent.mkdir(parents=True, exist_ok=True)
         args.markdown.write_text(render_markdown(summary, date.today().isoformat()))
         print(f"wrote {args.markdown}")
+    if args.publish:
+        # Beside the teacher yardstick, so a training run finds both reference lines in one place.
+        destination = (
+            f"{str(summary['prepared_prefix']).rstrip('/')}/diagnostics/curation-summary.json"
+        )
+        with fsspec.open(destination, "w") as handle:
+            handle.write(json.dumps(summary, indent=2, sort_keys=True) + "\n")
+        print(f"published {destination}")
     retention = summary["retention"]
     print(
         f"{summary['rows_in']:,} -> {summary['rows_out']:,} rows "
