@@ -30,7 +30,7 @@ def test_unmodified_positions_contribute_exactly_zero():
     m = build_student("flash").eval()
     b = _batch()
     with torch.no_grad():
-        vec, _, _ = m._mod_vectors(b.mod_comp, b.mod_mass, b.mod_present, b.mod_named)
+        vec, _, _ = m._mod_vectors(b.mod_comp, b.mod_mass, b.mod_present, b.mod_has_composition)
     assert float(vec[~b.mod_present].abs().max()) == 0.0
     assert float(vec[b.mod_present].abs().max()) > 0.0
 
@@ -39,8 +39,8 @@ def test_eval_routes_named_sites_to_comp_encoder():
     m = build_student("flash").eval()
     b = _batch()
     with torch.no_grad():
-        vec, g, _ = m._mod_vectors(b.mod_comp, b.mod_mass, b.mod_present, b.mod_named)
-    named = b.mod_named
+        vec, g, _ = m._mod_vectors(b.mod_comp, b.mod_mass, b.mod_present, b.mod_has_composition)
+    named = b.mod_has_composition
     assert named.any()
     assert torch.allclose(vec[named], g[named], atol=0)
 
@@ -49,8 +49,8 @@ def test_eval_routes_mass_only_sites_to_mass_encoder():
     m = build_student("flash").eval()
     b = _batch()
     with torch.no_grad():
-        vec, _, mm = m._mod_vectors(b.mod_comp, b.mod_mass, b.mod_present, b.mod_named)
-    mass_only = b.mod_present & ~b.mod_named
+        vec, _, mm = m._mod_vectors(b.mod_comp, b.mod_mass, b.mod_present, b.mod_has_composition)
+    mass_only = b.mod_present & ~b.mod_has_composition
     assert mass_only.any()
     assert torch.allclose(vec[mass_only], mm[mass_only], atol=0)
 
@@ -59,24 +59,24 @@ def test_eval_is_deterministic_across_calls():
     m = build_student("flash").eval()
     b = _batch()
     with torch.no_grad():
-        a = m._mod_vectors(b.mod_comp, b.mod_mass, b.mod_present, b.mod_named)[0]
-        c = m._mod_vectors(b.mod_comp, b.mod_mass, b.mod_present, b.mod_named)[0]
+        a = m._mod_vectors(b.mod_comp, b.mod_mass, b.mod_present, b.mod_has_composition)[0]
+        c = m._mod_vectors(b.mod_comp, b.mod_mass, b.mod_present, b.mod_has_composition)[0]
     assert torch.equal(a, c)
 
 
 def test_swap_probability_endpoints():
     b = _batch()
-    named = b.mod_named
+    named = b.mod_has_composition
 
     m = build_student("flash").train()
     m.cfg.mass_swap_p = 0.0
     with torch.no_grad():
-        vec, g, _ = m._mod_vectors(b.mod_comp, b.mod_mass, b.mod_present, b.mod_named)
+        vec, g, _ = m._mod_vectors(b.mod_comp, b.mod_mass, b.mod_present, b.mod_has_composition)
     assert torch.allclose(vec[named], g[named], atol=0)
 
     m.cfg.mass_swap_p = 1.0
     with torch.no_grad():
-        vec, _, mm = m._mod_vectors(b.mod_comp, b.mod_mass, b.mod_present, b.mod_named)
+        vec, _, mm = m._mod_vectors(b.mod_comp, b.mod_mass, b.mod_present, b.mod_has_composition)
     assert torch.allclose(vec[named], mm[named], atol=0)
 
 
@@ -136,7 +136,7 @@ def test_mod_align_does_not_train_the_comp_encoder():
     model = build_student("flash").train()
     b = _batch()
     out = model(b)
-    mod_align_loss(out["mod_g"], out["mod_m"], b.mod_named).backward()
+    mod_align_loss(out["mod_g"], out["mod_m"], b.mod_has_composition).backward()
     assert (
         model.comp_enc.weight.grad is None or float(model.comp_enc.weight.grad.abs().max()) == 0.0
     )
@@ -151,11 +151,11 @@ def test_mod_align_decreases_when_fitted():
     b = _batch()
     opt = torch.optim.Adam(model.mass_enc.parameters(), lr=1e-2)
     out = model(b)
-    first = float(mod_align_loss(out["mod_g"], out["mod_m"], b.mod_named))
+    first = float(mod_align_loss(out["mod_g"], out["mod_m"], b.mod_has_composition))
     for _ in range(50):
         opt.zero_grad()
         out = model(b)
-        loss = mod_align_loss(out["mod_g"], out["mod_m"], b.mod_named)
+        loss = mod_align_loss(out["mod_g"], out["mod_m"], b.mod_has_composition)
         loss.backward()
         opt.step()
     assert float(loss) < first

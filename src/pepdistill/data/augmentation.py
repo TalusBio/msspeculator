@@ -59,7 +59,7 @@ def substitute_residues(batch: Batch, probability: float) -> Batch:
     token_to_standard, standard_tokens, compositions, masses = _device_tables(device)
 
     standard_index = token_to_standard[batch.tokens]
-    eligible = (standard_index >= 0) & ~(batch.mod_present & ~batch.mod_named)
+    eligible = (standard_index >= 0) & ~(batch.mod_present & ~batch.mod_has_composition)
     selected_rows = (torch.rand(batch.tokens.shape[0], device=device) < probability) & eligible.any(
         dim=1
     )
@@ -85,7 +85,7 @@ def substitute_residues(batch: Batch, probability: float) -> Batch:
     mod_comp = batch.mod_comp.clone()
     mod_mass = batch.mod_mass.clone()
     mod_present = batch.mod_present.clone()
-    mod_named = batch.mod_named.clone()
+    mod_has_composition = batch.mod_has_composition.clone()
 
     tokens[rows, columns] = standard_tokens[replacement_index]
     composition_delta = compositions[original_index] - compositions[replacement_index]
@@ -93,14 +93,14 @@ def substitute_residues(batch: Batch, probability: float) -> Batch:
     mod_comp[rows, columns] += composition_delta
     mod_mass[rows, columns] += mass_delta
     mod_present[rows, columns] = True
-    mod_named[rows, columns] = True
+    mod_has_composition[rows, columns] = True
 
     return Batch(
         tokens=tokens,
         mod_comp=mod_comp,
         mod_mass=mod_mass,
         mod_present=mod_present,
-        mod_named=mod_named,
+        mod_has_composition=mod_has_composition,
         charge=batch.charge,
         lengths=batch.lengths,
         pad_mask=batch.pad_mask,

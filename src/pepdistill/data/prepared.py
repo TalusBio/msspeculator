@@ -206,7 +206,7 @@ def _frame_batch(frame: pl.DataFrame, encoder) -> RealBatch:
         torch.from_numpy(arrays["mod_comp"]),
         torch.from_numpy(arrays["mod_mass"]),
         torch.from_numpy(arrays["mod_present"]),
-        torch.from_numpy(arrays["mod_named"]),
+        torch.from_numpy(arrays["mod_has_composition"]),
         torch.from_numpy(arrays["charge"]),
         torch.from_numpy(arrays["lengths"]),
         torch.from_numpy(arrays["pad_mask"]),

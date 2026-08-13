@@ -521,7 +521,7 @@ impl<'a> Predictor<'a> {
             if !mods.mod_present[[0, i]] {
                 continue;
             }
-            let v = if mods.mod_named[[0, i]] {
+            let v = if mods.mod_has_composition[[0, i]] {
                 self.comp_vec(mods.mod_comp.slice(s![0, i, ..]))?
             } else {
                 self.mass_vec(mods.mod_mass[[0, i]])?
@@ -599,7 +599,7 @@ impl<'a> Predictor<'a> {
                 if !mods.mod_present[[batch_i, i]] {
                     continue;
                 }
-                let v = if mods.mod_named[[batch_i, i]] {
+                let v = if mods.mod_has_composition[[batch_i, i]] {
                     self.comp_vec(mods.mod_comp.slice(s![batch_i, i, ..]))?
                 } else {
                     self.mass_vec(mods.mod_mass[[batch_i, i]])?

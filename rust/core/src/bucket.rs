@@ -16,7 +16,7 @@ pub struct BucketArrays {
     pub mod_comp: Array3<f32>,
     pub mod_mass: Array2<f32>,
     pub mod_present: Array2<bool>,
-    pub mod_named: Array2<bool>,
+    pub mod_has_composition: Array2<bool>,
     pub charge: Array1<i64>,
     pub residue_mass: Array2<f64>,
 }
@@ -70,7 +70,7 @@ pub fn bucket_arrays(
         mod_comp: ma.mod_comp,
         mod_mass: ma.mod_mass,
         mod_present: ma.mod_present,
-        mod_named: ma.mod_named,
+        mod_has_composition: ma.mod_has_composition,
         charge: Array1::from(charges.to_vec()),
         residue_mass,
     })

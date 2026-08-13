@@ -257,7 +257,10 @@ fn collate<'py>(
     d.set_item("mod_comp", a.mod_comp.into_pyarray_bound(py))?;
     d.set_item("mod_mass", a.mod_mass.into_pyarray_bound(py))?;
     d.set_item("mod_present", a.mod_present.into_pyarray_bound(py))?;
-    d.set_item("mod_named", a.mod_named.into_pyarray_bound(py))?;
+    d.set_item(
+        "mod_has_composition",
+        a.mod_has_composition.into_pyarray_bound(py),
+    )?;
     d.set_item("charge", a.charge.into_pyarray_bound(py))?;
     d.set_item("lengths", a.lengths.into_pyarray_bound(py))?;
     d.set_item("pad_mask", a.pad_mask.into_pyarray_bound(py))?;
@@ -295,7 +298,10 @@ fn collate_prepared<'py>(
     d.set_item("mod_comp", a.mod_comp.into_pyarray_bound(py))?;
     d.set_item("mod_mass", a.mod_mass.into_pyarray_bound(py))?;
     d.set_item("mod_present", a.mod_present.into_pyarray_bound(py))?;
-    d.set_item("mod_named", a.mod_named.into_pyarray_bound(py))?;
+    d.set_item(
+        "mod_has_composition",
+        a.mod_has_composition.into_pyarray_bound(py),
+    )?;
     d.set_item("charge", a.charge.into_pyarray_bound(py))?;
     d.set_item("lengths", a.lengths.into_pyarray_bound(py))?;
     d.set_item("pad_mask", a.pad_mask.into_pyarray_bound(py))?;
@@ -317,7 +323,10 @@ fn bucket_arrays<'py>(
     d.set_item("mod_comp", a.mod_comp.into_pyarray_bound(py))?;
     d.set_item("mod_mass", a.mod_mass.into_pyarray_bound(py))?;
     d.set_item("mod_present", a.mod_present.into_pyarray_bound(py))?;
-    d.set_item("mod_named", a.mod_named.into_pyarray_bound(py))?;
+    d.set_item(
+        "mod_has_composition",
+        a.mod_has_composition.into_pyarray_bound(py),
+    )?;
     d.set_item("charge", a.charge.into_pyarray_bound(py))?;
     d.set_item("residue_mass", a.residue_mass.into_pyarray_bound(py))?;
     Ok(d)

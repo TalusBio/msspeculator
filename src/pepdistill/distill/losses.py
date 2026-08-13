@@ -68,7 +68,7 @@ def distill_loss(
 
 
 def mod_align_loss(
-    mod_g: torch.Tensor, mod_m: torch.Tensor, mod_named: torch.Tensor
+    mod_g: torch.Tensor, mod_m: torch.Tensor, mod_has_composition: torch.Tensor
 ) -> torch.Tensor:
     """Pull the mass-only encoder onto the compositional encoder's shared space.
 
@@ -79,7 +79,7 @@ def mod_align_loss(
     Masked to named sites because unmodified positions are trivially aligned (both encoders
     are zeroed there) and would otherwise dominate the mean, which is almost all of any batch.
     """
-    mask = mod_named.unsqueeze(-1).expand_as(mod_m).to(mod_m.dtype)
+    mask = mod_has_composition.unsqueeze(-1).expand_as(mod_m).to(mod_m.dtype)
     n = mask.sum()
     if float(n) == 0.0:
         # No supervision available. Return a graph-connected zero so callers can add it

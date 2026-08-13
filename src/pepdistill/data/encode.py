@@ -3,7 +3,7 @@
 Encoding is deliberately minimal (the whole point of distillation here): per-residue
 amino-acid index, a charge scalar, and modifications split into four channels — element
 composition (``mod_comp``), raw mass (``mod_mass``), and two boolean masks (``mod_present``,
-``mod_named``) — so a modification can be routed through a compositional or a mass-only
+``mod_has_composition``) — so a modification can be routed through a compositional or a mass-only
 encoder. No LSTM means everything is a fixed-shape, batch-parallel tensor.
 
 Peptides are always wrapped with explicit N-/C-terminal tokens:
@@ -47,7 +47,7 @@ class Batch:
     mod_comp: torch.Tensor  # (B, T, 6) float — element composition delta
     mod_mass: torch.Tensor  # (B, T) float — mass delta in Daltons, unscaled
     mod_present: torch.Tensor  # (B, T) bool — any modification here
-    mod_named: torch.Tensor  # (B, T) bool — composition known, so routable to comp_enc
+    mod_has_composition: torch.Tensor  # (B, T) bool — composition known, so routable to comp_enc
     charge: torch.Tensor  # (B,) long
     lengths: torch.Tensor  # (B,) long, residue count L (excludes termini)
     pad_mask: torch.Tensor  # (B, T) bool, True where padded
@@ -62,7 +62,7 @@ class Batch:
                     self.mod_comp,
                     self.mod_mass,
                     self.mod_present,
-                    self.mod_named,
+                    self.mod_has_composition,
                     self.charge,
                     self.lengths,
                     self.pad_mask,
@@ -88,7 +88,7 @@ def collate(precursors: list[Precursor]) -> Batch:
         torch.from_numpy(a["mod_comp"]),
         torch.from_numpy(a["mod_mass"]),
         torch.from_numpy(a["mod_present"]),
-        torch.from_numpy(a["mod_named"]),
+        torch.from_numpy(a["mod_has_composition"]),
         torch.from_numpy(a["charge"]),
         torch.from_numpy(a["lengths"]),
         torch.from_numpy(a["pad_mask"]),

@@ -135,7 +135,7 @@ class DistillModule(L.LightningModule):
             out, batch.ms2_target, rt_t, ccs_t, batch.inputs.frag_mask, self.loss_weights
         )
         if self.mod_align_weight:
-            align = mod_align_loss(out["mod_g"], out["mod_m"], inputs.mod_named)
+            align = mod_align_loss(out["mod_g"], out["mod_m"], inputs.mod_has_composition)
             parts["mod_align"] = float(align.detach())
             loss = loss + self.mod_align_weight * align
         if self.residue_substitution_probability:

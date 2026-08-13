@@ -237,7 +237,7 @@ class RealSpeclibModule(L.LightningModule):
         if self.mod_align_weight:
             loss_terms["train_mod_align"] = (
                 self.mod_align_weight,
-                mod_align_loss(out["mod_g"], out["mod_m"], inputs.mod_named),
+                mod_align_loss(out["mod_g"], out["mod_m"], inputs.mod_has_composition),
             )
         loss = sum(weight * value for weight, value in loss_terms.values())
         # Keep the reporting metric beside its optimization surrogate. Spectral angle is only

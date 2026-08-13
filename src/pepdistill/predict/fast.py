@@ -33,7 +33,7 @@ class ModelRunner:
         mod_comp: np.ndarray,
         mod_mass: np.ndarray,
         mod_present: np.ndarray,
-        mod_named: np.ndarray,
+        mod_has_composition: np.ndarray,
         charge: np.ndarray,
     ):
         """Return (ms2 (B,L-1,n_ion) in [0,1], rt (B,) native, ccs (B,) native)."""
@@ -53,7 +53,7 @@ class TorchRunner(ModelRunner):
         # plain ndarray the caller passed in; converted to a tensor per-bucket in run().
         self.ms_context = ms_context
 
-    def run(self, tokens, mod_comp, mod_mass, mod_present, mod_named, charge):
+    def run(self, tokens, mod_comp, mod_mass, mod_present, mod_has_composition, charge):
         torch = self._torch
         ctx = None
         if self.ms_context is not None:
@@ -65,7 +65,7 @@ class TorchRunner(ModelRunner):
                 torch.from_numpy(mod_comp).to(self.device),
                 torch.from_numpy(mod_mass).to(self.device),
                 torch.from_numpy(mod_present).to(self.device),
-                torch.from_numpy(mod_named).to(self.device),
+                torch.from_numpy(mod_has_composition).to(self.device),
                 torch.from_numpy(charge).to(self.device),
                 ms_context=ctx,
             )
@@ -88,7 +88,7 @@ def _bucket_arrays(precs: list[Precursor], length: int):
         a["mod_comp"],
         a["mod_mass"],
         a["mod_present"],
-        a["mod_named"],
+        a["mod_has_composition"],
         a["charge"],
         a["residue_mass"],
     )
@@ -128,10 +128,12 @@ def predict_library_fast(
         frag_pos = length - 1
         for start in range(0, len(precs), batch_size):
             chunk = precs[start : start + batch_size]
-            tokens, mod_comp, mod_mass, mod_present, mod_named, charge, residue_mass = (
+            tokens, mod_comp, mod_mass, mod_present, mod_has_composition, charge, residue_mass = (
                 _bucket_arrays(chunk, length)
             )
-            ms2, rt, ccs = runner.run(tokens, mod_comp, mod_mass, mod_present, mod_named, charge)
+            ms2, rt, ccs = runner.run(
+                tokens, mod_comp, mod_mass, mod_present, mod_has_composition, charge
+            )
             # Fragment sites are at adjacent-pool indices [FRAG_OFFSET, +frag_pos).
             ms2 = ms2[:, FRAG_OFFSET : FRAG_OFFSET + frag_pos, :]
             mz, precursor_mz = _fragment_mz(residue_mass, charge)

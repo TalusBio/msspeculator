@@ -13,7 +13,7 @@ PHOSPHO_MASS = 79.9663312
 def test_unmodified_peptide_has_no_mod_signal():
     b = collate([Precursor(Peptide("SAMPLER"), 2, "t")])
     assert not b.mod_present.any()
-    assert not b.mod_named.any()
+    assert not b.mod_has_composition.any()
     assert float(b.mod_comp.abs().max()) == 0.0
     assert float(b.mod_mass.abs().max()) == 0.0
 
@@ -21,7 +21,7 @@ def test_unmodified_peptide_has_no_mod_signal():
 def test_named_mod_populates_comp_and_mass_at_its_column():
     b = collate([Precursor(Peptide("ACDEK", ((1, "Carbamidomethyl@C"),)), 2, "t")])
     col = 1 + 1  # N-term token at 0, residue i at 1+i
-    assert bool(b.mod_present[0, col]) and bool(b.mod_named[0, col])
+    assert bool(b.mod_present[0, col]) and bool(b.mod_has_composition[0, col])
     # Carbamidomethyl is C2H3NO; ELEMENTS order is C, H, N, O, S, P.
     assert b.mod_comp[0, col].tolist() == [2.0, 3.0, 1.0, 1.0, 0.0, 0.0]
     assert abs(float(b.mod_mass[0, col]) - 57.021463723) < 1e-4
@@ -59,7 +59,7 @@ def test_mass_only_mod_is_present_but_not_named():
     b = collate([Precursor(Peptide("PEPTIDE", ((2, 42.010565),)), 2, "t")])
     col = 1 + 2
     assert bool(b.mod_present[0, col])
-    assert not bool(b.mod_named[0, col])
+    assert not bool(b.mod_has_composition[0, col])
     assert float(b.mod_comp[0, col].abs().max()) == 0.0
     assert abs(float(b.mod_mass[0, col]) - 42.010565) < 1e-5
 
@@ -68,7 +68,7 @@ def test_two_named_mods_on_one_column_accumulate_comp_and_mass():
     p = Peptide("CPEPTIDE", ((0, "Carbamidomethyl@C"), (0, "Oxidation@M")))
     b = collate([Precursor(p, 2, "t")])
     col = 1
-    assert bool(b.mod_named[0, col]) and bool(b.mod_present[0, col])
+    assert bool(b.mod_has_composition[0, col]) and bool(b.mod_present[0, col])
     # Carbamidomethyl C2H3NO + Oxidation O, in ELEMENTS order C, H, N, O, S, P.
     assert b.mod_comp[0, col].tolist() == [2.0, 3.0, 1.0, 2.0, 0.0, 0.0]
     assert abs(float(b.mod_mass[0, col]) - (57.021464 + 15.994915)) < 1e-4
@@ -78,13 +78,13 @@ def test_two_mass_only_mods_on_one_column_sum():
     p = Peptide("CPEPTIDE", ((0, 57.021464), (0, 15.994915)))
     b = collate([Precursor(p, 2, "t")])
     col = 1
-    assert bool(b.mod_present[0, col]) and not bool(b.mod_named[0, col])
+    assert bool(b.mod_present[0, col]) and not bool(b.mod_has_composition[0, col])
     assert float(b.mod_comp[0, col].abs().max()) == 0.0
     assert abs(float(b.mod_mass[0, col]) - (57.021464 + 15.994915)) < 1e-4
 
 
 def test_named_plus_mass_only_on_one_column_is_refused():
-    """`mod_named` is one boolean per column, so the column routes wholly through comp_enc or
+    """`mod_has_composition` is one boolean per column, so the column routes wholly through comp_enc or
     wholly through mass_enc. A site holding one of each would drop a channel from the model
     input while still moving mono_mass and every fragment m/z — refuse instead."""
     p = Peptide("PEPCIDER", ((3, "Carbamidomethyl@C"), (3, 15.994915)))
@@ -103,7 +103,7 @@ def test_nterm_named_plus_residue_zero_mass_only_stays_legal():
     though residue_masses folds an N-terminal delta onto residue 0."""
     p = Peptide("KPEPTIDE", (("n", "TMT6plex"), (0, 15.994915)))
     b = collate([Precursor(p, 2, "t")])
-    assert bool(b.mod_named[0, 0]) and not bool(b.mod_named[0, 1])
+    assert bool(b.mod_has_composition[0, 0]) and not bool(b.mod_has_composition[0, 1])
     assert abs(float(b.mod_mass[0, 1]) - 15.994915) < 1e-5
     assert p.mono_mass() > 0
 

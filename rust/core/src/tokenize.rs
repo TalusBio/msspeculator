@@ -29,7 +29,7 @@ pub struct CollateArrays {
     pub mod_comp: Array3<f32>,
     pub mod_mass: Array2<f32>,
     pub mod_present: Array2<bool>,
-    pub mod_named: Array2<bool>,
+    pub mod_has_composition: Array2<bool>,
     pub charge: Array1<i64>,
     pub lengths: Array1<i64>,
     pub pad_mask: Array2<bool>,
@@ -40,7 +40,7 @@ pub struct ModArrays {
     pub mod_comp: Array3<f32>, // (B, T, N_ELEMENTS)
     pub mod_mass: Array2<f32>, // (B, T), Daltons, unscaled
     pub mod_present: Array2<bool>,
-    pub mod_named: Array2<bool>,
+    pub mod_has_composition: Array2<bool>,
 }
 
 /// Column of the token grid a site occupies. Layout is always `[N] r1..rL [C]`, so residue `i`
@@ -60,7 +60,7 @@ fn site_column(site: &Site, seq_len: usize) -> usize {
 /// a loud failure.
 ///
 /// A site mixing composition-routed and mass-routed modifications is refused up front — see
-/// [`Peptide::validate_mod_specs`] for why there is no correct silent behavior. `mod_named` is
+/// [`Peptide::validate_mod_specs`] for why there is no correct silent behavior. `mod_has_composition` is
 /// one boolean per column and both runtimes route the whole column on it, so the loser's
 /// channel would simply never reach the model.
 pub fn mod_arrays(peptides: &[Peptide], tok_len: usize) -> anyhow::Result<ModArrays> {
@@ -68,7 +68,7 @@ pub fn mod_arrays(peptides: &[Peptide], tok_len: usize) -> anyhow::Result<ModArr
     let mut mod_comp = Array3::<f32>::zeros((b, tok_len, N_ELEMENTS));
     let mut mod_mass = Array2::<f32>::zeros((b, tok_len));
     let mut mod_present = Array2::<bool>::from_elem((b, tok_len), false);
-    let mut mod_named = Array2::<bool>::from_elem((b, tok_len), false);
+    let mut mod_has_composition = Array2::<bool>::from_elem((b, tok_len), false);
 
     for (i, pep) in peptides.iter().enumerate() {
         let n = pep.sequence.len();
@@ -93,7 +93,7 @@ pub fn mod_arrays(peptides: &[Peptide], tok_len: usize) -> anyhow::Result<ModArr
                 for (k, v) in ec.iter().enumerate() {
                     mod_comp[[i, col, k]] += *v as f32;
                 }
-                mod_named[[i, col]] = true;
+                mod_has_composition[[i, col]] = true;
             }
         }
     }
@@ -101,7 +101,7 @@ pub fn mod_arrays(peptides: &[Peptide], tok_len: usize) -> anyhow::Result<ModArr
         mod_comp,
         mod_mass,
         mod_present,
-        mod_named,
+        mod_has_composition,
     })
 }
 
@@ -143,7 +143,7 @@ pub fn collate(peptides: &[Peptide], charges: &[i64]) -> anyhow::Result<CollateA
         mod_comp: ma.mod_comp,
         mod_mass: ma.mod_mass,
         mod_present: ma.mod_present,
-        mod_named: ma.mod_named,
+        mod_has_composition: ma.mod_has_composition,
         charge: Array1::from(charges.to_vec()),
         lengths: Array1::from(lengths),
         pad_mask,
@@ -197,7 +197,7 @@ mod tests {
         let expected = chem::mod_delta("Carbamidomethyl@C").unwrap() as f32;
         assert!((a.mod_mass[[0, 2]] - expected).abs() < 1e-6);
         assert!(a.mod_present[[0, 2]]);
-        assert!(a.mod_named[[0, 2]]);
+        assert!(a.mod_has_composition[[0, 2]]);
         assert!(!a.pad_mask[[0, 0]]);
         assert!(!a.pad_mask[[0, 3]]);
     }
@@ -214,7 +214,7 @@ mod tests {
         .unwrap();
         let col = 1 + 2;
         assert!(a.mod_present[[0, col]]);
-        assert!(!a.mod_named[[0, col]]);
+        assert!(!a.mod_has_composition[[0, col]]);
         assert!((a.mod_mass[[0, col]] - 42.010565).abs() < 1e-5);
         for k in 0..N_ELEMENTS {
             assert_eq!(a.mod_comp[[0, col, k]], 0.0);
@@ -245,7 +245,7 @@ mod tests {
 
     #[test]
     fn co_sited_named_and_mass_only_is_refused() {
-        // `mod_named` is one boolean per column: with a Named spec present the column routes
+        // `mod_has_composition` is one boolean per column: with a Named spec present the column routes
         // through comp_enc, and the accumulated mass-only delta never reaches the model — while
         // it still shifts mono_mass and every fragment m/z. Refuse instead of encoding a
         // molecule the m/z table does not describe.
@@ -314,7 +314,7 @@ mod tests {
             ],
         );
         let a = collate(std::slice::from_ref(&p), &[2]).unwrap();
-        assert!(a.mod_named[[0, 0]] && !a.mod_named[[0, 1]]);
+        assert!(a.mod_has_composition[[0, 0]] && !a.mod_has_composition[[0, 1]]);
         assert!((a.mod_mass[[0, 1]] - 15.994915).abs() < 1e-5);
         assert!(p.mono_mass().is_ok());
     }
@@ -335,7 +335,7 @@ mod tests {
         )
         .unwrap();
         let col = 1;
-        assert!(a.mod_named[[0, col]] && a.mod_present[[0, col]]);
+        assert!(a.mod_has_composition[[0, col]] && a.mod_present[[0, col]]);
         // Carbamidomethyl C2H3NO + Oxidation O, in ELEMENTS order C,H,N,O,S,P.
         let comp: Vec<f32> = (0..N_ELEMENTS).map(|k| a.mod_comp[[0, col, k]]).collect();
         assert_eq!(comp, vec![2.0, 3.0, 1.0, 2.0, 0.0, 0.0]);
@@ -358,7 +358,7 @@ mod tests {
         )
         .unwrap();
         let col = 1;
-        assert!(a.mod_present[[0, col]] && !a.mod_named[[0, col]]);
+        assert!(a.mod_present[[0, col]] && !a.mod_has_composition[[0, col]]);
         assert!((a.mod_mass[[0, col]] - (57.021464 + 15.994915)).abs() < 1e-4);
         for k in 0..N_ELEMENTS {
             assert_eq!(a.mod_comp[[0, col, k]], 0.0);

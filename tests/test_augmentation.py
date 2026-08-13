@@ -36,7 +36,7 @@ def test_substitution_preserves_effective_composition_and_mass():
         RESIDUE_MASS[old], abs=1e-5
     )
     assert bool(augmented.mod_present[row, column])
-    assert bool(augmented.mod_named[row, column])
+    assert bool(augmented.mod_has_composition[row, column])
     assert not original.mod_present.any(), "augmentation must not mutate the source batch"
 
 
@@ -68,7 +68,7 @@ def test_isomeric_substitution_without_a_delta_is_excluded():
     augmented = substitute_residues(original, 1.0)
     replacement = _amino_acid(int(augmented.tokens[0, 1]))
     assert replacement not in {"I", "L"}
-    assert bool(augmented.mod_named[0, 1])
+    assert bool(augmented.mod_has_composition[0, 1])
     assert augmented.mod_comp[0, 1].ne(0).any()
 
 

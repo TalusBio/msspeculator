@@ -293,7 +293,7 @@ class StudentModel(nn.Module):
         mod_comp: torch.Tensor,
         mod_mass: torch.Tensor,
         mod_present: torch.Tensor,
-        mod_named: torch.Tensor,
+        mod_has_composition: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Return (routed mod vector, comp-encoder output, mass-encoder output).
 
@@ -303,7 +303,7 @@ class StudentModel(nn.Module):
         """
         g = self.comp_enc(mod_comp)  # (B, T, d)
         m = self.mass_enc(mod_mass)  # (B, T, d)
-        use_g = mod_named
+        use_g = mod_has_composition
         if self.training and self.cfg.mass_swap_p > 0.0:
             swap = torch.rand_like(mod_mass) < self.cfg.mass_swap_p
             use_g = use_g & ~swap
@@ -316,11 +316,11 @@ class StudentModel(nn.Module):
         mod_comp: torch.Tensor,
         mod_mass: torch.Tensor,
         mod_present: torch.Tensor,
-        mod_named: torch.Tensor,
+        mod_has_composition: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         length = tokens.shape[1]
         pos = torch.arange(length, device=tokens.device).unsqueeze(0)
-        mod_vec, g, m = self._mod_vectors(mod_comp, mod_mass, mod_present, mod_named)
+        mod_vec, g, m = self._mod_vectors(mod_comp, mod_mass, mod_present, mod_has_composition)
         return self.token_emb(tokens) + self.pos_emb(pos) + mod_vec, g, m
 
     def _apply_heads(
@@ -365,7 +365,7 @@ class StudentModel(nn.Module):
             batch.mod_comp,
             batch.mod_mass,
             batch.mod_present,
-            batch.mod_named,
+            batch.mod_has_composition,
         )
 
     def forward_dense(
@@ -374,7 +374,7 @@ class StudentModel(nn.Module):
         mod_comp: torch.Tensor,
         mod_mass: torch.Tensor,
         mod_present: torch.Tensor,
-        mod_named: torch.Tensor,
+        mod_has_composition: torch.Tensor,
         charge: torch.Tensor,
         ms_context: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -385,7 +385,7 @@ class StudentModel(nn.Module):
         MS context only (RT/CCS need no acquisition context here); bake it as a constant for
         a fixed-instrument export.
         """
-        x, _, _ = self._embed_tensors(tokens, mod_comp, mod_mass, mod_present, mod_named)
+        x, _, _ = self._embed_tensors(tokens, mod_comp, mod_mass, mod_present, mod_has_composition)
         # Dense/bucketed inputs have no padding, so no mask. Passing None (vs an all-False
         # mask) also avoids TransformerEncoder's eval fast-path NestedTensor packing, whose
         # aten::_nested_tensor_from_mask_left_aligned op is unimplemented on MPS.
