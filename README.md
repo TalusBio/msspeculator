@@ -31,7 +31,7 @@ uv sync --extra onnx                     # optional/deferred ONNX environment
 
 Torch and Lightning sit behind the `torch` extra rather than in the core dependencies. They resolve
 to the CUDA wheels — some 3 GB of `nvidia-*` packages — and a preparation worker never builds a
-tensor, so making them optional takes an ETL install from 138 packages to 36. Commands that need
+tensor, so making them optional takes a worker's resolution from 138 packages to 51. Commands that need
 torch say so and name the extra instead of failing on a missing import.
 
 The `dev` dependency group holds only tools (pytest, ruff, pre-commit) and deliberately does not
@@ -94,7 +94,7 @@ fasta = "proteome.fasta"
 
 [train]                       # fine-tune on the prepared Parquet manifest
 enabled = true
-prepared_prefix = "s3://bucket/pepdistill-prepared/v1"
+prepared_prefix = "s3://bucket/pepdistill-prepared/v2"
 epochs = 60
 num_workers = 0              # Polars decodes in-process with its native thread pool
 model_threads = 4            # intra-op CPU threads used by the model

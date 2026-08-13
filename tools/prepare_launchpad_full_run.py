@@ -17,7 +17,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUT = ROOT / ".launchpad" / "full-run-stage"
 S3_PREFIX = "s3://terraform-workstations-bucket/jspaezp/20241022_prospect"
-PREPARED_PREFIX = "s3://terraform-workstations-bucket/jspaezp/pepdistill-prepared/v1"
+PREPARED_PREFIX = "s3://terraform-workstations-bucket/jspaezp/pepdistill-prepared/v2"
 TRAIN_OUTPUT_PREFIX = (
     "s3://terraform-workstations-bucket/jspaezp/pepdistill-training/full-v2-aug1pct"
 )

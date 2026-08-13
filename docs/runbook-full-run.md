@@ -124,7 +124,7 @@ max_var_mods = 1
 
 [train]                          # fine-tune on the prepared PROSPECT manifest
 enabled = true
-prepared_prefix = "s3://bucket/pepdistill-prepared/v1"
+prepared_prefix = "s3://bucket/pepdistill-prepared/v2"
 epochs = 60
 num_workers = 0                 # Polars decodes in-process; avoids unsafe post-init forks
 model_threads = 4               # intra-op threads in the model process
