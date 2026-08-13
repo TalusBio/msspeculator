@@ -83,8 +83,13 @@ class DigestSource:
     # Mods are per-source for the same reason charge is: a tryptic proteome and an unspecific
     # immunopeptidome source do not carry the same chemistry. Defaults match DigestConfig, which
     # is what every run silently used while these were not plumbed through at all.
-    fixed_mods: tuple[str, ...] = ("Carbamidomethyl@C",)
-    variable_mods: tuple[str, ...] = ("Oxidation@M",)
+    fixed_mods: tuple[str, ...] = ("C[UNIMOD:4]",)
+    variable_mods: tuple[tuple[str, float], ...] = (
+        ("M[UNIMOD:35]", 0.001),
+        ("STY[UNIMOD:21]", 0.001),
+        ("K[UNIMOD:1]", 0.001),
+        ("K[UNIMOD:121]", 0.001),
+    )
 
 
 @dataclass
@@ -311,7 +316,13 @@ def _digest_cfg(s: DigestSource) -> DigestConfig:
         max_charge=s.max_charge,
         max_variable_mods=s.max_var_mods,
         fixed_mods=tuple(s.fixed_mods),
-        variable_mods=tuple(s.variable_mods),
+        # TOML spells the variable rules as an inline table -- `{ "STY[UNIMOD:21]" = 0.001 }` --
+        # which arrives as a dict. Accepted either way so a config and a constructed source agree.
+        variable_mods=(
+            tuple(s.variable_mods.items())
+            if isinstance(s.variable_mods, dict)
+            else tuple(s.variable_mods)
+        ),
     )
 
 

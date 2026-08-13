@@ -15,7 +15,8 @@ import numpy as np
 from ..chem import Peptide
 from .config import DigestConfig
 from .digest import cleave_protein, parse_fasta
-from .precursors import Precursor, _fixed_mod_sites, _mod_target
+from .mod_rules import fixed_sites, sampled_sites
+from .precursors import Precursor
 
 _AA = "ACDEFGHIKLMNPQRSTVWY"
 # Rough natural abundances so random peptides are not uniform noise.
@@ -120,19 +121,18 @@ def precursors_from_sequences(
     hence that much teacher time, in exchange for exhaustive and deterministic charge coverage.
     """
     charges = list(cfg.charges)
+    # Parsed once per call rather than per sequence: a chunk is thousands of sequences and the
+    # rules do not vary within one.
+    fixed_rules = cfg.fixed_rules()
+    variable_rules = cfg.variable_rules()
     out: list[Precursor] = []
     for seq in sequences:
-        fixed = _fixed_mod_sites(seq, cfg.fixed_mods)
-        var_sites: list[tuple[int, str]] = []
-        for name in cfg.variable_mods:
-            target = _mod_target(name)
-            var_sites += [(i, name) for i, a in enumerate(seq) if a == target]
-        chosen: list[tuple[int, str]] = []
-        if var_sites and cfg.max_variable_mods > 0:
-            k = int(rng.integers(0, min(cfg.max_variable_mods, len(var_sites)) + 1))
-            if k:
-                idx = rng.choice(len(var_sites), size=k, replace=False)
-                chosen = [var_sites[i] for i in idx]
+        fixed = fixed_sites(seq, fixed_rules)
+        # Each candidate site draws independently at its rule's rate, so a peptide with ten
+        # serines is ten times as likely to carry a phosphate as one with a single serine. The
+        # previous version picked a uniform *count* of modifications and then a random subset,
+        # which made modification frequency a property of the config rather than of the peptide.
+        chosen = sampled_sites(seq, variable_rules, rng, cfg.max_variable_mods)
         pep = Peptide(seq, tuple(fixed + chosen))
         if all_charge_states:
             out.extend(Precursor(pep, int(z), "train") for z in charges)

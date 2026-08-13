@@ -11,16 +11,33 @@ from .base import PrecursorLabels, Teacher
 
 
 def _mod_name(pep, spec) -> str:
-    """peptdeep identifies modifications by NAME, so a bare mass delta cannot be expressed.
+    """Name one modification for peptdeep, which identifies them by name rather than by mass.
 
-    This is the boundary at which our canonical identity is translated into peptdeep's notation,
-    and the only place a foreign spelling is emitted. Our peptides carry UNIMOD accessions;
-    peptdeep keys its table on ``Name@Site`` strings, so the accession is resolved to a name here.
+    ``pep`` is a :class:`~pepdistill.chem.Peptide` (used only for error messages) and ``spec`` is
+    one of its mod specs: a ``str`` identity, or a ``float`` bare mass delta.
 
-    Resolved through the vendored UNIMOD table rather than a hand-written mapping, so there is one
-    source of truth for what an accession means and no second table to drift. An accession the
-    table does not know, or a bare mass delta, is refused: a fabricated identifier would be
-    silently mis-looked-up against peptdeep's table and produce a confident wrong spectrum.
+    An accession is resolved to a name through the vendored UNIMOD table, so there is one source of
+    truth for what it means and no second mapping to drift:
+
+    >>> from pepdistill.chem import Peptide
+    >>> peptide = Peptide.from_string("PEPS[UNIMOD:21]IDEK")
+    >>> _mod_name(peptide, "UNIMOD:21")
+    'Phospho'
+
+    A name already in peptdeep's own vocabulary passes through untouched:
+
+    >>> _mod_name(peptide, "Carbamidomethyl@C")
+    'Carbamidomethyl@C'
+
+    A bare mass delta has no name to translate to, and inventing one would be looked up against
+    peptdeep's table and yield a confident wrong spectrum:
+
+    >>> _mod_name(Peptide.from_string("PEP[+15.5]TIDEK"), 15.5)
+    Traceback (most recent call last):
+    ValueError: peptide 'PEP[+15.5]TIDEK' carries a mass-only modification (+15.5), ...
+
+    This is the boundary at which our canonical identity becomes a foreign spelling, and the only
+    place one is emitted.
     """
     if not isinstance(spec, str):
         raise ValueError(

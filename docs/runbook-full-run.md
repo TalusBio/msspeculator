@@ -121,6 +121,10 @@ max_len = 30
 min_charge = 2                   # <-- charge range lives HERE (per source), not on [pretrain]
 max_charge = 4
 max_var_mods = 1
+fixed_mods = ["C[UNIMOD:4]"]
+# Per-matching-residue rate. The canonical PTMs measured in PROSPECT, minus TMT, which the
+# teacher scores at 0.29-0.34 and so cannot usefully supervise.
+variable_mods = { "M[UNIMOD:35]" = 0.001, "STY[UNIMOD:21]" = 0.001, "K[UNIMOD:1]" = 0.001, "K[UNIMOD:121]" = 0.001 }
 
 [train]                          # fine-tune on the prepared PROSPECT manifest
 enabled = true

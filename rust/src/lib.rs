@@ -36,9 +36,18 @@ fn parse_site(obj: &Bound<'_, PyAny>) -> PyResult<Site> {
     Ok(Site::Residue(obj.extract::<usize>()?))
 }
 
-/// Python-side `spec` is `str | float`.
+/// Python-side `spec` is `str | float`. A `"UNIMOD:<accession>"` string is the canonical identity
+/// and becomes a real accession spec; anything else remains a historical name.
 fn parse_spec(obj: &Bound<'_, PyAny>) -> PyResult<ModSpec> {
     if let Ok(name) = obj.extract::<String>() {
+        if let Some(digits) = name.strip_prefix("UNIMOD:") {
+            let accession = digits.parse::<u32>().map_err(|_| {
+                pyo3::exceptions::PyValueError::new_err(format!(
+                    "invalid UNIMOD accession {name:?}"
+                ))
+            })?;
+            return proforma::unimod_spec(accession).map_err(to_pyerr);
+        }
         return Ok(ModSpec::Named(name));
     }
     Ok(ModSpec::MassOnly(obj.extract::<f64>()?))
@@ -156,6 +165,27 @@ impl Peptide {
         let mods = mods_to_py(&slf.inner.mods, py);
         Ok((cls, (slf.inner.sequence.clone(), mods)))
     }
+}
+
+/// Parse a modification rule into `(targets, spec)`.
+///
+/// `"STY[UNIMOD:21]"` -> `(["S", "T", "Y"], "UNIMOD:21")`: one rule naming every residue it
+/// applies to. `"[UNIMOD:737]-"` and `"-[UNIMOD:21]"` target the termini, reported as `"n"` and
+/// `"c"` so they match the site vocabulary `Peptide` already uses.
+///
+/// Same grammar as a peptide's modifications, so a rule cannot express a modification a peptide
+/// could not carry, and an unknown accession is rejected here rather than at first use.
+#[pyfunction]
+fn parse_modification_rule(rule: &str) -> PyResult<(Vec<String>, String)> {
+    let parsed = proforma::parse_modification_rule(rule).map_err(to_pyerr)?;
+    let targets = match parsed.target {
+        proforma::ModificationTarget::Residues(residues) => {
+            residues.into_iter().map(|r| r.to_string()).collect()
+        }
+        proforma::ModificationTarget::PeptideNTerm => vec!["n".to_string()],
+        proforma::ModificationTarget::PeptideCTerm => vec!["c".to_string()],
+    };
+    Ok((targets, parsed.spec.render()))
 }
 
 #[pyfunction]
@@ -308,6 +338,7 @@ fn pepdistill_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(fragment_mz_matrix, m)?)?;
     m.add_function(wrap_pyfunction!(ms2_target_shape, m)?)?;
     m.add_function(wrap_pyfunction!(unimod_name, m)?)?;
+    m.add_function(wrap_pyfunction!(parse_modification_rule, m)?)?;
     m.add_function(wrap_pyfunction!(unimod_accession, m)?)?;
     m.add_function(wrap_pyfunction!(mod_element_comp, m)?)?;
     m.add_function(wrap_pyfunction!(collate, m)?)?;

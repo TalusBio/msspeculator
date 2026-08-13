@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ..chem import MOD_DELTA
+from .mod_rules import ModRule, parse_rule
 
 
 # Enzyme cleavage rules: cut C-terminal to any residue in ``cleave_after``, unless the
@@ -38,38 +38,46 @@ class DigestConfig:
     max_length: int = 30
     min_charge: int = 2
     max_charge: int = 4
-    # Fixed mods always applied to every matching residue.
-    fixed_mods: tuple[str, ...] = ("Carbamidomethyl@C",)
-    # Variable mods enumerated as mod-forms up to ``max_variable_mods`` per peptide.
-    variable_mods: tuple[str, ...] = ("Oxidation@M",)
+    # Fixed rules, applied to every matching site.
+    fixed_mods: tuple[str, ...] = ("C[UNIMOD:4]",)
+    # Variable rules with a per-site probability: each matching residue independently takes the
+    # modification at that rate. The defaults are the canonical PTMs measured in PROSPECT, minus
+    # TMT, which the teacher scores at 0.29-0.34 and so cannot usefully supervise.
+    variable_mods: tuple[tuple[str, float], ...] = (
+        ("M[UNIMOD:35]", 0.001),
+        ("STY[UNIMOD:21]", 0.001),
+        ("K[UNIMOD:1]", 0.001),
+        ("K[UNIMOD:121]", 0.001),
+    )
     max_variable_mods: int = 1
 
     def __post_init__(self) -> None:
-        """Reject a mod name here, where the config is read, rather than deep in a run.
+        """Reject an unusable rule here, where the config is read, rather than deep in a run.
 
-        A fixed or variable mod name has to answer two questions: which residue it sits on, which
-        is the ``@R`` suffix, and what mass it adds, which is the lookup in ``MOD_DELTA``. Nothing
-        checked either on the pretrain path, and neither failure was prompt: a name without ``@``
-        reached ``_mod_target`` and raised ``IndexError: list index out of range``, while a name
-        with one that the vocabulary does not know built precursors quite happily -- ``Peptide``
-        resolves the mass lazily -- and only raised once the teacher or encoder asked for a mass,
-        by which point a run had been going for a while.
+        The grammar answers both questions a rule has to: which sites it applies to (the residue
+        set) and what it places there (the accession). Neither was checked on the pretrain path
+        before, and neither failure was prompt -- a site-agnostic name raised ``IndexError`` from a
+        string split, and an unknown one built precursors quite happily, because ``Peptide``
+        resolves mass lazily, then failed once the teacher asked for a mass well into a run.
         """
-        for group, names in (
-            ("fixed_mods", self.fixed_mods),
-            ("variable_mods", self.variable_mods),
-        ):
-            for name in names:
-                if "@" not in name:
-                    raise ValueError(
-                        f"{group} entry {name!r} names no residue; a site-agnostic name cannot be "
-                        f"placed. Write it as Title@Residue, such as {name}@S"
-                    )
-                if name not in MOD_DELTA:
-                    raise ValueError(
-                        f"{group} entry {name!r} is not a known modification; known: "
-                        f"{sorted(n for n in MOD_DELTA if '@' in n)}"
-                    )
+        for rule in self.fixed_mods:
+            parse_rule(rule)
+        for rule, probability in self.variable_mods:
+            parse_rule(rule)
+            if not 0.0 < probability <= 1.0:
+                raise ValueError(
+                    f"variable_mods rule {rule!r} has probability {probability!r}; it must be in "
+                    "(0, 1]. Remove the rule rather than setting it to zero."
+                )
+        if self.max_variable_mods < 0:
+            raise ValueError("max_variable_mods must not be negative")
+
+    def fixed_rules(self) -> tuple[ModRule, ...]:
+        """Parsed fixed rules. Parsed on demand, so callers do this once per batch, not per row."""
+        return tuple(parse_rule(rule) for rule in self.fixed_mods)
+
+    def variable_rules(self) -> tuple[tuple[ModRule, float], ...]:
+        return tuple((parse_rule(rule), probability) for rule, probability in self.variable_mods)
 
     def enzyme_rule(self) -> Enzyme:
         try:

@@ -87,6 +87,29 @@ fn parse_formula(pair: Pair<'_, Rule>) -> Result<(String, AtomicComposition)> {
     Ok((text, AtomicComposition { counts }))
 }
 
+/// Build the spec for a UNIMOD accession, choosing its encoder route.
+///
+/// Shared by the grammar and by the Python binding, so an accession means the same thing however
+/// it arrives: as `[UNIMOD:4]` inside a peptide, or as the string `"UNIMOD:4"` for one site.
+/// Without that sharing the binding produced a `Named("UNIMOD:4")`, whose mass lookup then failed
+/// against a table keyed on titles.
+pub fn unimod_spec(accession: u32) -> Result<ModSpec> {
+    let entry = crate::unimod::by_accession(accession)
+        .with_context(|| format!("unknown UNIMOD accession {accession}"))?;
+    let route = match entry.comp.element_comp() {
+        Ok(_) => EncodingRoute::Composition,
+        Err(reason) => {
+            eprintln!(
+                "warning: UNIMOD:{accession} ({}) cannot use the composition encoder: \
+                 {reason}; using exact {:+.9} Da through the mass encoder",
+                entry.title, entry.mono_mass
+            );
+            EncodingRoute::Mass
+        }
+    };
+    Ok(ModSpec::Unimod { accession, route })
+}
+
 fn parse_modification(pair: Pair<'_, Rule>) -> Result<ModSpec> {
     debug_assert_eq!(pair.as_rule(), Rule::modification);
     let descriptor = pair.into_inner().next().expect("modification is empty");
@@ -98,20 +121,7 @@ fn parse_modification(pair: Pair<'_, Rule>) -> Result<ModSpec> {
                 .expect("UNIMOD grammar lost prefix")
                 .parse()
                 .context("invalid UNIMOD accession")?;
-            let entry = crate::unimod::by_accession(accession)
-                .with_context(|| format!("unknown UNIMOD accession {accession}"))?;
-            let route = match entry.comp.element_comp() {
-                Ok(_) => EncodingRoute::Composition,
-                Err(reason) => {
-                    eprintln!(
-                        "warning: UNIMOD:{accession} ({}) cannot use the composition encoder: \
-                         {reason}; using exact {:+.9} Da through the mass encoder",
-                        entry.title, entry.mono_mass
-                    );
-                    EncodingRoute::Mass
-                }
-            };
-            Ok(ModSpec::Unimod { accession, route })
+            unimod_spec(accession)
         }
         Rule::mass_delta => {
             let mass: f64 = descriptor.as_str().parse().context("invalid mass delta")?;

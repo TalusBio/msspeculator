@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from itertools import combinations
 
 import pandas as pd
 
-from ..chem import MOD_DELTA, Peptide
+from ..chem import Peptide
 from .config import DigestConfig, SplitConfig
+from .mod_rules import enumerate_modforms, fixed_sites
 from .split import assign_split
 
 
@@ -19,46 +19,23 @@ class Precursor:
     split: str
 
 
-def _mod_target(name: str) -> str:
-    """Residue a mod applies to, from an ``X@R`` name (e.g. ``Oxidation@M`` -> ``M``)."""
-    return name.split("@", 1)[1]
-
-
-def _fixed_mod_sites(sequence: str, fixed_mods: tuple[str, ...]) -> list[tuple[int, str]]:
-    sites: list[tuple[int, str]] = []
-    for name in fixed_mods:
-        target = _mod_target(name)
-        sites += [(i, name) for i, aa in enumerate(sequence) if aa == target]
-    return sites
-
-
-def _variable_modforms(
-    sequence: str, variable_mods: tuple[str, ...], max_var: int
-) -> list[list[tuple[int, str]]]:
-    """All variable-mod combinations (including the empty, unmodified form)."""
-    candidates: list[tuple[int, str]] = []
-    for name in variable_mods:
-        target = _mod_target(name)
-        candidates += [(i, name) for i, aa in enumerate(sequence) if aa == target]
-    forms: list[list[tuple[int, str]]] = [[]]
-    for k in range(1, min(max_var, len(candidates)) + 1):
-        forms.extend([list(c) for c in combinations(candidates, k)])
-    return forms
-
-
 def enumerate_precursors(
     peptides: list[str], digest: DigestConfig, split: SplitConfig
 ) -> list[Precursor]:
-    """Cartesian expansion of peptides over mod-forms and charge states."""
-    for name in (*digest.fixed_mods, *digest.variable_mods):
-        if name not in MOD_DELTA:
-            raise ValueError(f"unknown modification {name!r}; known: {sorted(MOD_DELTA)}")
+    """Cartesian expansion of peptides over mod-forms and charge states.
 
+    Exhaustive: every variable mod-form up to the per-peptide cap, ignoring the rules'
+    probabilities. This is the library-generation path, where a missing modform is an
+    identification that cannot be made. The pretrain stream samples instead -- see
+    :func:`pepdistill.data.mod_rules.sampled_sites`.
+    """
+    fixed_rules = digest.fixed_rules()
+    variable_rules = tuple(rule for rule, _ in digest.variable_rules())
     out: list[Precursor] = []
     for seq in peptides:
         which_split = assign_split(seq, split)
-        fixed = _fixed_mod_sites(seq, digest.fixed_mods)
-        for var in _variable_modforms(seq, digest.variable_mods, digest.max_variable_mods):
+        fixed = fixed_sites(seq, fixed_rules)
+        for var in enumerate_modforms(seq, variable_rules, digest.max_variable_mods):
             pep = Peptide(seq, tuple(fixed + var))
             for z in digest.charges:
                 out.append(Precursor(pep, z, which_split))

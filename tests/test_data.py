@@ -89,14 +89,24 @@ def test_bad_split_fractions():
 
 
 def test_enumerate_applies_fixed_and_variable_mods():
-    dcfg = DigestConfig(min_charge=2, max_charge=2, max_variable_mods=1)
-    scfg = SplitConfig()
-    precs = enumerate_precursors(["ACDEMK"], dcfg, scfg)
-    # One Cys (fixed CAM always), one Met (0 or 1 oxidation) -> 2 mod-forms, 1 charge.
+    """Library generation enumerates every modform, ignoring the rules' probabilities.
+
+    A library that omitted a modform would simply fail to identify it, so this path is exhaustive
+    even though the same rules carry a sampling rate for pretraining.
+    """
+    dcfg = DigestConfig(
+        min_charge=2,
+        max_charge=2,
+        max_variable_mods=1,
+        # A rate of 1e-9 would sample nothing; enumeration must ignore it entirely.
+        variable_mods=(("M[UNIMOD:35]", 1e-9),),
+    )
+    precs = enumerate_precursors(["ACDEMK"], dcfg, SplitConfig())
+    # One Cys (fixed, always), one Met (0 or 1 oxidation) -> 2 modforms, 1 charge.
     assert len(precs) == 2
     for p in precs:
-        assert any(name == "Carbamidomethyl@C" for _, name in p.peptide.mods)
-    ox_counts = {sum(1 for _, n in p.peptide.mods if n == "Oxidation@M") for p in precs}
+        assert any(spec == "UNIMOD:4" for _, spec in p.peptide.mods)
+    ox_counts = {sum(1 for _, spec in p.peptide.mods if spec == "UNIMOD:35") for p in precs}
     assert ox_counts == {0, 1}
 
 
@@ -366,17 +376,19 @@ def test_unplaceable_mod_names_are_rejected_where_the_config_is_read():
     for a mass. The two causes stay distinguishable, since the fixes differ -- add the residue, or
     use a mod that exists.
     """
-    with pytest.raises(ValueError, match="names no residue"):
-        DigestConfig(variable_mods=("Phospho",))
-    with pytest.raises(ValueError, match="not a known modification"):
-        DigestConfig(variable_mods=("Phospho@S",))
-    with pytest.raises(ValueError, match="not a known modification"):
-        DigestConfig(fixed_mods=("Nonsense@M",))
-    # The offending setting is named, so a config with both lists populated is actionable.
-    with pytest.raises(ValueError, match="fixed_mods entry"):
-        DigestConfig(fixed_mods=("Phospho",), variable_mods=("Oxidation@M",))
-    # Site-agnostic names remain valid as explicit site specs; they are only unplaceable here.
-    assert DigestConfig().fixed_mods == ("Carbamidomethyl@C",)
+    # A rule with no residue set says nothing about where it goes.
+    with pytest.raises(ValueError, match="invalid modification rule"):
+        DigestConfig(variable_mods=(("[UNIMOD:21]", 0.001),))
+    # A bare name is not a modification identity the grammar accepts.
+    with pytest.raises(ValueError, match="invalid modification rule"):
+        DigestConfig(variable_mods=(("STY[Phospho]", 0.001),))
+    # An accession outside the vendored UNIMOD table is refused rather than carried.
+    with pytest.raises(ValueError, match="unknown UNIMOD accession"):
+        DigestConfig(fixed_mods=("C[UNIMOD:99999]",))
+    # A zero rate is a rule that never fires, which is a config mistake, not a way to disable one.
+    with pytest.raises(ValueError, match="must be in"):
+        DigestConfig(variable_mods=(("M[UNIMOD:35]", 0.0),))
+    assert DigestConfig().fixed_mods == ("C[UNIMOD:4]",)
 
 
 def test_pretrain_sources_carry_their_own_mods():
@@ -388,17 +400,25 @@ def test_pretrain_sources_carry_their_own_mods():
     from pepdistill.distill.pipeline import DigestSource, _digest_cfg
 
     default = _digest_cfg(DigestSource(fasta="x.fasta"))
-    assert (default.fixed_mods, default.variable_mods) == (
-        ("Carbamidomethyl@C",),
-        ("Oxidation@M",),
+    assert default.fixed_mods == ("C[UNIMOD:4]",)
+    # The canonical PTMs measured in PROSPECT, minus TMT, each at 0.1% per matching residue.
+    assert default.variable_mods == (
+        ("M[UNIMOD:35]", 0.001),
+        ("STY[UNIMOD:21]", 0.001),
+        ("K[UNIMOD:1]", 0.001),
+        ("K[UNIMOD:121]", 0.001),
     )
 
-    # A TOML list arrives as a list, not a tuple, and DigestConfig is frozen with tuple fields.
+    # TOML hands over a list and an inline table, not tuples, and DigestConfig fields are tuples.
     explicit = _digest_cfg(
-        DigestSource(fasta="x.fasta", fixed_mods=["Carbamidomethyl@C"], variable_mods=[])
+        DigestSource(
+            fasta="x.fasta",
+            fixed_mods=["C[UNIMOD:4]"],
+            variable_mods={"STY[UNIMOD:21]": 0.01},
+        )
     )
-    assert explicit.fixed_mods == ("Carbamidomethyl@C",)
-    assert explicit.variable_mods == ()
+    assert explicit.fixed_mods == ("C[UNIMOD:4]",)
+    assert explicit.variable_mods == (("STY[UNIMOD:21]", 0.01),)
 
 
 def test_ingest_stores_the_canonical_spelling_whatever_prospect_wrote():
