@@ -18,9 +18,12 @@ than whatever the config says today.
 | energy_bucket_width | 1.0 |
 | half_max_fraction | 0.5 |
 | max_psms_per_context | 2 |
+| max_run_width_minutes | 0.25 |
 | min_in_window_psms | 4 |
+| min_run_width_minutes | 0.05 |
 | width_anchor_min_psms | 8 |
-| width_scope | robust median per raw file |
+| width_scope | robust median per raw file, clamped to [0.05, 0.25] minutes and used directly as the acceptance window (apex +/- width/2) |
+| policy_version (code) | unrecorded |
 
 ## Headline
 
@@ -30,12 +33,12 @@ Coverage is the count of retained peptidoform instances.
 
 | | |
 | --- | --- |
-| rows in | 111,724,054 |
-| rows retained | 22,203,467 |
-| retention | 19.87% |
-| peptidoform instances | 4,673,346 |
-| peptidoform instances retained | 3,409,445 |
-| shards with zero retained rows | 32 |
+| rows in | 111,617,945 |
+| rows retained | 21,003,479 |
+| retention | 18.82% |
+| peptidoform instances | 4,667,223 |
+| peptidoform instances retained | 3,182,520 |
+| shards with zero retained rows | 13 |
 | manifests without a curation report | 0 |
 
 An empty shard is an explicit *nothing passed the policy*, which is distinguishable from
@@ -44,81 +47,62 @@ missing.
 
 ## By source
 
-| source | shards | empty | rows in | retained | no usable intensity | clamped runs |
-| --- | --- | --- | --- | --- | --- | --- |
-| prospect_tum_second_pool | 132 | 1 | 6,020,839 | 25.88% | 2.18% | 0 / 0 |
-| tmt_tum_second_pool | 270 | 0 | 1,847,421 | 25.70% | 1.51% | 0 / 0 |
-| tmt_tum_aspn | 82 | 0 | 541,286 | 24.64% | 1.75% | 0 / 0 |
-| multi_ptm_ubi | 207 | 0 | 2,874,518 | 24.40% | 2.01% | 0 / 0 |
-| tmt_tum_lysn | 88 | 0 | 786,594 | 23.95% | 0.81% | 0 / 0 |
-| tmt_tum_hla | 662 | 0 | 7,875,009 | 23.26% | 0.54% | 0 / 0 |
-| multi_ptm_acetylated | 147 | 3 | 2,399,956 | 22.69% | 1.46% | 0 / 0 |
-| tmt_tum_third_pool | 12 | 0 | 123,981 | 22.68% | 1.94% | 0 / 0 |
-| prospect_tum_hla | 178 | 0 | 10,679,800 | 22.34% | 1.36% | 0 / 0 |
-| prospect_tum_missing_first | 12 | 0 | 442,781 | 22.21% | 3.03% | 0 / 0 |
-| tmt_ptm_pt | 90 | 0 | 332,537 | 22.13% | 1.18% | 0 / 0 |
-| prospect_tum_lysn | 44 | 0 | 2,202,734 | 22.02% | 3.91% | 0 / 0 |
-| prospect_tum_isoform | 118 | 0 | 9,463,809 | 21.13% | 2.37% | 0 / 0 |
-| tmt_tum_proteo_tmt | 87 | 3 | 1,363,777 | 20.81% | 1.27% | 0 / 0 |
-| tmt_tum_isoform | 292 | 0 | 5,118,910 | 20.77% | 0.62% | 0 / 0 |
-| multi_ptm_tum_nterm_ac | 21 | 0 | 284,449 | 20.77% | 2.80% | 0 / 0 |
-| prospect_tum_third_pool | 6 | 0 | 337,739 | 20.50% | 1.77% | 0 / 0 |
-| tmt_tum_first_pool | 291 | 0 | 4,975,178 | 20.16% | 1.12% | 0 / 0 |
-| multi_ptm_monomethyl | 75 | 0 | 1,005,323 | 20.00% | 1.44% | 0 / 0 |
-| prospect_tum_first_pool | 123 | 0 | 9,915,958 | 19.96% | 1.71% | 0 / 0 |
-| tmt_ptm_monomethyl | 37 | 0 | 465,893 | 19.79% | 0.50% | 0 / 0 |
-| multi_ptm_pyroglu | 36 | 0 | 585,622 | 19.73% | 1.83% | 0 / 0 |
-| multi_ptm_ps | 187 | 0 | 1,652,335 | 19.67% | 2.73% | 0 / 0 |
-| prospect_tum_aspn | 41 | 0 | 2,570,781 | 18.96% | 4.27% | 0 / 0 |
-| tmt_tum_second_addon | 110 | 0 | 1,974,804 | 18.75% | 0.70% | 0 / 0 |
-| prospect_tum_hla2 | 158 | 0 | 7,149,116 | 18.64% | 2.34% | 0 / 0 |
-| tmt_ptm_acetylated | 194 | 0 | 648,882 | 18.39% | 1.77% | 0 / 0 |
-| multi_ptm_pt | 124 | 18 | 667,737 | 18.38% | 3.30% | 0 / 0 |
-| tmt_ptm_ps | 144 | 0 | 1,133,962 | 18.12% | 0.49% | 0 / 0 |
-| prospect_tum_second_addon | 54 | 0 | 4,078,682 | 17.20% | 2.63% | 0 / 0 |
-| tmt_thermo_srm_pool | 378 | 0 | 3,198,598 | 16.84% | 1.09% | 0 / 0 |
-| prospect_thermo_srm_pool | 88 | 0 | 6,051,876 | 16.60% | 1.73% | 0 / 0 |
-| tmt_ptm_py | 132 | 0 | 2,985,621 | 15.88% | 0.82% | 0 / 0 |
-| prospect_tum_proteo_tmt | 29 | 0 | 2,571,531 | 15.86% | 2.55% | 0 / 0 |
-| multi_ptm_py | 105 | 0 | 2,505,658 | 14.12% | 1.57% | 0 / 0 |
-| tmt_ptm_imp_psty | 60 | 0 | 536,085 | 13.21% | 0.78% | 0 / 0 |
-| multi_ptm_imp_psty | 131 | 4 | 1,163,789 | 11.22% | 1.64% | 0 / 0 |
-| multi_ptm_ogalnac | 57 | 0 | 861,638 | 8.39% | 1.89% | 0 / 0 |
-| multi_ptm_citrullination | 70 | 0 | 1,089,197 | 7.90% | 1.67% | 0 / 0 |
-| multi_ptm_oglcnac | 63 | 1 | 918,464 | 2.64% | 1.04% | 0 / 0 |
-| tmt_tum_missing_first | 39 | 2 | 321,184 | 1.93% | 2.06% | 0 / 0 |
+| source | shards | empty shards | rows in | rows retained (%) | rows without usable intensity (%) | runs clamped / runs | ceiling SA mean (in-window) |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| tmt_tum_second_pool | 270 | 0 | 1,847,421 | 25.74% | 1.51% | 36 / 270 | 0.8683 |
+| tmt_tum_aspn | 82 | 0 | 541,286 | 24.65% | 1.75% | 3 / 82 | 0.8789 |
+| prospect_tum_second_pool | 132 | 1 | 6,009,725 | 24.34% | 2.18% | 109 / 392 | 0.9230 |
+| multi_ptm_ubi | 207 | 0 | 2,874,518 | 24.05% | 2.01% | 14 / 207 | 0.9240 |
+| tmt_tum_lysn | 88 | 0 | 786,594 | 23.95% | 0.81% | 1 / 88 | 0.9075 |
+| tmt_tum_hla | 662 | 0 | 7,875,009 | 23.26% | 0.54% | 0 / 662 | 0.9076 |
+| tmt_tum_third_pool | 12 | 0 | 123,981 | 22.68% | 1.94% | 0 / 12 | 0.8920 |
+| tmt_ptm_pt | 90 | 0 | 332,179 | 22.12% | 1.18% | 0 / 90 | 0.9101 |
+| multi_ptm_acetylated | 147 | 0 | 2,399,956 | 21.26% | 1.46% | 42 / 147 | 0.9445 |
+| prospect_tum_lysn | 44 | 0 | 2,200,914 | 20.94% | 3.91% | 40 / 132 | 0.9126 |
+| tmt_tum_isoform | 292 | 0 | 5,118,910 | 20.77% | 0.62% | 0 / 292 | 0.9079 |
+| prospect_tum_missing_first | 12 | 0 | 442,398 | 20.51% | 3.03% | 12 / 36 | 0.9269 |
+| tmt_tum_first_pool | 291 | 0 | 4,975,178 | 20.16% | 1.12% | 7 / 291 | 0.8874 |
+| prospect_tum_isoform | 118 | 0 | 9,445,463 | 19.93% | 2.37% | 117 / 354 | 0.9405 |
+| prospect_tum_hla | 178 | 0 | 10,676,029 | 19.92% | 1.36% | 171 / 533 | 0.9345 |
+| tmt_ptm_monomethyl | 37 | 0 | 444,063 | 19.73% | 0.50% | 0 / 37 | 0.8999 |
+| tmt_tum_second_addon | 110 | 0 | 1,974,804 | 18.75% | 0.70% | 0 / 110 | 0.9058 |
+| tmt_tum_proteo_tmt | 87 | 0 | 1,363,777 | 18.65% | 1.27% | 29 / 87 | 0.9374 |
+| multi_ptm_tum_nterm_ac | 21 | 0 | 284,449 | 18.53% | 2.80% | 7 / 21 | 0.9303 |
+| prospect_tum_first_pool | 123 | 0 | 9,897,271 | 18.35% | 1.71% | 89 / 369 | 0.9387 |
+| tmt_ptm_acetylated | 194 | 0 | 647,330 | 18.35% | 1.77% | 1 / 194 | 0.8847 |
+| multi_ptm_pyroglu | 36 | 0 | 585,622 | 18.28% | 1.83% | 9 / 36 | 0.9341 |
+| prospect_tum_third_pool | 6 | 0 | 337,499 | 18.27% | 1.77% | 6 / 18 | 0.9396 |
+| tmt_ptm_ps | 144 | 0 | 1,133,962 | 18.12% | 0.49% | 4 / 144 | 0.9159 |
+| multi_ptm_monomethyl | 75 | 0 | 1,005,323 | 18.07% | 1.44% | 36 / 75 | 0.9475 |
+| prospect_tum_aspn | 41 | 0 | 2,568,604 | 18.04% | 4.27% | 29 / 123 | 0.9189 |
+| multi_ptm_ps | 187 | 0 | 1,652,335 | 17.45% | 2.73% | 60 / 187 | 0.9257 |
+| prospect_tum_hla2 | 158 | 0 | 7,147,599 | 17.25% | 2.34% | 138 / 471 | 0.9300 |
+| tmt_thermo_srm_pool | 378 | 0 | 3,198,598 | 16.84% | 1.09% | 0 / 378 | 0.9020 |
+| multi_ptm_pt | 124 | 6 | 667,737 | 16.70% | 3.30% | 48 / 124 | 0.9309 |
+| prospect_tum_second_addon | 54 | 0 | 4,069,351 | 16.15% | 2.64% | 53 / 161 | 0.9438 |
+| tmt_ptm_py | 132 | 0 | 2,980,008 | 15.88% | 0.82% | 0 / 132 | 0.9096 |
+| prospect_tum_proteo_tmt | 29 | 0 | 2,567,331 | 15.36% | 2.55% | 29 / 87 | 0.9504 |
+| prospect_thermo_srm_pool | 88 | 0 | 6,046,737 | 14.72% | 1.73% | 84 / 262 | 0.9481 |
+| tmt_ptm_imp_psty | 60 | 0 | 536,054 | 13.21% | 0.78% | 2 / 60 | 0.9108 |
+| multi_ptm_py | 105 | 0 | 2,505,658 | 12.99% | 1.57% | 45 / 105 | 0.9484 |
+| multi_ptm_imp_psty | 131 | 4 | 1,163,789 | 9.44% | 1.64% | 56 / 131 | 0.9320 |
+| multi_ptm_ogalnac | 57 | 0 | 861,638 | 7.39% | 1.89% | 17 / 57 | 0.9351 |
+| multi_ptm_citrullination | 70 | 0 | 1,089,197 | 7.02% | 1.67% | 26 / 70 | 0.9427 |
+| multi_ptm_oglcnac | 63 | 0 | 918,464 | 2.39% | 1.04% | 16 / 63 | 0.9590 |
+| tmt_tum_missing_first | 39 | 2 | 321,184 | 1.93% | 2.06% | 2 / 39 | 0.8427 |
 
 ## Shards that retained nothing
 
-- `multi_ptm_TUM_mod_OGlcNAc/41`
-- `multi_ptm_TUM_mod_acetylated/116`
-- `multi_ptm_TUM_mod_acetylated/122`
-- `multi_ptm_TUM_mod_acetylated/77`
 - `multi_ptm_TUM_mod_imp_pSTY/24`
 - `multi_ptm_TUM_mod_imp_pSTY/25`
 - `multi_ptm_TUM_mod_imp_pSTY/3`
 - `multi_ptm_TUM_mod_imp_pSTY/4`
-- `multi_ptm_TUM_mod_pT/100`
 - `multi_ptm_TUM_mod_pT/101`
-- `multi_ptm_TUM_mod_pT/103`
-- `multi_ptm_TUM_mod_pT/106`
-- `multi_ptm_TUM_mod_pT/107`
-- `multi_ptm_TUM_mod_pT/108`
-- `multi_ptm_TUM_mod_pT/109`
-- `multi_ptm_TUM_mod_pT/111`
-- `multi_ptm_TUM_mod_pT/112`
 - `multi_ptm_TUM_mod_pT/113`
-- `multi_ptm_TUM_mod_pT/114`
 - `multi_ptm_TUM_mod_pT/115`
-- `multi_ptm_TUM_mod_pT/117`
-- `multi_ptm_TUM_mod_pT/118`
-- `multi_ptm_TUM_mod_pT/119`
-- `multi_ptm_TUM_mod_pT/120`
+- `multi_ptm_TUM_mod_pT/6`
 - `multi_ptm_TUM_mod_pT/89`
 - `multi_ptm_TUM_mod_pT/90`
 - `prospect_TUM_second_pool_3/28`
 - `tmt_TMT_TUM_missing_first/20`
 - `tmt_TMT_TUM_missing_first/9`
-- `tmt_TMT_TUM_proteo_TMT/74`
-- `tmt_TMT_TUM_proteo_TMT/80`
-- `tmt_TMT_TUM_proteo_TMT/86`
