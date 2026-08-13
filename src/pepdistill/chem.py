@@ -13,6 +13,7 @@ from pepdistill_rs import (  # noqa: F401
     fragment_mz_matrix,
     ms2_target_shape,
     unimod_accession,
+    unimod_name,
 )
 
 __all__ = [
@@ -27,4 +28,5 @@ __all__ = [
     "fragment_mz_matrix",
     "ms2_target_shape",
     "unimod_accession",
+    "unimod_name",
 ]

@@ -178,3 +178,31 @@ def test_alphabase_mod_resolution_covers_our_mixed_vocabulary():
     assert _alphabase_mod(pyro_e, 0, "Glu->pyro-Glu") == ("Glu->pyro-Glu@E^Any_N-term", 0)
     pyro_q = Peptide("QPTIDEK", ((0, "Gln->pyro-Glu"),))
     assert _alphabase_mod(pyro_q, 0, "Gln->pyro-Glu") == ("Gln->pyro-Glu@Q^Any_N-term", 0)
+
+
+def test_accessions_are_translated_at_the_peptdeep_boundary():
+    """Our canonical identity is a UNIMOD accession; peptdeep needs a name. Translate once, here.
+
+    Prepared shards carry accessions, so without this every modified spectrum raised: `UNIMOD:21`
+    became the candidate `UNIMOD:21@S`, which is in no alphabase table. Resolved through the
+    vendored UNIMOD table so there is no second mapping to drift, and an accession the table does
+    not know is refused rather than guessed at.
+    """
+    from pepdistill.chem import Peptide
+    from pepdistill.teacher.peptdeep_teacher import _alphabase_mod
+
+    for proforma, expected in (
+        ("PEPS[UNIMOD:21]IDEK", [("Phospho@S", 4)]),
+        ("[UNIMOD:737]-PEPTIDEK", [("TMT6plex@Any_N-term", 0)]),
+        ("AC[UNIMOD:4]DEM[UNIMOD:35]K", [("Carbamidomethyl@C", 2), ("Oxidation@M", 5)]),
+        ("PEPTIDEK[UNIMOD:1]", [("Acetyl@K", 8)]),
+        ("PEPTIDEK[UNIMOD:121]", [("GG@K", 8)]),
+    ):
+        peptide = Peptide.from_string(proforma)
+        resolved = [_alphabase_mod(peptide, site, spec) for site, spec in peptide.mods]
+        assert resolved == expected, proforma
+
+    # A mass-only modification has no name to translate to, and is refused rather than invented.
+    with pytest.raises(ValueError, match="mass-only modification"):
+        mass_only = Peptide.from_string("PEP[+15.5]TIDEK")
+        [_alphabase_mod(mass_only, site, spec) for site, spec in mass_only.mods]

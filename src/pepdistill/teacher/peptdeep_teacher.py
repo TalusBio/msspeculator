@@ -13,8 +13,14 @@ from .base import PrecursorLabels, Teacher
 def _mod_name(pep, spec) -> str:
     """peptdeep identifies modifications by NAME, so a bare mass delta cannot be expressed.
 
-    Refuse rather than invent a name: a fabricated identifier would be silently mis-looked-up
-    against peptdeep's own modification table, producing a confident wrong spectrum.
+    This is the boundary at which our canonical identity is translated into peptdeep's notation,
+    and the only place a foreign spelling is emitted. Our peptides carry UNIMOD accessions;
+    peptdeep keys its table on ``Name@Site`` strings, so the accession is resolved to a name here.
+
+    Resolved through the vendored UNIMOD table rather than a hand-written mapping, so there is one
+    source of truth for what an accession means and no second table to drift. An accession the
+    table does not know, or a bare mass delta, is refused: a fabricated identifier would be
+    silently mis-looked-up against peptdeep's table and produce a confident wrong spectrum.
     """
     if not isinstance(spec, str):
         raise ValueError(
@@ -23,6 +29,17 @@ def _mod_name(pep, spec) -> str:
             "modifications by name. Supply a named modification, or label this peptide with a "
             "teacher that accepts raw deltas."
         )
+    if spec.startswith("UNIMOD:"):
+        from ..chem import unimod_name
+
+        accession = int(spec.removeprefix("UNIMOD:"))
+        name = unimod_name(accession)
+        if name is None:
+            raise ValueError(
+                f"peptide {pep.modified_sequence()!r} carries {spec!r}, which is not in the "
+                "vendored UNIMOD table, so it cannot be named for the peptdeep teacher."
+            )
+        return name
     return spec
 
 
