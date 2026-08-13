@@ -2085,13 +2085,11 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "fsspec" },
-    { name = "lightning" },
     { name = "numpy" },
     { name = "pandas" },
     { name = "pepdistill-rs" },
     { name = "pyarrow" },
     { name = "safetensors" },
-    { name = "torch" },
     { name = "typer" },
 ]
 
@@ -2106,6 +2104,10 @@ onnx = [
 ]
 teacher = [
     { name = "peptdeep" },
+]
+torch = [
+    { name = "lightning" },
+    { name = "torch" },
 ]
 tracking = [
     { name = "matplotlib" },
@@ -2122,7 +2124,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "fsspec", specifier = ">=2024.0" },
-    { name = "lightning", specifier = ">=2.6.5" },
+    { name = "lightning", marker = "extra == 'torch'", specifier = ">=2.6.5" },
     { name = "matplotlib", marker = "extra == 'tracking'", specifier = ">=3.8" },
     { name = "numpy", specifier = ">=1.26" },
     { name = "onnx", marker = "extra == 'onnx'", specifier = ">=1.16,<1.18" },
@@ -2134,11 +2136,11 @@ requires-dist = [
     { name = "pyarrow", specifier = ">=15.0" },
     { name = "s3fs", marker = "extra == 'etl'", specifier = ">=2024.0" },
     { name = "safetensors", specifier = ">=0.8.0" },
-    { name = "torch", specifier = ">=2.2" },
+    { name = "torch", marker = "extra == 'torch'", specifier = ">=2.2" },
     { name = "typer", specifier = ">=0.12" },
     { name = "wandb", marker = "extra == 'tracking'", specifier = ">=0.18" },
 ]
-provides-extras = ["teacher", "onnx", "etl", "tracking"]
+provides-extras = ["torch", "teacher", "onnx", "etl", "tracking"]
 
 [package.metadata.requires-dev]
 dev = [

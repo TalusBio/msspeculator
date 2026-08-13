@@ -23,10 +23,21 @@ prepared experimental spectral libraries.
 ## Install
 
 ```bash
-uv sync                                  # inference + the pepdistill_rs Rust extension
-uv sync --extra teacher --extra etl --extra tracking  # full cloud training + W&B tracking
+uv sync                                  # core only: no torch, no Polars
+uv sync --extra etl                      # preparation workers: Polars + S3, no torch
+uv sync --extra torch --extra teacher --extra etl --extra tracking  # development / cloud training
 uv sync --extra onnx                     # optional/deferred ONNX environment
 ```
+
+Torch and Lightning sit behind the `torch` extra rather than in the core dependencies. They resolve
+to the CUDA wheels — some 3 GB of `nvidia-*` packages — and a preparation worker never builds a
+tensor, so making them optional takes an ETL install from 138 packages to 36. Commands that need
+torch say so and name the extra instead of failing on a missing import.
+
+The `dev` dependency group holds only tools (pytest, ruff, pre-commit) and deliberately does not
+reference these extras. Default groups are installed by every `uv run`, so anything named there
+would reach preparation workers too — and excluding it per-worker needs `--no-default-groups`,
+which older uv (including the cloud image's) does not have.
 
 Chemistry, the `Peptide` type, tokenization, and batch-encoding are single-sourced in Rust
 (`rust/core`) and required at runtime — `pepdistill.chem` is just a re-export shim over the

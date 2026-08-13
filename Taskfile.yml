@@ -32,7 +32,9 @@ tasks:
   sync-rust:
     desc: Rebuild and reinstall the local PyO3 extension after Rust source changes
     cmds:
-      - uv sync --extra teacher --extra etl --extra tracking --reinstall-package pepdistill-rs
+      # Extras are named explicitly: the dev group deliberately does not reference them, so that a
+      # preparation worker asking for `--extra etl` does not inherit torch through it.
+      - uv sync --extra torch --extra teacher --extra etl --extra tracking --reinstall-package pepdistill-rs
 
   test:
     desc: Run the Python and Rust test suites
