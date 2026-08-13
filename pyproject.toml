@@ -71,4 +71,10 @@ build-backend = "uv_build"
 line-length = 100
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+# src is collected so that `--doctest-modules` runs the examples in docstrings. A docstring that
+# shows what a function returns is a claim about behaviour, and an untested one drifts: the round
+# trip guard in data/meta_index.py shipped describing the *pre-fix* parser, printing a site index
+# for a modification the current code puts on a terminus. Written as a doctest, that is a failure
+# rather than prose.
+testpaths = ["tests", "src"]
+addopts = "--doctest-modules"

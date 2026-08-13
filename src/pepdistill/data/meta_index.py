@@ -146,18 +146,26 @@ def _canonical_modseq(modseq: str) -> str:
 def _verified_peptide(modseq: str) -> Peptide:
     """Parse a modified sequence, rejecting one whose mods land somewhere the source did not say.
 
-    The bug this catches, which parsing alone did not::
+    Sites are ``'n'``/``'c'`` for the termini and 0-based indices for residues:
 
-        "PEPTIDEK-[UNIMOD:21]"  parsed to  ("PEPTIDEK", [(7, "Phospho")])  # on the lysine
-                                renders    "PEPTIDEK[UNIMOD:21]"          # != input -> raise
+    >>> parse_modseq("PEPS[UNIMOD:21]IDEK")
+    ('PEPSIDEK', ((3, 'Phospho'),))
+    >>> parse_modseq("PEPTIDEK-[UNIMOD:21]")
+    ('PEPTIDEK', (('c', 'Phospho'),))
 
-    Both weigh the same, so no mass check, and no teacher comparison, can tell them apart.
+    The guard catches a modification parsed onto the wrong site. Nothing else can: the wrong site
+    weighs exactly what the right one does, so the mass agrees and so does the teacher. It is a
+    round trip because a re-render exposes the site, which a mass never does:
 
-    Canonical rather than literal comparison, because both spellings below occur in PROSPECT and
-    mean the same molecule. A literal comparison rejects 6.7% of the corpus on these alone::
+    >>> _verified_peptide("PEPTIDEK-[UNIMOD:21]").modified_sequence()
+    'PEPTIDEK-[UNIMOD:21]'
 
-        "[UNIMOD:737]SEQ"          == "[UNIMOD:737]-SEQ"           # N-term separator omitted
-        "K[UNIMOD:737][UNIMOD:1]"  == "K[UNIMOD:1][UNIMOD:737]"    # one site, either order
+    Compared canonically, not literally. PROSPECT omits the N-terminal separator that the renderer
+    emits, and orders two mods on one residue either way; a literal comparison rejects 6.7% of the
+    corpus over that punctuation alone, every case equivalent:
+
+    >>> _verified_peptide("[UNIMOD:737]GGPPSQGGK[UNIMOD:1]RK").modified_sequence()
+    '[UNIMOD:737]-GGPPSQGGK[UNIMOD:1]RK'
     """
     stripped, mods = parse_modseq(modseq)
     peptide = Peptide(stripped, mods)
