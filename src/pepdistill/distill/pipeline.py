@@ -85,7 +85,7 @@ class DigestSource:
     # is what every run silently used while these were not plumbed through at all.
     fixed_mods: tuple[str, ...] = ("C[UNIMOD:4]",)
     variable_mods: tuple[tuple[str, float], ...] = (
-        ("M[UNIMOD:35]", 0.001),
+        ("M[UNIMOD:35]", 0.1),
         ("STY[UNIMOD:21]", 0.001),
         ("K[UNIMOD:1]", 0.001),
         ("K[UNIMOD:121]", 0.001),

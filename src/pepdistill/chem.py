@@ -14,6 +14,7 @@ from pepdistill_rs import (  # noqa: F401
     ms2_target_shape,
     unimod_accession,
     unimod_name,
+    unimod_title,
 )
 
 __all__ = [
@@ -29,4 +30,5 @@ __all__ = [
     "ms2_target_shape",
     "unimod_accession",
     "unimod_name",
+    "unimod_title",
 ]

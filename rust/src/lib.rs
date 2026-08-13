@@ -226,6 +226,17 @@ fn unimod_accession(name: &str) -> Option<u32> {
     unimod::by_name(name).map(|entry| entry.accession)
 }
 
+/// The UNIMOD title for an accession, ignoring our aliases. `None` if the accession is unknown.
+///
+/// Distinct from `unimod_name`, which prefers an alias. Aliases are a read-only compatibility
+/// table for *input*; using them to generate output leaks our internal spelling, and two of the
+/// four carry a residue suffix, so `unimod_name` returns `Carbamidomethyl@C` for accession 4 and a
+/// bare `Phospho` for 21. A consumer that appends its own site needs the bare title every time.
+#[pyfunction]
+fn unimod_title(accession: u32) -> Option<String> {
+    unimod::by_accession(accession).map(|entry| entry.title.clone())
+}
+
 /// 6-element composition delta for a named modification, in `composition::ELEMENTS` order.
 /// Raises `ValueError` if the name is unknown or needs an element outside that basis.
 #[pyfunction]
@@ -340,6 +351,7 @@ fn pepdistill_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(unimod_name, m)?)?;
     m.add_function(wrap_pyfunction!(parse_modification_rule, m)?)?;
     m.add_function(wrap_pyfunction!(unimod_accession, m)?)?;
+    m.add_function(wrap_pyfunction!(unimod_title, m)?)?;
     m.add_function(wrap_pyfunction!(mod_element_comp, m)?)?;
     m.add_function(wrap_pyfunction!(collate, m)?)?;
     m.add_function(wrap_pyfunction!(collate_prepared, m)?)?;

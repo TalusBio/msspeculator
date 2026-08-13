@@ -41,7 +41,7 @@ def test_teacher_construction_does_not_emit_mask_modloss_warning():
 
 
 def test_modified_peptide_gets_labels(teacher):
-    prec = Precursor(Peptide("ACDEMK", ((1, "Carbamidomethyl@C"), (4, "Oxidation@M"))), 2, "train")
+    prec = Precursor(Peptide("ACDEMK", ((1, "UNIMOD:4"), (4, "UNIMOD:35"))), 2, "train")
     (lab,) = teacher.predict([prec])
     assert lab.ms2.shape[0] == 5
     assert lab.rt == lab.rt  # not NaN
@@ -51,7 +51,7 @@ def test_alphabase_modification_conventions_we_would_map_onto():
     """Pin the upstream facts any bare-name -> alphabase-name mapping would rest on.
 
     Our prepared rows carry a mixed vocabulary: common mods are already stored alphabase-style
-    ("Carbamidomethyl@C") while PROSPECT mods are bare UNIMOD titles ("TMT6plex"). Mapping the
+    ("UNIMOD:4") while PROSPECT mods are bare UNIMOD titles ("UNIMOD:737"). Mapping the
     latter is only safe while these upstream properties hold, and each one silently produces a
     plausible wrong spectrum if it changes, so assert them rather than assume them.
     """
@@ -121,15 +121,23 @@ def test_peptdeep_frame_refuses_mods_it_cannot_represent():
     import pytest
 
     from pepdistill.chem import Peptide
-    from pepdistill.teacher.peptdeep_teacher import _alphabase_mod, _mod_name
+    from pepdistill.teacher.peptdeep_teacher import _alphabase_mod, _modification_title
 
     mass_only = Peptide("PEPTIDE", ((2, 42.010565),))
     with pytest.raises(ValueError, match="mass-only"):
-        _mod_name(mass_only, mass_only.mods[0][1])
+        _modification_title(mass_only, mass_only.mods[0][1])
 
-    unknown = Peptide("PEPTIDE", ((2, "NotARealModification"),))
+    # A legacy name is refused for what it is, rather than searched for: identity is an accession
+    # everywhere past ingest, so a name here means something upstream skipped the boundary.
+    named = Peptide("PEPTIDE", ((2, "NotARealModification"),))
+    with pytest.raises(ValueError, match="not a UNIMOD accession"):
+        _alphabase_mod(named, *named.mods[0])
+
+    # An accession the vendored table does know, but alphabase does not register for that residue,
+    # is refused after the candidate search rather than relocated.
+    unregistered = Peptide("PEPTIDE", ((2, "UNIMOD:21"),))
     with pytest.raises(ValueError, match="does not resolve"):
-        _alphabase_mod(unknown, *unknown.mods[0])
+        _alphabase_mod(unregistered, *unregistered.mods[0])
 
 
 def test_alphabase_mod_resolution_covers_our_mixed_vocabulary():
@@ -142,42 +150,48 @@ def test_alphabase_mod_resolution_covers_our_mixed_vocabulary():
     from pepdistill.teacher.peptdeep_teacher import _alphabase_mod
 
     # Already alphabase-style (frozen aliases and the digest path) pass through untouched.
-    qualified = Peptide("ACDEMK", ((1, "Carbamidomethyl@C"), (4, "Oxidation@M")))
-    assert _alphabase_mod(qualified, 1, "Carbamidomethyl@C") == ("Carbamidomethyl@C", 2)
-    assert _alphabase_mod(qualified, 4, "Oxidation@M") == ("Oxidation@M", 5)
+    qualified = Peptide("ACDEMK", ((1, "UNIMOD:4"), (4, "UNIMOD:35")))
+    assert _alphabase_mod(qualified, 1, "UNIMOD:4") == ("Carbamidomethyl@C", 2)
+    assert _alphabase_mod(qualified, 4, "UNIMOD:35") == ("Oxidation@M", 5)
 
     # Bare titles gain the residue suffix; the site stays 1-based.
-    phospho = Peptide("SAMPLER", ((0, "Phospho"),))
-    assert _alphabase_mod(phospho, 0, "Phospho") == ("Phospho@S", 1)
+    phospho = Peptide("SAMPLER", ((0, "UNIMOD:21"),))
+    assert _alphabase_mod(phospho, 0, "UNIMOD:21") == ("Phospho@S", 1)
 
     # Terminal markers become positional names filed at site 0 / -1.
-    tmt = Peptide("DNTAEWDHK", (("n", "TMT6plex"), (8, "TMT6plex")))
-    assert _alphabase_mod(tmt, "n", "TMT6plex") == ("TMT6plex@Any_N-term", 0)
-    assert _alphabase_mod(tmt, 8, "TMT6plex") == ("TMT6plex@K", 9)
+    tmt = Peptide("DNTAEWDHK", (("n", "UNIMOD:737"), (8, "UNIMOD:737")))
+    assert _alphabase_mod(tmt, "n", "UNIMOD:737") == ("TMT6plex@Any_N-term", 0)
+    assert _alphabase_mod(tmt, 8, "UNIMOD:737") == ("TMT6plex@K", 9)
 
     # A residue-suffixed alias found on a TERMINUS must not be filed on residue 1. Our site is
     # the authority on placement, so the terminal form is required or the mod is refused --
-    # `parse_modseq("[UNIMOD:35]METIDEK")` really does yield ("n", "Oxidation@M"), and filing it
+    # `parse_modseq("[UNIMOD:35]METIDEK")` really does yield ("n", "UNIMOD:35"), and filing it
     # at residue 1 returned a confident, plausible, wrong spectrum.
     import pytest as _pytest
 
-    nterm_cam = Peptide("CDEMK", (("n", "Carbamidomethyl@C"),))
-    assert _alphabase_mod(nterm_cam, "n", "Carbamidomethyl@C") == ("Carbamidomethyl@Any_N-term", 0)
-    nterm_ox = Peptide("METIDEK", (("n", "Oxidation@M"),))
+    nterm_cam = Peptide("CDEMK", (("n", "UNIMOD:4"),))
+    assert _alphabase_mod(nterm_cam, "n", "UNIMOD:4") == ("Carbamidomethyl@Any_N-term", 0)
+    nterm_ox = Peptide("METIDEK", (("n", "UNIMOD:35"),))
     with _pytest.raises(ValueError, match="does not resolve"):
         # alphabase registers no N-terminal Oxidation, so refuse rather than relocate it.
-        _alphabase_mod(nterm_ox, "n", "Oxidation@M")
+        _alphabase_mod(nterm_ox, "n", "UNIMOD:35")
 
-    # A name whose declared residue contradicts the actual one is a contradiction, not a hint.
-    with _pytest.raises(ValueError, match="refusing to relocate"):
-        _alphabase_mod(Peptide("AKDEMK", ((1, "Carbamidomethyl@C"),)), 1, "Carbamidomethyl@C")
+    # An accession on an unusual-but-real residue now resolves, where a name did not. This used to
+    # raise "refusing to relocate", because our name declared `@C` and the site was a lysine -- but
+    # that check was enforcing our own spelling, not chemistry: carbamidomethyl-lysine exists and
+    # alphabase registers it. An accession declares no residue, so there is nothing to contradict,
+    # and alphabase's table is the authority on whether the pairing is real.
+    assert _alphabase_mod(Peptide("AKDEMK", ((1, "UNIMOD:4"),)), 1, "UNIMOD:4") == (
+        "Carbamidomethyl@K",
+        2,
+    )
 
     # Residue-anchored terminal mods exist only in compound form and are filed at site 0,
     # even though our representation stores them on residue index 0.
-    pyro_e = Peptide("EPTIDEK", ((0, "Glu->pyro-Glu"),))
-    assert _alphabase_mod(pyro_e, 0, "Glu->pyro-Glu") == ("Glu->pyro-Glu@E^Any_N-term", 0)
-    pyro_q = Peptide("QPTIDEK", ((0, "Gln->pyro-Glu"),))
-    assert _alphabase_mod(pyro_q, 0, "Gln->pyro-Glu") == ("Gln->pyro-Glu@Q^Any_N-term", 0)
+    pyro_e = Peptide("EPTIDEK", ((0, "UNIMOD:27"),))
+    assert _alphabase_mod(pyro_e, 0, "UNIMOD:27") == ("Glu->pyro-Glu@E^Any_N-term", 0)
+    pyro_q = Peptide("QPTIDEK", ((0, "UNIMOD:28"),))
+    assert _alphabase_mod(pyro_q, 0, "UNIMOD:28") == ("Gln->pyro-Glu@Q^Any_N-term", 0)
 
 
 def test_accessions_are_translated_at_the_peptdeep_boundary():

@@ -44,7 +44,7 @@ class DigestConfig:
     # modification at that rate. The defaults are the canonical PTMs measured in PROSPECT, minus
     # TMT, which the teacher scores at 0.29-0.34 and so cannot usefully supervise.
     variable_mods: tuple[tuple[str, float], ...] = (
-        ("M[UNIMOD:35]", 0.001),
+        ("M[UNIMOD:35]", 0.1),
         ("STY[UNIMOD:21]", 0.001),
         ("K[UNIMOD:1]", 0.001),
         ("K[UNIMOD:121]", 0.001),

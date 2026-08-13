@@ -403,7 +403,7 @@ def test_pretrain_sources_carry_their_own_mods():
     assert default.fixed_mods == ("C[UNIMOD:4]",)
     # The canonical PTMs measured in PROSPECT, minus TMT, each at 0.1% per matching residue.
     assert default.variable_mods == (
-        ("M[UNIMOD:35]", 0.001),
+        ("M[UNIMOD:35]", 0.1),
         ("STY[UNIMOD:21]", 0.001),
         ("K[UNIMOD:1]", 0.001),
         ("K[UNIMOD:121]", 0.001),

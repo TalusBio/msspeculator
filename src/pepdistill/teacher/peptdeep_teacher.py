@@ -5,39 +5,33 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from ..chem import ION_TYPES
+from ..chem import ION_TYPES, unimod_title
 from ..data.precursors import Precursor
 from .base import PrecursorLabels, Teacher
 
 
-def _mod_name(pep, spec) -> str:
-    """Name one modification for peptdeep, which identifies them by name rather than by mass.
+def _modification_title(pep, spec) -> str:
+    """The bare UNIMOD title for one modification spec, for peptdeep to key its table on.
 
-    ``pep`` is a :class:`~pepdistill.chem.Peptide` (used only for error messages) and ``spec`` is
-    one of its mod specs: a ``str`` identity, or a ``float`` bare mass delta.
+    ``pep`` is only used to name the offending peptide in an error. ``spec`` is one of its mod
+    specs: a ``"UNIMOD:<accession>"`` identity, or a ``float`` bare mass delta.
 
-    An accession is resolved to a name through the vendored UNIMOD table, so there is one source of
-    truth for what it means and no second mapping to drift:
+    The *title*, deliberately, not our alias. Aliases are a read-only compatibility table for
+    input, and two of the four carry a residue suffix, so an alias lookup returns
+    ``Carbamidomethyl@C`` for accession 4 but a bare ``Phospho`` for 21. The caller appends the
+    site itself, so it needs the bare title every time:
 
     >>> from pepdistill.chem import Peptide
-    >>> peptide = Peptide.from_string("PEPS[UNIMOD:21]IDEK")
-    >>> _mod_name(peptide, "UNIMOD:21")
-    'Phospho'
-
-    A name already in peptdeep's own vocabulary passes through untouched:
-
-    >>> _mod_name(peptide, "Carbamidomethyl@C")
-    'Carbamidomethyl@C'
+    >>> peptide = Peptide.from_string("AC[UNIMOD:4]DES[UNIMOD:21]K")
+    >>> [_modification_title(peptide, spec) for _, spec in peptide.mods]
+    ['Carbamidomethyl', 'Phospho']
 
     A bare mass delta has no name to translate to, and inventing one would be looked up against
     peptdeep's table and yield a confident wrong spectrum:
 
-    >>> _mod_name(Peptide.from_string("PEP[+15.5]TIDEK"), 15.5)
+    >>> _modification_title(Peptide.from_string("PEP[+15.5]TIDEK"), 15.5)
     Traceback (most recent call last):
     ValueError: peptide 'PEP[+15.5]TIDEK' carries a mass-only modification (+15.5), ...
-
-    This is the boundary at which our canonical identity becomes a foreign spelling, and the only
-    place one is emitted.
     """
     if not isinstance(spec, str):
         raise ValueError(
@@ -46,18 +40,18 @@ def _mod_name(pep, spec) -> str:
             "modifications by name. Supply a named modification, or label this peptide with a "
             "teacher that accepts raw deltas."
         )
-    if spec.startswith("UNIMOD:"):
-        from ..chem import unimod_name
-
-        accession = int(spec.removeprefix("UNIMOD:"))
-        name = unimod_name(accession)
-        if name is None:
-            raise ValueError(
-                f"peptide {pep.modified_sequence()!r} carries {spec!r}, which is not in the "
-                "vendored UNIMOD table, so it cannot be named for the peptdeep teacher."
-            )
-        return name
-    return spec
+    if not spec.startswith("UNIMOD:"):
+        raise ValueError(
+            f"peptide {pep.modified_sequence()!r} carries {spec!r}, which is not a UNIMOD "
+            "accession. Modification identity is an accession everywhere past ingest."
+        )
+    title = unimod_title(int(spec.removeprefix("UNIMOD:")))
+    if title is None:
+        raise ValueError(
+            f"peptide {pep.modified_sequence()!r} carries {spec!r}, which is not in the vendored "
+            "UNIMOD table, so it cannot be named for the peptdeep teacher."
+        )
+    return title
 
 
 # alphabase site suffixes, and the mod_site each one implies. Verified against alphabase:
@@ -86,10 +80,9 @@ def _site_for_alphabase_name(name: str, residue_site: int) -> int:
 def _alphabase_mod(pep, site, spec) -> tuple[str, int]:
     """Map one of our ``(site, spec)`` modifications onto ``(alphabase name, mod_site)``.
 
-    Our vocabulary is deliberately mixed: ``unimod::ALIASES`` freezes four historical names, two
-    of which are already alphabase-style ("Carbamidomethyl@C"), while everything else is a bare
-    UNIMOD title ("Phospho", "TMT6plex"). alphabase keys every modification as ``Name@Site``, so
-    bare names must gain the right suffix and qualified names must be left alone.
+    This is the boundary at which our canonical identity becomes peptdeep's spelling, and the only
+    place a foreign one is emitted. alphabase keys every modification as ``Name@Site``, so the bare
+    UNIMOD title gains the suffix that our site implies.
 
     Name and site are resolved together because they are coupled — see
     :func:`_site_for_alphabase_name`. Every candidate is checked against alphabase's own table,
@@ -97,10 +90,7 @@ def _alphabase_mod(pep, site, spec) -> tuple[str, int]:
     """
     from alphabase.constants.modification import MOD_MASS
 
-    name = _mod_name(pep, spec)
-    # Two of our frozen aliases already carry a residue suffix ("Oxidation@M"), so the base name
-    # has to be recovered before a terminal or different-residue form can be built from it.
-    base = name.split("@", 1)[0]
+    base = _modification_title(pep, spec)
 
     # The terminal branch must come before any "already an alphabase name" shortcut: our site is
     # the authority on where the modification sits, and a residue-suffixed alias found on a
@@ -111,13 +101,9 @@ def _alphabase_mod(pep, site, spec) -> tuple[str, int]:
         candidates = [f"{base}@{suffix}" for suffix in _CTERM_SUFFIXES]
     else:
         residue = pep.sequence[site] if 0 <= site < len(pep.sequence) else ""
-        declared = name.split("@", 1)[1] if "@" in name else ""
-        if len(declared) == 1 and declared != residue:
-            raise ValueError(
-                f"peptide {pep.modified_sequence()!r} carries {spec!r} at site {site!r}, whose "
-                f"residue is {residue!r} rather than the {declared!r} the name declares; refusing "
-                "to relocate a modification onto a residue it does not name."
-            )
+        # No "does the name's residue match this site" check any more: a bare title declares no
+        # residue, so there is nothing to contradict. A modification on a residue it does not occur
+        # on is caught below instead, by not resolving to any name alphabase knows.
         # Prefer the plain side-chain form; only fall back to a terminal form when the residue
         # actually sits at that terminus, which is how mods like pyro-Glu are registered.
         candidates = [f"{base}@{residue}"]
