@@ -10,15 +10,15 @@ re-run the tool, or re-render with `--render-from`.**
 
 ## Headline
 
-| spectra scored | 180,090 of 180,090 validation winners |
+| spectra scored | 176,690 of 176,690 validation winners |
 | --- | --- |
 | unsupported by teacher | 0 |
-| spectral angle mean | 0.5723 |
-| spectral angle p05 | 0.1068 |
-| spectral angle p25 | 0.3236 |
-| spectral angle p50 (median) | 0.6079 |
-| spectral angle p75 | 0.8384 |
-| spectral angle p95 | 0.9325 |
+| spectral angle mean | 0.5760 |
+| spectral angle p05 | 0.1079 |
+| spectral angle p25 | 0.3266 |
+| spectral angle p50 (median) | 0.6168 |
+| spectral angle p75 | 0.8414 |
+| spectral angle p95 | 0.9332 |
 
 ## Caveats
 
@@ -34,58 +34,58 @@ modifications, and crossed with acquisition so the two penalties can be separate
 
 | detector / fragmentation | spectra scored | SA mean | SA median |
 | --- | --- | --- | --- |
-| label-free FTMS/HCD | 72,451 | 0.8199 | 0.8529 |
-| label-free ITMS/HCD | 17,230 | 0.7199 | 0.7533 |
-| ITMS/HCD | 17,516 | 0.7143 | 0.7499 |
-| FTMS/HCD | 110,985 | 0.6537 | 0.7684 |
-| label-free ITMS/CID | 30,495 | 0.3884 | 0.3872 |
-| TMT ITMS/HCD | 286 | 0.3796 | 0.3749 |
-| ITMS/CID | 51,589 | 0.3491 | 0.3399 |
-| TMT FTMS/HCD | 38,534 | 0.3411 | 0.3250 |
-| TMT ITMS/CID | 21,094 | 0.2922 | 0.2793 |
+| label-free FTMS/HCD | 71,602 | 0.8213 | 0.8543 |
+| label-free ITMS/HCD | 18,005 | 0.7200 | 0.7534 |
+| ITMS/HCD | 18,318 | 0.7142 | 0.7499 |
+| FTMS/HCD | 110,123 | 0.6533 | 0.7690 |
+| label-free ITMS/CID | 27,277 | 0.3892 | 0.3882 |
+| TMT ITMS/HCD | 313 | 0.3799 | 0.3760 |
+| ITMS/CID | 48,249 | 0.3470 | 0.3376 |
+| TMT FTMS/HCD | 38,521 | 0.3412 | 0.3252 |
+| TMT ITMS/CID | 20,972 | 0.2920 | 0.2792 |
 
 ## By dataset
 
 | dataset | spectra scored | spectra unsupported | SA mean | SA median | iRT r2 |
 | --- | --- | --- | --- | --- | --- |
-| prospect_tum_first_pool | 14,695 | 0 | 0.7680 | 0.8458 | 0.957 |
-| multi_ptm_acetylated | 3,921 | 0 | 0.7521 | 0.8358 | 0.923 |
-| prospect_tum_second_pool | 13,438 | 0 | 0.7435 | 0.8170 | 0.894 |
-| prospect_tum_third_pool | 426 | 0 | 0.7359 | 0.8198 | 0.946 |
-| prospect_tum_isoform | 14,047 | 0 | 0.7233 | 0.8141 | 0.863 |
-| multi_ptm_monomethyl | 1,304 | 0 | 0.7174 | 0.8086 | 0.948 |
-| multi_ptm_ubi | 7,665 | 0 | 0.7160 | 0.7985 | 0.927 |
-| prospect_thermo_srm_pool | 7,052 | 0 | 0.7130 | 0.8239 | 0.941 |
-| prospect_tum_second_addon | 4,737 | 0 | 0.6869 | 0.7937 | 0.870 |
-| multi_ptm_ps | 2,312 | 0 | 0.6868 | 0.7723 | 0.919 |
-| prospect_tum_missing_first | 745 | 0 | 0.6833 | 0.7798 | 0.851 |
-| prospect_tum_proteo_tmt | 2,792 | 0 | 0.6725 | 0.7327 | 0.935 |
-| prospect_tum_hla2 | 10,862 | 0 | 0.6643 | 0.7520 | 0.958 |
-| multi_ptm_pt | 1,062 | 0 | 0.6641 | 0.7558 | 0.903 |
-| multi_ptm_py | 2,353 | 0 | 0.6608 | 0.7252 | 0.908 |
-| prospect_tum_hla | 19,979 | 0 | 0.6580 | 0.7524 | 0.956 |
-| multi_ptm_tum_nterm_ac | 453 | 0 | 0.6530 | 0.7169 | 0.949 |
-| multi_ptm_imp_psty | 647 | 0 | 0.6499 | 0.7341 | 0.925 |
-| multi_ptm_citrullination | 662 | 0 | 0.6303 | 0.7046 | 0.935 |
-| prospect_tum_aspn | 4,542 | 0 | 0.6037 | 0.6915 | 0.906 |
-| prospect_tum_lysn | 4,512 | 0 | 0.5976 | 0.6905 | 0.915 |
+| prospect_tum_first_pool | 14,549 | 0 | 0.7749 | 0.8507 | 0.957 |
+| multi_ptm_acetylated | 3,837 | 0 | 0.7591 | 0.8415 | 0.923 |
+| prospect_tum_second_pool | 13,182 | 0 | 0.7468 | 0.8199 | 0.894 |
+| prospect_tum_third_pool | 413 | 0 | 0.7416 | 0.8226 | 0.949 |
+| prospect_tum_isoform | 13,843 | 0 | 0.7286 | 0.8181 | 0.861 |
+| prospect_thermo_srm_pool | 6,725 | 0 | 0.7277 | 0.8381 | 0.941 |
+| multi_ptm_monomethyl | 1,229 | 0 | 0.7271 | 0.8167 | 0.948 |
+| multi_ptm_ubi | 7,609 | 0 | 0.7173 | 0.7992 | 0.927 |
+| prospect_tum_second_addon | 4,641 | 0 | 0.6955 | 0.8028 | 0.864 |
+| multi_ptm_ps | 2,135 | 0 | 0.6948 | 0.7804 | 0.916 |
+| prospect_tum_missing_first | 718 | 0 | 0.6847 | 0.7792 | 0.846 |
+| prospect_tum_proteo_tmt | 2,754 | 0 | 0.6797 | 0.7431 | 0.934 |
+| multi_ptm_py | 2,241 | 0 | 0.6793 | 0.7494 | 0.907 |
+| prospect_tum_hla | 19,022 | 0 | 0.6759 | 0.7648 | 0.955 |
+| multi_ptm_imp_psty | 578 | 0 | 0.6743 | 0.7596 | 0.921 |
+| prospect_tum_hla2 | 10,577 | 0 | 0.6708 | 0.7554 | 0.958 |
+| multi_ptm_pt | 1,015 | 0 | 0.6701 | 0.7653 | 0.897 |
+| multi_ptm_tum_nterm_ac | 429 | 0 | 0.6680 | 0.7339 | 0.949 |
+| multi_ptm_citrullination | 592 | 0 | 0.6477 | 0.7307 | 0.935 |
+| prospect_tum_aspn | 4,430 | 0 | 0.6104 | 0.6956 | 0.904 |
+| prospect_tum_lysn | 4,452 | 0 | 0.6003 | 0.6941 | 0.913 |
 | tmt_tum_missing_first | 4 | 0 | 0.5717 | 0.5729 | 0.999 |
-| multi_ptm_pyroglu | 922 | 0 | 0.5560 | 0.5596 | 0.889 |
-| multi_ptm_oglcnac | 59 | 0 | 0.5551 | 0.5860 | 0.473 |
-| multi_ptm_ogalnac | 275 | 0 | 0.5537 | 0.5648 | 0.692 |
+| multi_ptm_oglcnac | 53 | 0 | 0.5688 | 0.5928 | 0.584 |
+| multi_ptm_ogalnac | 264 | 0 | 0.5576 | 0.5722 | 0.686 |
+| multi_ptm_pyroglu | 888 | 0 | 0.5571 | 0.5606 | 0.890 |
 | tmt_ptm_ps | 1,702 | 0 | 0.4200 | 0.4180 | 0.502 |
 | tmt_ptm_pt | 585 | 0 | 0.4097 | 0.4066 | 0.442 |
-| tmt_tum_proteo_tmt | 2,097 | 0 | 0.3764 | 0.3742 | 0.439 |
+| tmt_tum_proteo_tmt | 2,018 | 0 | 0.3775 | 0.3761 | 0.437 |
 | tmt_thermo_srm_pool | 4,558 | 0 | 0.3763 | 0.3690 | 0.469 |
 | tmt_tum_second_addon | 2,966 | 0 | 0.3737 | 0.3601 | 0.519 |
 | tmt_tum_first_pool | 7,882 | 0 | 0.3721 | 0.3595 | 0.465 |
 | tmt_ptm_imp_psty | 517 | 0 | 0.3654 | 0.3498 | 0.349 |
-| tmt_ptm_py | 2,241 | 0 | 0.3614 | 0.3530 | 0.417 |
+| tmt_ptm_py | 2,235 | 0 | 0.3620 | 0.3536 | 0.417 |
 | tmt_tum_third_pool | 214 | 0 | 0.3543 | 0.3248 | 0.507 |
-| tmt_ptm_acetylated | 718 | 0 | 0.3410 | 0.3186 | 0.465 |
+| tmt_ptm_acetylated | 714 | 0 | 0.3414 | 0.3199 | 0.469 |
 | tmt_tum_isoform | 7,423 | 0 | 0.3408 | 0.3218 | 0.470 |
-| tmt_tum_second_pool | 5,259 | 0 | 0.3358 | 0.3174 | 0.453 |
-| tmt_ptm_monomethyl | 723 | 0 | 0.3251 | 0.2983 | 0.588 |
+| tmt_tum_second_pool | 5,260 | 0 | 0.3358 | 0.3175 | 0.453 |
+| tmt_ptm_monomethyl | 697 | 0 | 0.3277 | 0.2997 | 0.577 |
 | tmt_tum_hla | 20,315 | 0 | 0.2748 | 0.2446 | 0.501 |
-| tmt_tum_aspn | 1,693 | 0 | 0.2581 | 0.2277 | 0.472 |
+| tmt_tum_aspn | 1,693 | 0 | 0.2580 | 0.2277 | 0.472 |
 | tmt_tum_lysn | 1,731 | 0 | 0.2463 | 0.2076 | 0.491 |
