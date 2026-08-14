@@ -371,3 +371,60 @@ def test_validation_early_stop_treats_higher_agreement_as_better():
     callback.on_validation_epoch_end(Trainer(), None)
     assert callback.best == pytest.approx(0.6)
     assert callback.bad == 0
+
+
+def test_epoch_shorter_than_the_validation_interval_still_checkpoints(tmp_path):
+    """The end-of-epoch snapshot must survive an epoch in which nothing was validated.
+
+    The real pipeline runs with `num_sanity_val_steps=0` and a wall-clock validation interval, so
+    a first epoch shorter than that interval reaches its epoch boundary with
+    `last_validation_step` still unset. Recording it as an int crashed there -- losing the whole
+    epoch, since this callback is what writes `latest.ckpt`. Every other test leaves sanity
+    checking on, which sets the attribute as a side effect and hid this.
+    """
+    from pepdistill.distill.context_regime import RealSpeclibDataset
+
+    model = build_student("small")
+    model.set_norm(rt_mean=0.0, rt_std=1.0)
+    cdim = model.cfg.context_dim
+    examples = _make_examples(8)
+    module = fit_realspeclib_datasets(
+        model,
+        RealSpeclibDataset(examples),
+        RealSpeclibDataset(examples[:2]),
+        runbook=ChromRunbook(n_datasets=1, context_dim=cdim),
+        dataset_index={"pool": 1},
+        encoder=MSContextEncoder(context_dim=cdim),
+        epochs=1,
+        batch_size=4,
+        enable_progress_bar=False,
+        checkpoint_dir=tmp_path,
+        # Exactly the real pipeline's configuration: no sanity pass, and a validation interval
+        # far longer than this epoch takes.
+        num_sanity_val_steps=0,
+        val_check_interval=timedelta(hours=1),
+        check_val_every_n_epoch=None,
+    )
+    # Reaching here at all is the regression: the epoch boundary used to raise.
+    assert (tmp_path / "latest.ckpt").exists()
+
+    # Pin what the epoch-end snapshot records when nothing has validated. Driven directly,
+    # because the post-fit validation pass overwrites `latest.ckpt` with a real step.
+    from pepdistill.distill.context_regime import _RealCheckpoint
+
+    module.last_validation_step = None
+    directory = tmp_path / "unvalidated"
+    keys = {"val/pool/spectral_angle", "val/pool/irt_mae", "val/pool/rawrt_mae"}
+    _RealCheckpoint(directory, expected_keys=keys).on_train_epoch_end(module.trainer, module)
+    checkpoint = torch.load(directory / "latest.ckpt", weights_only=False)
+    # None records "never validated" rather than claiming a step no validation produced.
+    assert checkpoint["training"]["validation"]["validated_at_step"] is None
+
+    # A run with no validation datasets has no expected keys, so the count matches at zero --
+    # where a mean does not exist and dividing by it raised.
+    bare = tmp_path / "no-val-datasets"
+    _RealCheckpoint(bare, expected_keys=set()).on_train_epoch_end(module.trainer, module)
+    assert (
+        torch.load(bare / "latest.ckpt", weights_only=False)["training"]["validation"]["mean"]
+        is None
+    )

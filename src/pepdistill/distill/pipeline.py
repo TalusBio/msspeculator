@@ -449,7 +449,8 @@ def _final_training_metadata(module) -> dict:
             "metric": "mean_per_dataset_spectral_angle",
             "values": dict(sorted(values.items())),
             "mean": sum(values.values()) / len(values) if values else None,
-            "validated_at_step": int(module.last_validation_step),
+            # None when the run finished without ever validating; see the callback's `_save`.
+            "validated_at_step": module.last_validation_step,
         },
     }
 

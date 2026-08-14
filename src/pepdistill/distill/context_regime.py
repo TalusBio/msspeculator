@@ -536,8 +536,13 @@ class _RealCheckpoint(L.Callback):
     ) -> None:
         self.directory.mkdir(parents=True, exist_ok=True)
         values = self._validation_values(trainer) if values is None else values
+        # `values` empty is a real state, not a degenerate one: a run with no validation datasets
+        # has no expected keys, and the epoch-end snapshot is taken before anything has validated.
+        # Both make the count match at zero, where a mean does not exist.
         mean = (
-            sum(values.values()) / len(values) if len(values) == len(self.expected_keys) else None
+            sum(values.values()) / len(values)
+            if values and len(values) == len(self.expected_keys)
+            else None
         )
         training_metadata = {
             "stage": "train",
@@ -549,10 +554,14 @@ class _RealCheckpoint(L.Callback):
                 "values": dict(sorted(values.items())),
                 "mean": mean,
                 "best_checkpoint_mean": self.best if math.isfinite(self.best) else None,
+                # None when no validation has run yet, which the end-of-epoch snapshot below
+                # depends on: an epoch shorter than the validation interval reaches its first
+                # epoch boundary with nothing validated, and this checkpoint is exactly the one
+                # that has to survive that.
                 "validated_at_step": (
-                    int(pl_module.last_validation_step)
+                    pl_module.last_validation_step
                     if validated_at_step is None
-                    else validated_at_step
+                    else int(validated_at_step)
                 ),
             },
         }
