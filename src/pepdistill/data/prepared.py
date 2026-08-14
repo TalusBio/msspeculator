@@ -10,6 +10,7 @@ may live entirely on S3; the reader opens one object at a time and keeps the exi
 from __future__ import annotations
 
 import json
+import os
 import random
 import time
 from collections.abc import Iterator
@@ -144,10 +145,40 @@ def load_shard_manifests(prefix: str, log: Callable[[str], None] | None = None) 
         return list(pool.map(read, paths))
 
 
-def _open_parquet(uri: str):
-    if "://" in uri:
+def _open_parquet(uri: str, local_cache: Path | None = None):
+    if "://" not in uri:
+        return uri
+    if local_cache is None:
         return fsspec.open(uri, "rb").open()
-    return uri
+    return str(_cached_shard(uri, local_cache))
+
+
+def _cached_shard(uri: str, local_cache: Path) -> Path:
+    """Path to ``uri`` inside the cache, fetching it once on first use.
+
+    A read-through cache rather than a separate download step: the corpus is small enough
+    (~1.2 GiB) that one training epoch warms it completely, after which nothing touches the
+    network. Reusing the remote path under the cache root keeps two prefixes from colliding.
+
+    Downloaded to a temporary name and renamed, so an interrupted fetch cannot leave a truncated
+    shard that later runs would accept as cached. Presence is the only check: published shards are
+    immutable, so a file that is here is the file we wanted.
+    """
+    scheme, _, remainder = uri.partition("://")
+    # `lstrip` is load-bearing: joining an absolute right-hand side discards everything to its
+    # left, so a `file:///a/b` URI would resolve back to `/a/b` and cache nothing. S3 remainders
+    # are already relative ("bucket/key"), so this only shows up on absolute-path schemes.
+    target = local_cache / scheme / remainder.lstrip("/")
+    if target.exists():
+        return target
+    target.parent.mkdir(parents=True, exist_ok=True)
+    partial = target.with_name(f"{target.name}.{os.getpid()}.partial")
+    filesystem, _, paths = fsspec.get_fs_token_paths(uri)
+    filesystem.get_file(paths[0], str(partial))
+    # Atomic within a filesystem, so concurrent loader workers racing on the same shard each
+    # write their own temporary and the last rename wins with identical bytes.
+    partial.replace(target)
+    return target
 
 
 def _row_examples(frame: pd.DataFrame, dataset_id: int, encoder) -> list[RealExample]:
@@ -276,6 +307,7 @@ class PreparedStreamingDataset:
         seed: int = 0,
         row_group_size: int = 65_536,
         log: Callable[[str], None] | None = None,
+        local_cache: Path | None = None,
     ) -> None:
         self.manifest = manifest
         self.encoder = encoder
@@ -283,6 +315,9 @@ class PreparedStreamingDataset:
         self.seed = seed
         self.row_group_size = row_group_size
         self.log = log
+        # Shards are fetched here once and read from disk thereafter. Immutable objects, so the
+        # cache never needs invalidating and can be shared by every run against the same corpus.
+        self.local_cache = local_cache
         self.dataset_ids = manifest.datasets
 
     def __len__(self) -> int:
@@ -315,7 +350,7 @@ class PreparedStreamingDataset:
         for chunk_index, chunk in indexed_chunks:
             dataset_id = self.dataset_ids[chunk.dataset]
             opened_at = time.perf_counter()
-            stream = _open_parquet(chunk.uri)
+            stream = _open_parquet(chunk.uri, self.local_cache)
             open_seconds = time.perf_counter() - opened_at
             try:
                 # PROSPECT hashes occupy the full unsigned 64-bit range. Polars therefore

@@ -213,10 +213,23 @@ measured from sampled half-height points rather than an integrated peak it is cl
 `[--min-run-width-minutes, --max-run-width-minutes]`. Each run records whether the clamp applied,
 so a floored or capped window is never mistaken for a measurement.
 
+### Cache the corpus locally
+
+Shards are fetched once and read from disk after, taking S3 out of the training loop. Shards are
+immutable, so runs can share one cache directory; unset means stream every epoch.
+
+```toml
+[train]
+prepared_prefix = "s3://bucket/pepdistill-prepared/v2"
+local_cache = "./prepared-cache"
+```
+
 ### Audit a finished corpus, and the teacher's ceiling on it
 
 Both commands are read-only and regenerate a committed Markdown view beside their JSON, so the
-numbers in `docs/` stay reproducible rather than hand-maintained:
+numbers in `docs/` stay reproducible rather than hand-maintained. Note the report's `rows retained`
+counts rows on disk while the manifest's `split_rows` counts rows training sees; they differ by rows
+with non-finite iRT, which are published but filtered out by the loader.
 
 ```bash
 # Per-source retention, empty shards, unusable intensity, clamped windows.

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import shutil
+from pathlib import Path
 
 import pandas as pd
 import pytest
@@ -530,3 +532,68 @@ def test_load_shard_manifests_reads_a_prefix_without_a_config(tmp_path):
 
     # An absent prefix is empty, not an error: a corpus may simply not exist yet.
     assert load_shard_manifests(str(tmp_path / "never-prepared")) == []
+
+
+def test_local_cache_fetches_each_shard_once_and_then_needs_no_source(tmp_path):
+    """A warmed cache serves the corpus with the remote gone, and never refetches.
+
+    Exercised over ``file://`` so the remote branch of the reader runs without a network: a plain
+    local path bypasses caching entirely, so a test using one would assert nothing.
+    """
+    root, stem = _source(tmp_path)
+    out = tmp_path / "prepared"
+    config = _config(root, stem, out)
+    prepare_range(config, log=None)
+    finalize_catalog(config, log=None)
+
+    manifest_path = out / "manifest.json"
+    raw = json.loads(manifest_path.read_text())
+    for chunk in raw["chunks"]:
+        chunk["uri"] = Path(chunk["uri"]).as_uri()
+    manifest_path.write_text(json.dumps(raw))
+
+    manifest = PreparedManifest.load(out)
+    assert all(chunk.uri.startswith("file://") for chunk in manifest.chunks)
+
+    cache = tmp_path / "cache"
+    dataset = PreparedStreamingDataset(
+        manifest,
+        MSContextEncoder(context_dim=8),
+        frozenset({"train"}),
+        local_cache=cache,
+    )
+    warm = list(dataset.iter_examples(epoch=0, shuffle=False))
+    assert warm, "cached read yielded no examples"
+    assert len(list(cache.rglob("*.parquet"))) == len(manifest.chunks)
+    # A partial file left behind would later be accepted as a complete shard.
+    assert not list(cache.rglob("*.partial"))
+
+    # With the source removed, only the cache can answer -- so a refetch would raise here rather
+    # than quietly succeed, which makes this a stronger check than comparing mtimes.
+    shutil.rmtree(out)
+    again = list(dataset.iter_examples(epoch=0, shuffle=False))
+    assert len(again) == len(warm)
+
+
+def test_without_a_local_cache_shards_are_read_from_their_source_every_time(tmp_path):
+    """The complement of the test above: no cache means no local copy to fall back on."""
+    root, stem = _source(tmp_path)
+    out = tmp_path / "prepared"
+    config = _config(root, stem, out)
+    prepare_range(config, log=None)
+    finalize_catalog(config, log=None)
+
+    manifest_path = out / "manifest.json"
+    raw = json.loads(manifest_path.read_text())
+    for chunk in raw["chunks"]:
+        chunk["uri"] = Path(chunk["uri"]).as_uri()
+    manifest_path.write_text(json.dumps(raw))
+
+    manifest = PreparedManifest.load(out)
+    dataset = PreparedStreamingDataset(
+        manifest, MSContextEncoder(context_dim=8), frozenset({"train"})
+    )
+    assert list(dataset.iter_examples(epoch=0, shuffle=False))
+    shutil.rmtree(out)
+    with pytest.raises(FileNotFoundError):
+        list(dataset.iter_examples(epoch=0, shuffle=False))

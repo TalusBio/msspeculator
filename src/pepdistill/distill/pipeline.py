@@ -136,6 +136,10 @@ class PretrainCfg:
 class TrainCfg:
     enabled: bool = True
     prepared_prefix: str | None = None
+    # Directory shards are cached in on first read. The full corpus is ~1.2 GiB, so a warmed
+    # cache takes S3 out of the training loop entirely; unset streams every epoch from the
+    # prefix. Shared across runs against the same corpus, since published shards never change.
+    local_cache: str | None = None
     epochs: int = 60
     batch_size: int = 256
     # Keep Polars-backed streaming in the trainer process by default. Forking a DataLoader
@@ -779,12 +783,14 @@ def run_pipeline(cfg: RunConfig, log=print) -> dict:
         L.seed_everything(cfg.seed, verbose=False)
         prepared_manifest = PreparedManifest.load(cfg.train.prepared_prefix)
         dataset_index = prepared_manifest.datasets
+        local_cache = Path(cfg.train.local_cache) if cfg.train.local_cache else None
         train_ds = PreparedStreamingDataset(
             prepared_manifest,
             encoder,
             frozenset({"train"}),
             seed=cfg.seed,
             log=log,
+            local_cache=local_cache,
         )
         val_ds = PreparedStreamingDataset(
             prepared_manifest,
@@ -792,11 +798,13 @@ def run_pipeline(cfg: RunConfig, log=print) -> dict:
             frozenset({"val"}),
             seed=cfg.seed,
             log=log,
+            local_cache=local_cache,
         )
         log(
             f"[train] prepared prefix: {cfg.train.prepared_prefix}; "
             f"{len(prepared_manifest.chunks)} chunk(s), "
             f"{len(prepared_manifest.datasets)} dataset(s)"
+            + (f"; caching shards in {local_cache}" if local_cache else "")
         )
         # Whether the affine was set here or inherited is the difference between a cold start
         # and a continued curriculum, for a value that is permanent once set — so say which.
