@@ -5,8 +5,10 @@ reproduce the experimental spectra we train students against?" and therefore bou
 student distilled from it can be expected to reach.
 
 It evaluates exactly the deduplicated validation winners recorded in the prepared manifest --
-one spectrum per (dataset, stripped sequence, charge) -- which is the same set the student's
-`val_sa/<dataset>` telemetry is computed over, so the two numbers are directly comparable.
+one spectrum per (dataset, peptidoform, charge) -- which is the same set the student's
+`val_sa/<dataset>` telemetry is computed over, so the two numbers are directly comparable. The
+key is the peptidoform, so a modified form and its unmodified counterpart each keep a slot
+rather than competing for one.
 
 IMPORTANT CAVEAT, recorded in the output: PROSPECT/ProteomeTools is part of AlphaPeptDeep's own
 training data, and its train/validation partition is not ours. Our split is a hash of the
@@ -27,6 +29,7 @@ from typing import Any
 import fsspec
 import numpy as np
 
+from pepdistill.chem import unimod_title
 from pepdistill.data.prepared import PreparedManifest, PreparedStreamingDataset
 from pepdistill.diagnostics import SA_HISTOGRAM_EDGES, normalized_spectral_angle, sa_histogram
 from pepdistill.models.context import MSContextEncoder
@@ -42,6 +45,20 @@ _REFUSAL_REASONS = (
     "non_finite_collision_energy",
     "teacher_returned_none",
 )
+
+
+def _is_tmt(spec) -> bool:
+    """Whether one modification spec is any TMT label.
+
+    Resolved through the UNIMOD title rather than matched against the spec string: a spec is an
+    accession (``"UNIMOD:737"``), so the string carries no hint of what the modification is. The
+    title is matched by prefix because the label comes in several flavours (TMT6plex, TMT2plex,
+    TMTpro), and this facet asks only whether the peptide was labelled at all.
+    """
+    if not isinstance(spec, str) or not spec.startswith("UNIMOD:"):
+        return False
+    title = unimod_title(int(spec.removeprefix("UNIMOD:")))
+    return title is not None and title.startswith("TMT")
 
 
 def _teacher_refusal(precursor) -> str | None:
@@ -293,10 +310,7 @@ def main() -> None:
             acquisition[cell].append(angle)
             # Label state is read from the modifications rather than the dataset name, and is
             # crossed with acquisition so a TMT penalty cannot be confused with a CID penalty.
-            labelled = any(
-                isinstance(spec, str) and spec.startswith("TMT")
-                for _, spec in example.precursor.peptide.mods
-            )
+            labelled = any(_is_tmt(spec) for _, spec in example.precursor.peptide.mods)
             acquisition[f"{'TMT' if labelled else 'label-free'} {cell}"].append(angle)
             if np.isfinite(label.rt) and np.isfinite(example.label.rt):
                 rt_observed[name].append(float(example.label.rt))

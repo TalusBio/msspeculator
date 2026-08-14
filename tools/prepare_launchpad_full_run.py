@@ -11,6 +11,7 @@ import argparse
 import os
 import shutil
 import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -18,9 +19,12 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUT = ROOT / ".launchpad" / "full-run-stage"
 S3_PREFIX = "s3://terraform-workstations-bucket/jspaezp/20241022_prospect"
 PREPARED_PREFIX = "s3://terraform-workstations-bucket/jspaezp/pepdistill-prepared/v2"
-TRAIN_OUTPUT_PREFIX = (
-    "s3://terraform-workstations-bucket/jspaezp/pepdistill-training/full-v2-aug1pct"
-)
+TRAINING_ROOT = "s3://terraform-workstations-bucket/jspaezp/pepdistill-training"
+#: Default run group. Timestamped so each sweep writes to its own prefix: a rerun of the same
+#: preset would otherwise interleave its diagnostics and checkpoints with an earlier sweep's,
+#: and a stale ``pretrain-latest.ckpt`` from a corpus that no longer exists is a warm start
+#: nobody asked for.
+RUN_GROUP_PREFIX = "full-v2-aug1pct"
 TRAIN_RUNS = (
     # run name, model preset, real-training batch size, real-training learning rate
     ("flash", "flash", 256, 3e-4),
@@ -60,8 +64,15 @@ def ensure_pretrain_fasta() -> Path:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT)
+    parser.add_argument(
+        "--run-group",
+        default=f"{RUN_GROUP_PREFIX}-{datetime.now(timezone.utc):%Y%m%dT%H%MZ}",
+        help="output prefix segment and W&B group for this sweep (default: timestamped)",
+    )
     args = parser.parse_args()
     out: Path = args.out.resolve()
+    run_group: str = args.run_group
+    train_output_prefix = f"{TRAINING_ROOT}/{run_group}"
 
     if out.exists():
         shutil.rmtree(out)
@@ -77,7 +88,7 @@ def main() -> None:
     for run_name, model_preset, batch_size, learning_rate in TRAIN_RUNS:
         (runs / f"prepared-cloud-{run_name}.toml").write_text(
             f'''out = "cloud-output-{run_name}"
-remote_output_prefix = "{TRAIN_OUTPUT_PREFIX}/{run_name}"
+remote_output_prefix = "{train_output_prefix}/{run_name}"
 preset = "{model_preset}"
 activation = "gelu_tanh"
 device = "cpu"
@@ -87,8 +98,8 @@ seed = 0
 enabled = true
 project = "pepdistill"
 name = "{run_name}"
-group = "full-v2-aug1pct"
-tags = ["full-nontest", "aug1pct-peptides", "{model_preset}", "{run_name}"]
+group = "{run_group}"
+tags = ["full-nontest", "aug1pct-peptides", "{model_preset}", "{run_name}", "{run_group}"]
 
 [diagnostics]
 enabled = true
@@ -144,6 +155,8 @@ validation_interval_minutes = 60.0
         f"{len(TRAIN_RUNS)} train configs, E. coli pretrain FASTA"
     )
     print(f"data source (read-only): {S3_PREFIX}")
+    print(f"run group: {run_group}")
+    print(f"training output: {train_output_prefix}/<run>")
 
 
 if __name__ == "__main__":

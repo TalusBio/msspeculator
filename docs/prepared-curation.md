@@ -23,7 +23,7 @@ than whatever the config says today.
 | min_run_width_minutes | 0.05 |
 | width_anchor_min_psms | 8 |
 | width_scope | robust median per raw file, clamped to [0.05, 0.25] minutes and used directly as the acceptance window (apex +/- width/2) |
-| policy_version (code) | unrecorded |
+| policy_version (code) | 2 |
 
 ## Headline
 
