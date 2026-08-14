@@ -1,8 +1,8 @@
 # Canonical local pretrain -> real-data run.
 #
-# The prepared PROSPECT corpus is streamed directly from the shared S3 prefix; no local copy of
-# the ~100M-row training set is made. Checkpoints and metrics stay under `out`. Run commands are
-# documented in docs/runbook-full-run.md.
+# Prepared shards are cached under `local_cache` on first read, so only the first epoch touches
+# S3. Checkpoints and metrics stay under `out`. Run commands are documented in
+# docs/runbook-full-run.md.
 
 out = "runs/full-local-small"
 preset = "small"
@@ -14,8 +14,8 @@ seed = 0
 enabled = true
 project = "pepdistill"
 name = "local-small"
-group = "full-v1-local"
-tags = ["full-nontest", "small", "local"]
+group = "full-v2-local"
+tags = ["full-nontest", "small", "local", "v2"]
 min_log_interval_seconds = 10.0
 
 [diagnostics]
@@ -55,6 +55,7 @@ variable_mods = { "M[UNIMOD:35]" = 0.1, "STY[UNIMOD:21]" = 0.001, "K[UNIMOD:1]" 
 [train]
 enabled = true
 prepared_prefix = "s3://terraform-workstations-bucket/jspaezp/pepdistill-prepared/v2"
+local_cache = "runs/prepared-cache-v2"
 epochs = 60
 batch_size = 256
 num_workers = 0
