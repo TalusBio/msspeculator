@@ -270,6 +270,11 @@ class RunConfig:
     remote_output_prefix: str | None = None
     preset: str = "small"
     activation: str | None = None  # override preset activation for controlled retraining sweeps
+    # Override the preset's dropout, including on a loaded checkpoint (dropout holds no weights,
+    # so it is a property of the run rather than of the trained model). Mask generation is about
+    # a quarter of the measured training step, so 0.0 is a real speedup where the corpus is large
+    # enough to regularize on its own.
+    dropout: float | None = None
     device: str = "auto"
     seed: int = 0
     model_in: str | None = None  # optional checkpoint to initialize pretrain/train/bench
@@ -294,6 +299,7 @@ class RunConfig:
                     "remote_output_prefix",
                     "preset",
                     "activation",
+                    "dropout",
                     "device",
                     "seed",
                     "model_in",
@@ -720,6 +726,9 @@ def run_pipeline(cfg: RunConfig, log=print) -> dict:
         if cfg.activation is not None:
             model_cfg = replace(model_cfg, activation=cfg.activation)
         model = build_student(model_cfg)
+    if cfg.dropout is not None:
+        model.set_dropout(cfg.dropout)
+        log(f"dropout set to {cfg.dropout:g} for this run")
     # The MSContextEncoder is needed by the real-data sink AND by streaming pretrain (the NCE
     # sweep); build once and share it across both. Either enabled stage conditions on it.
     need_encoder = cfg.train.enabled or cfg.pretrain.enabled

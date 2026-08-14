@@ -446,3 +446,20 @@ class StudentModel(nn.Module):
 
     def num_parameters(self) -> int:
         return sum(p.numel() for p in self.parameters())
+
+    def set_dropout(self, probability: float) -> None:
+        """Change every dropout rate in the model, config included.
+
+        Applies to a checkpoint as readily as to a fresh model: dropout carries no weights, so
+        the rate belongs to the run rather than to what was trained. ``nn.MultiheadAttention``
+        keeps its rate as a plain float instead of a child ``Dropout``, so it needs its own case
+        — without it, attention would keep dropping at the rate the preset was built with.
+        """
+        if not 0.0 <= probability < 1.0:
+            raise ValueError(f"dropout must be in [0, 1), got {probability!r}")
+        self.cfg.dropout = probability
+        for child in self.modules():
+            if isinstance(child, nn.Dropout):
+                child.p = probability
+            elif isinstance(child, nn.MultiheadAttention):
+                child.dropout = probability

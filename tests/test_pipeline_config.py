@@ -3,6 +3,7 @@
 import pytest
 
 from pepdistill.distill.pipeline import RunConfig
+from pepdistill.models import build_student
 
 BASE = """
 out = "runs/x"
@@ -73,6 +74,22 @@ def test_activation_override_parses(tmp_path):
     text = 'activation = "leaky_relu"\n' + text
     cfg = RunConfig.from_toml(_write(tmp_path, text))
     assert cfg.activation == "leaky_relu"
+
+
+def test_dropout_override_parses_and_reaches_attention(tmp_path):
+    cfg = RunConfig.from_toml(_write(tmp_path, "dropout = 0.0\n" + BASE))
+    assert cfg.dropout == 0.0
+
+    model = build_student("small")
+    layer = model.backbone.net.layers[0]
+    assert (layer.dropout1.p, layer.self_attn.dropout) != (0.0, 0.0)
+    model.set_dropout(cfg.dropout)
+    # Attention keeps its rate as a float rather than a child module, so it is the case a
+    # modules()-only walk silently misses.
+    assert (layer.dropout1.p, layer.self_attn.dropout) == (0.0, 0.0)
+    assert model.cfg.dropout == 0.0
+    with pytest.raises(ValueError, match="dropout must be in"):
+        model.set_dropout(1.0)
 
 
 def test_remote_output_and_pretrain_checkpoint_interval_parse(tmp_path):

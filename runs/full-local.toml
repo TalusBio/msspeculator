@@ -7,7 +7,11 @@
 out = "runs/full-local-small"
 preset = "small"
 activation = "gelu_tanh"
-device = "auto"
+# Measured on this box: Metal runs the `small` step 2.3x faster than four CPU threads, and
+# dropout's mask generation was a quarter of that step — 21M training rows against 134k
+# parameters regularize well enough without it.
+device = "mps"
+dropout = 0.0
 seed = 0
 
 [tracking]
@@ -15,7 +19,7 @@ enabled = true
 project = "pepdistill"
 name = "local-small"
 group = "full-v2-local"
-tags = ["full-nontest", "small", "local", "v2"]
+tags = ["full-nontest", "small", "local", "v2", "fast-loader"]
 min_log_interval_seconds = 10.0
 
 [diagnostics]
@@ -56,6 +60,7 @@ variable_mods = { "M[UNIMOD:35]" = 0.1, "STY[UNIMOD:21]" = 0.001, "K[UNIMOD:1]" 
 enabled = true
 prepared_prefix = "s3://terraform-workstations-bucket/jspaezp/pepdistill-prepared/v2"
 local_cache = "runs/prepared-cache-v2"
+in_memory = true
 epochs = 60
 batch_size = 256
 num_workers = 0
