@@ -219,8 +219,8 @@ Shards are fetched once and read from disk after, taking S3 out of the training 
 immutable, so runs can share one cache directory; unset means stream every epoch.
 
 `in_memory` goes one step further and keeps each decoded shard in RAM, so later epochs skip the
-Parquet decode too. The corpus decodes to roughly four times its on-disk size, so only set it on a
-machine with that memory to spare.
+Parquet decode too. The corpus decodes to about five times its on-disk size, so only set it on a
+machine with that memory to spare; the run reports resident shards and GiB as it fills.
 
 ```toml
 [train]

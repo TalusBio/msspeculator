@@ -141,7 +141,7 @@ class TrainCfg:
     # prefix. Shared across runs against the same corpus, since published shards never change.
     local_cache: str | None = None
     # Hold every decoded shard in RAM after its first read, trading memory for the Parquet
-    # decode of every later epoch. The corpus decodes to roughly 4x its on-disk size, so this
+    # decode of every later epoch. The corpus decodes to about 5x its on-disk size, so this
     # needs a machine with the memory to spare; unset re-reads each shard every epoch.
     in_memory: bool = False
     epochs: int = 60
