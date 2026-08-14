@@ -308,6 +308,7 @@ class PreparedStreamingDataset:
         row_group_size: int = 65_536,
         log: Callable[[str], None] | None = None,
         local_cache: Path | None = None,
+        in_memory: bool = False,
     ) -> None:
         self.manifest = manifest
         self.encoder = encoder
@@ -318,6 +319,10 @@ class PreparedStreamingDataset:
         # Shards are fetched here once and read from disk thereafter. Immutable objects, so the
         # cache never needs invalidating and can be shared by every run against the same corpus.
         self.local_cache = local_cache
+        # Decoded shards, kept between epochs when `in_memory`. Keyed by chunk URI so a worker
+        # holds only the shards in its own stride, and so the dict survives the per-epoch reshuffle.
+        self.in_memory = in_memory
+        self._resident: dict[str, pl.DataFrame] = {}
         self.dataset_ids = manifest.datasets
 
     def __len__(self) -> int:
@@ -335,70 +340,89 @@ class PreparedStreamingDataset:
             )
         return frozenset(self.dataset_ids[chunk.dataset] for chunk in self.manifest.chunks)
 
+    def _decode_chunk(self, chunk: PreparedChunk, position: str) -> pl.DataFrame:
+        """Read one shard into the frame the batcher consumes: this split's finite rows, sorted
+        by length, tagged with the dataset row."""
+        opened_at = time.perf_counter()
+        stream = _open_parquet(chunk.uri, self.local_cache)
+        open_seconds = time.perf_counter() - opened_at
+        try:
+            # PROSPECT hashes occupy the full unsigned 64-bit range. Polars therefore
+            # persisted some shard IDs as Int128; PyArrow refuses to open a Parquet schema
+            # containing Int128 even when that column is not selected. Read with Polars,
+            # use the ID only for validation selection, and drop it before Pandas conversion.
+            read_at = time.perf_counter()
+            frame = read_prepared_parquet(stream).filter(
+                pl.col("split").is_in(self.splits)
+                & pl.col("irt").is_finite()
+                & pl.col("raw_rt").is_finite()
+            )
+            if self.splits == frozenset({"val"}) and self.manifest.val_winners:
+                keep = [
+                    int(value) in self.manifest.val_winners
+                    for value in frame["spectrum_id"].to_list()
+                ]
+                # An empty split produces ``keep=[]``. Without an explicit dtype Polars
+                # constructs a Null Series, which is not a valid filter predicate and used
+                # to crash validation at the first train-only shard after a long epoch.
+                frame = frame.filter(pl.Series("is_winner", keep, dtype=pl.Boolean))
+            # Transformer cost is set by the longest sequence in each batch. Grouping equal
+            # lengths inside an already-shuffled shard removes padding work without adding
+            # a large row-level shuffle buffer or changing which observations are trained.
+            frame = frame.with_columns(stripped_length().alias("_sequence_length")).sort(
+                "_sequence_length"
+            )
+            frame = frame.drop("spectrum_id")
+            read_seconds = time.perf_counter() - read_at
+            if self.log is not None:
+                size = getattr(stream, "size", None)
+                size_mib = float(size) / (1024 * 1024) if size is not None else None
+                transfer = (
+                    f", size={size_mib:.1f} MiB, effective={size_mib / read_seconds:.1f} MiB/s"
+                    if size_mib is not None and read_seconds > 0
+                    else ""
+                )
+                self.log(
+                    f"[data] shard {position}, dataset={chunk.dataset}, "
+                    f"rows={frame.height:,}, open={open_seconds:.3f}s, "
+                    f"read_decode={read_seconds:.3f}s{transfer}"
+                )
+            dataset_id = self.dataset_ids[chunk.dataset]
+            return frame.with_columns(pl.lit(dataset_id, dtype=pl.Int64).alias("_dataset_id"))
+        finally:
+            if hasattr(stream, "close"):
+                stream.close()
+
+    def _frame_for(self, chunk: PreparedChunk, position: str) -> pl.DataFrame:
+        resident = self._resident.get(chunk.uri)
+        if resident is not None:
+            return resident
+        frame = self._decode_chunk(chunk, position)
+        if self.in_memory:
+            self._resident[chunk.uri] = frame
+            if self.log is not None and len(self._resident) % 500 == 0:
+                held = sum(frame.estimated_size() for frame in self._resident.values())
+                self.log(
+                    f"[data] resident: {len(self._resident):,} shard(s), {held / 1024**3:.2f} GiB"
+                )
+        return frame
+
     def _iter_frames(self, epoch: int, shuffle: bool) -> Iterator[pl.DataFrame]:
         chunks = list(self.manifest.chunks)
-        rng = random.Random(hash((self.seed, epoch)))
-        if shuffle:
-            rng.shuffle(chunks)
-        indexed_chunks = list(enumerate(chunks, start=1))
         worker = get_worker_info()
         if worker is not None:
-            # Every worker receives the same epoch/shuffle seed, then takes a disjoint stride
-            # through that common ordering. This preserves exactly-once shard coverage while
-            # allowing S3 reads, Parquet decode, row conversion, and collation to overlap.
-            indexed_chunks = indexed_chunks[worker.id :: worker.num_workers]
-        for chunk_index, chunk in indexed_chunks:
-            dataset_id = self.dataset_ids[chunk.dataset]
-            opened_at = time.perf_counter()
-            stream = _open_parquet(chunk.uri, self.local_cache)
-            open_seconds = time.perf_counter() - opened_at
-            try:
-                # PROSPECT hashes occupy the full unsigned 64-bit range. Polars therefore
-                # persisted some shard IDs as Int128; PyArrow refuses to open a Parquet schema
-                # containing Int128 even when that column is not selected. Read with Polars,
-                # use the ID only for validation selection, and drop it before Pandas conversion.
-                read_at = time.perf_counter()
-                frame = read_prepared_parquet(stream).filter(
-                    pl.col("split").is_in(self.splits)
-                    & pl.col("irt").is_finite()
-                    & pl.col("raw_rt").is_finite()
-                )
-                if self.splits == frozenset({"val"}) and self.manifest.val_winners:
-                    keep = [
-                        int(value) in self.manifest.val_winners
-                        for value in frame["spectrum_id"].to_list()
-                    ]
-                    # An empty split produces ``keep=[]``. Without an explicit dtype Polars
-                    # constructs a Null Series, which is not a valid filter predicate and used
-                    # to crash validation at the first train-only shard after a long epoch.
-                    frame = frame.filter(pl.Series("is_winner", keep, dtype=pl.Boolean))
-                # Transformer cost is set by the longest sequence in each batch. Grouping equal
-                # lengths inside an already-shuffled shard removes padding work without adding
-                # a large row-level shuffle buffer or changing which observations are trained.
-                frame = frame.with_columns(stripped_length().alias("_sequence_length")).sort(
-                    "_sequence_length"
-                )
-                frame = frame.drop("spectrum_id")
-                read_seconds = time.perf_counter() - read_at
-                if self.log is not None:
-                    size = getattr(stream, "size", None)
-                    size_mib = float(size) / (1024 * 1024) if size is not None else None
-                    transfer = (
-                        f", size={size_mib:.1f} MiB, effective={size_mib / read_seconds:.1f} MiB/s"
-                        if size_mib is not None and read_seconds > 0
-                        else ""
-                    )
-                    self.log(
-                        f"[data] shard {chunk_index:,}/{len(chunks):,}, dataset={chunk.dataset}, "
-                        f"rows={frame.height:,}, open={open_seconds:.3f}s, "
-                        f"read_decode={read_seconds:.3f}s{transfer}"
-                    )
-                frame = frame.with_columns(pl.lit(dataset_id, dtype=pl.Int64).alias("_dataset_id"))
-                for offset in range(0, frame.height, self.row_group_size):
-                    yield frame.slice(offset, self.row_group_size)
-            finally:
-                if hasattr(stream, "close"):
-                    stream.close()
+            # Disjoint stride through the manifest order, so shard coverage is exactly-once while
+            # S3 reads, Parquet decode and collation overlap. Taken BEFORE the shuffle so a
+            # worker owns the same shards in every epoch: striding a per-epoch shuffle would hand
+            # each worker a different subset each time, and `in_memory` would then grow every
+            # worker's resident set towards the whole corpus.
+            chunks = chunks[worker.id :: worker.num_workers]
+        if shuffle:
+            random.Random(hash((self.seed, epoch))).shuffle(chunks)
+        for chunk_index, chunk in enumerate(chunks, start=1):
+            frame = self._frame_for(chunk, f"{chunk_index:,}/{len(chunks):,}")
+            for offset in range(0, frame.height, self.row_group_size):
+                yield frame.slice(offset, self.row_group_size)
 
     def iter_examples(self, epoch: int, shuffle: bool = True) -> Iterator[RealExample]:
         for frame in self._iter_frames(epoch, shuffle):

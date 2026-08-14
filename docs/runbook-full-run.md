@@ -218,10 +218,15 @@ so a floored or capped window is never mistaken for a measurement.
 Shards are fetched once and read from disk after, taking S3 out of the training loop. Shards are
 immutable, so runs can share one cache directory; unset means stream every epoch.
 
+`in_memory` goes one step further and keeps each decoded shard in RAM, so later epochs skip the
+Parquet decode too. The corpus decodes to roughly four times its on-disk size, so only set it on a
+machine with that memory to spare.
+
 ```toml
 [train]
 prepared_prefix = "s3://bucket/pepdistill-prepared/v2"
 local_cache = "./prepared-cache"
+in_memory = true
 ```
 
 ### Audit a finished corpus, and the teacher's ceiling on it

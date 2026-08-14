@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import queue
+import threading
 from collections.abc import Iterator
 from dataclasses import dataclass
 
 import numpy as np
 import torch
-from torch.utils.data import IterableDataset
+from torch.utils.data import IterableDataset, get_worker_info
 
 from ..data.encode import FRAG_OFFSET, Batch, collate
 from ..data.precursors import Precursor
@@ -91,12 +93,65 @@ class DistillDataset:
             )
 
 
+def _prefetched(batches: Iterator, depth: int) -> Iterator:
+    """Yield from ``batches`` while a background thread runs up to ``depth`` batches ahead.
+
+    Worth a thread despite the GIL: Parquet decode, Rust tokenization and the NumPy/Torch
+    conversions that make up collation all release it, as do the model's own kernels, so the
+    two genuinely overlap. Batch order is untouched, and the producer draws only from the
+    generator it was handed — the global RNG stream the model uses stays in the main thread.
+    """
+    filled: queue.Queue = queue.Queue(maxsize=depth)
+    done = object()
+    stop = threading.Event()
+
+    def produce() -> None:
+        try:
+            for batch in batches:
+                while not stop.is_set():
+                    try:
+                        filled.put(batch, timeout=0.2)
+                        break
+                    except queue.Full:
+                        continue
+                if stop.is_set():
+                    return
+        except BaseException as error:  # re-raised in the consumer, which owns the traceback
+            filled.put(error)
+        else:
+            filled.put(done)
+
+    thread = threading.Thread(target=produce, name="prepared-prefetch", daemon=True)
+    thread.start()
+    try:
+        while True:
+            batch = filled.get()
+            if batch is done:
+                return
+            if isinstance(batch, BaseException):
+                raise batch
+            yield batch
+    finally:
+        # An abandoned generator (early break, or an exception in the training step) leaves the
+        # producer blocked on a full queue; releasing it here keeps one thread per epoch from
+        # accumulating for the life of the run.
+        stop.set()
+        while not filled.empty():
+            filled.get_nowait()
+        thread.join(timeout=5.0)
+
+
 class BatchIterable(IterableDataset):
     """Wrap any object exposing ``batches(batch_size, shuffle, generator)`` as an
     ``IterableDataset``. ``__iter__`` runs once per epoch and re-seeds the generator, so a
     ``DataLoader(batch_size=None)`` reshuffles each epoch while passing each ready-made batch
     straight through — batching/collation already happened inside ``batches``.
     """
+
+    # Batches produced ahead of the consumer, in-process. Only used when the DataLoader has no
+    # worker processes to prefetch for us; inside a worker this would be a second layer of
+    # buffering for no gain.
+    PREFETCH_DEPTH = 4
 
     def __init__(self, source, batch_size: int, shuffle: bool, seed: int) -> None:
         self.source = source
@@ -108,7 +163,11 @@ class BatchIterable(IterableDataset):
     def __iter__(self):
         gen = torch.Generator().manual_seed(self.seed + self._epoch)
         self._epoch += 1
-        yield from self.source.batches(self.batch_size, self.shuffle, gen)
+        batches = self.source.batches(self.batch_size, self.shuffle, gen)
+        if get_worker_info() is not None:
+            yield from batches
+        else:
+            yield from _prefetched(batches, self.PREFETCH_DEPTH)
 
 
 def collate_with_labels(precursors: list[Precursor], labels: list[PrecursorLabels]) -> LabeledBatch:

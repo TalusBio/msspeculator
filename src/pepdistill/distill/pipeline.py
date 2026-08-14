@@ -140,6 +140,10 @@ class TrainCfg:
     # cache takes S3 out of the training loop entirely; unset streams every epoch from the
     # prefix. Shared across runs against the same corpus, since published shards never change.
     local_cache: str | None = None
+    # Hold every decoded shard in RAM after its first read, trading memory for the Parquet
+    # decode of every later epoch. The corpus decodes to roughly 4x its on-disk size, so this
+    # needs a machine with the memory to spare; unset re-reads each shard every epoch.
+    in_memory: bool = False
     epochs: int = 60
     batch_size: int = 256
     # Keep Polars-backed streaming in the trainer process by default. Forking a DataLoader
@@ -792,6 +796,7 @@ def run_pipeline(cfg: RunConfig, log=print) -> dict:
             seed=cfg.seed,
             log=log,
             local_cache=local_cache,
+            in_memory=cfg.train.in_memory,
         )
         val_ds = PreparedStreamingDataset(
             prepared_manifest,
@@ -800,12 +805,14 @@ def run_pipeline(cfg: RunConfig, log=print) -> dict:
             seed=cfg.seed,
             log=log,
             local_cache=local_cache,
+            in_memory=cfg.train.in_memory,
         )
         log(
             f"[train] prepared prefix: {cfg.train.prepared_prefix}; "
             f"{len(prepared_manifest.chunks)} chunk(s), "
             f"{len(prepared_manifest.datasets)} dataset(s)"
             + (f"; caching shards in {local_cache}" if local_cache else "")
+            + ("; holding decoded shards in RAM" if cfg.train.in_memory else "")
         )
         # Whether the affine was set here or inherited is the difference between a cold start
         # and a continued curriculum, for a value that is permanent once set — so say which.

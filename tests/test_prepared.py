@@ -575,6 +575,39 @@ def test_local_cache_fetches_each_shard_once_and_then_needs_no_source(tmp_path):
     assert len(again) == len(warm)
 
 
+def test_in_memory_holds_decoded_shards_across_epochs(tmp_path):
+    """A resident corpus replays every epoch from RAM, decoding each shard exactly once."""
+    root, stem = _source(tmp_path)
+    out = tmp_path / "prepared"
+    config = _config(root, stem, out)
+    prepare_range(config, log=None)
+    finalize_catalog(config, log=None)
+
+    manifest = PreparedManifest.load(out)
+    dataset = PreparedStreamingDataset(
+        manifest, MSContextEncoder(context_dim=8), frozenset({"train"}), in_memory=True
+    )
+    decoded = 0
+    original = dataset._decode_chunk
+
+    def counting(chunk, position):
+        nonlocal decoded
+        decoded += 1
+        return original(chunk, position)
+
+    dataset._decode_chunk = counting  # type: ignore[method-assign]
+    first = list(dataset.iter_examples(epoch=0, shuffle=False))
+    assert first, "resident read yielded no examples"
+    assert decoded == len(manifest.chunks)
+
+    # Removing the source proves the second epoch came from RAM, and the decode count proves it
+    # was not re-parsed: either check alone would pass for the wrong reason.
+    shutil.rmtree(out)
+    second = list(dataset.iter_examples(epoch=1, shuffle=False))
+    assert len(second) == len(first)
+    assert decoded == len(manifest.chunks)
+
+
 def test_without_a_local_cache_shards_are_read_from_their_source_every_time(tmp_path):
     """The complement of the test above: no cache means no local copy to fall back on."""
     root, stem = _source(tmp_path)
