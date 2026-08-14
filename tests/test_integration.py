@@ -172,6 +172,43 @@ def test_wandb_stage_loggers_share_one_run(tmp_path: Path, monkeypatch):
     assert train.logged[-1] == ({"train_metrics/ms2_cosine_loss": 0.1}, 4)
 
 
+def test_rate_limit_thins_batches_but_never_drops_an_epoch_boundary():
+    """A per-epoch payload has to survive the batches that follow it milliseconds later.
+
+    The rate limit keeps one pending payload and REPLACES it when a later step arrives. A
+    diagnostics render lands right after validation has just flushed, so the interval is never
+    due, and the next training batch used to overwrite it — silently costing a whole run every
+    diagnostics image and scalar after step 0, while the per-batch losses looked fine.
+    """
+    from pepdistill.distill.pipeline import _RemoteLogThrottle
+
+    sent: list[tuple[dict, int | None]] = []
+    throttle = _RemoteLogThrottle(
+        lambda metrics, step: sent.append((dict(metrics), step)),
+        min_interval_seconds=10.0,
+        max_interval_steps=1000,
+        boundary_prefixes=("val_", "train_diagnostics/"),
+    )
+    clock = 0.0
+    for step in range(400):  # an epoch of ordinary training, ~34 steps/s
+        throttle.offer({"train_metrics/ms2_cosine_loss": 0.1}, step, clock)
+        clock += 0.03
+    batches_only = len(sent)
+
+    throttle.offer({"val_sa/pool": 0.77}, 400, clock)
+    clock += 0.5
+    throttle.offer({"train_diagnostics/spectral_angle_violins": "<Image>"}, 400, clock)
+    for step in range(401, 500):
+        clock += 0.03
+        throttle.offer({"train_metrics/ms2_cosine_loss": 0.1}, step, clock)
+
+    keys = [key for metrics, _ in sent for key in metrics]
+    assert "train_diagnostics/spectral_angle_violins" in keys
+    assert "val_sa/pool" in keys
+    # And it is still a rate limit: 400 batches at 30ms cost far fewer than 400 remote calls.
+    assert batches_only < 5
+
+
 def test_wandb_namespaces_split_validation_and_diagnostics_into_panels():
     metrics = _wandb_metric_namespaces(
         {

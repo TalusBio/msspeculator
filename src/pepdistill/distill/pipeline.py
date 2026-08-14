@@ -26,6 +26,7 @@ import shutil
 import time
 import tomllib
 import warnings
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field, replace
 from datetime import timedelta
 from pathlib import Path
@@ -439,6 +440,83 @@ def _wandb_metric_namespaces(metrics: dict, stage: str) -> dict:
     return result
 
 
+class _RemoteLogThrottle:
+    """Wall-clock rate limiter for remote telemetry, holding at most one pending payload.
+
+    Separate from the logger that owns it so the buffering rule can be tested without a W&B
+    session. It was a nested class when a bug in exactly this rule silently dropped every
+    diagnostics render for a whole run.
+
+    A pending payload is REPLACED, not merged, once a later step arrives — merging across steps
+    would attribute one step's metrics to another. That makes forcing the only way for an
+    infrequent payload to survive: without it, anything logged between two training batches is
+    overwritten within milliseconds. So payloads whose keys start with ``boundary_prefixes``
+    (validation, diagnostics) are emitted immediately. The throttle is here to thin per-batch
+    samples; a render that happens once an epoch is an event, not a sample.
+    """
+
+    def __init__(
+        self,
+        emit: Callable[[dict, int | None], None],
+        *,
+        min_interval_seconds: float,
+        max_interval_steps: int,
+        boundary_prefixes: tuple[str, ...],
+    ) -> None:
+        self._emit = emit
+        self._min_interval_seconds = min_interval_seconds
+        self._max_interval_steps = max_interval_steps
+        self._boundary_prefixes = boundary_prefixes
+        self._last_emit_at: float | None = None
+        self._last_emit_step: int | None = None
+        self._pending: tuple[dict, int | None] | None = None
+
+    def _is_boundary(self, metrics: dict) -> bool:
+        return any(str(key).startswith(self._boundary_prefixes) for key in metrics)
+
+    def flush(self, now: float) -> None:
+        if self._pending is None:
+            return
+        metrics, step = self._pending
+        self._pending = None
+        self._last_emit_at = now
+        self._last_emit_step = step
+        self._emit(metrics, step)
+
+    def offer(self, metrics: dict, step: int | None, now: float) -> None:
+        boundary = self._is_boundary(metrics)
+        if self._pending is not None:
+            pending_metrics, pending_step = self._pending
+            if pending_step == step:
+                # Lightning emits LearningRateMonitor and module metrics in separate calls at
+                # the same global step. Merge before rate limiting or whichever callback runs
+                # first permanently starves the other metric family.
+                pending_metrics.update(metrics)
+                if boundary:
+                    self.flush(now)
+                return
+        due = (
+            self._last_emit_at is None
+            or self._min_interval_seconds <= 0
+            or now - self._last_emit_at >= self._min_interval_seconds
+            or (
+                step is not None
+                and self._last_emit_step is not None
+                # The completed record available to flush is the pending prior step, so wait
+                # until the incoming step is strictly beyond the configured gap.
+                and step - self._last_emit_step > self._max_interval_steps
+            )
+        )
+        # A new step proves the pending step is complete. Flush it if the interval is due;
+        # otherwise replace it with the newer sample. The current step remains pending so later
+        # logger calls at that same step can be merged into one W&B record.
+        if due:
+            self.flush(now)
+        self._pending = (dict(metrics), step)
+        if boundary:
+            self.flush(now)
+
+
 def _final_training_metadata(module) -> dict:
     """Describe the validation evidence attached to the final inference checkpoint."""
     trainer = module.trainer
@@ -505,56 +583,22 @@ def _wandb_loggers(cfg: RunConfig, out: Path):
         def __init__(self, *args, stage: str, **kwargs):
             super().__init__(*args, **kwargs)
             self._stage = stage
-            self._last_remote_log_at: float | None = None
-            self._last_remote_step: int | None = None
-            self._pending_metrics: tuple[dict, int | None] | None = None
-
-        def _flush_pending(self, now: float) -> None:
-            if self._pending_metrics is None:
-                return
-            metrics, step = self._pending_metrics
-            self._pending_metrics = None
-            self._last_remote_log_at = now
-            self._last_remote_step = step
-            super().log_metrics(metrics, step)
+            self._throttle = _RemoteLogThrottle(
+                lambda metrics, step: WandbLogger.log_metrics(self, metrics, step),
+                min_interval_seconds=cfg.tracking.min_log_interval_seconds,
+                max_interval_steps=cfg.tracking.max_log_interval_steps,
+                # Validation and diagnostics are per-epoch events rather than per-batch samples,
+                # so they bypass the rate limit instead of being overwritten by the next batch.
+                boundary_prefixes=("val_", f"{stage}_diagnostics/"),
+            )
 
         def log_metrics(self, metrics: dict, step: int | None = None) -> None:
-            metrics = _wandb_metric_namespaces(metrics, self._stage)
-            now = time.monotonic()
-            force = any(str(key).startswith("val_") for key in metrics)
-            if self._pending_metrics is not None:
-                pending_metrics, pending_step = self._pending_metrics
-                if pending_step == step:
-                    # Lightning emits LearningRateMonitor and module metrics in separate calls
-                    # at the same global step. Merge before rate limiting or whichever callback
-                    # runs first permanently starves the other metric family.
-                    pending_metrics.update(metrics)
-                    if force:
-                        self._flush_pending(now)
-                    return
-            due = (
-                self._last_remote_log_at is None
-                or cfg.tracking.min_log_interval_seconds <= 0
-                or now - self._last_remote_log_at >= cfg.tracking.min_log_interval_seconds
-                or (
-                    step is not None
-                    and self._last_remote_step is not None
-                    # The completed record available to flush is the pending prior step, so
-                    # wait until the incoming step is strictly beyond the configured gap.
-                    and step - self._last_remote_step > cfg.tracking.max_log_interval_steps
-                )
+            self._throttle.offer(
+                _wandb_metric_namespaces(metrics, self._stage), step, time.monotonic()
             )
-            # A new step proves the pending step is complete. Flush it if the interval is due;
-            # otherwise replace it with the newer sample. The current step remains pending so
-            # later logger calls at that same step can be merged into one W&B record.
-            if due:
-                self._flush_pending(now)
-            self._pending_metrics = (dict(metrics), step)
-            if force:
-                self._flush_pending(now)
 
         def finalize(self, status: str) -> None:
-            self._flush_pending(time.monotonic())
+            self._throttle.flush(time.monotonic())
             super().finalize(status)
 
     root = WandbLogger(experiment=experiment, log_model=False)
