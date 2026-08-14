@@ -373,6 +373,57 @@ def test_validation_early_stop_treats_higher_agreement_as_better():
     assert callback.bad == 0
 
 
+def test_every_epoch_gets_a_validation_when_the_interval_never_elapses():
+    """One boundary check per epoch — not one per two epochs, and not none at all.
+
+    A timed `val_check_interval` is the only trigger a prepared streaming run has, so an epoch
+    shorter than the interval used to end with nothing validated. The forced check runs on the
+    first batch of the FOLLOWING epoch, so it has to be credited to the epoch that asked for it;
+    crediting it to the epoch it lands in makes one check serve two epochs, halving the
+    validation rate and the effective early-stop patience.
+
+    Driven through a real Trainer on purpose: the trigger leans on Lightning's timed-interval
+    internals, so a stub trainer would assert nothing about whether validation actually happens.
+    """
+    import lightning as L
+
+    from pepdistill.distill.context_regime import RealSpeclibDataset
+
+    checks: list[int] = []
+
+    class Spy(L.Callback):
+        def on_validation_epoch_end(self, trainer, pl_module) -> None:
+            # `fit_realspeclib_datasets` runs a closing `trainer.validate` outside fit; only the
+            # in-fit checks say anything about the boundary rule.
+            if trainer.state.fn == "fit":
+                checks.append(trainer.global_step)
+
+    model = build_student("small")
+    model.set_norm(rt_mean=0.0, rt_std=1.0)
+    cdim = model.cfg.context_dim
+    examples = _make_examples(8)
+    fit_realspeclib_datasets(
+        model,
+        RealSpeclibDataset(examples),
+        RealSpeclibDataset(examples[:2]),
+        runbook=ChromRunbook(n_datasets=1, context_dim=cdim),
+        dataset_index={"pool": 1},
+        encoder=MSContextEncoder(context_dim=cdim),
+        epochs=3,
+        batch_size=4,
+        enable_progress_bar=False,
+        num_sanity_val_steps=0,
+        val_check_interval=timedelta(hours=1),
+        check_val_every_n_epoch=None,
+        callbacks=[Spy()],
+    )
+    # Epochs 1 and 2 each force a check, which lands on the first batch of the epoch after it.
+    # Epoch 3's has no following batch and is covered by the closing validate, which the spy
+    # deliberately ignores.
+    assert len(checks) == 2, f"expected one check per epoch boundary, got steps {checks}"
+    assert checks[0] < checks[1]
+
+
 def test_epoch_shorter_than_the_validation_interval_still_checkpoints(tmp_path):
     """The end-of-epoch snapshot must survive an epoch in which nothing was validated.
 

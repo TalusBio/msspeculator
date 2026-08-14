@@ -30,6 +30,7 @@ import json
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass
+from datetime import timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -506,6 +507,66 @@ class _RealValidationEarlyStop(L.Callback):
             )
 
 
+class _RealEpochValidation(L.Callback):
+    """Validate at the epoch boundary too, unless that epoch already had a check.
+
+    A wall-clock ``val_check_interval`` is the ONLY validation trigger a prepared streaming run
+    has: the loader is unsized, ``check_val_every_n_epoch`` is None, and the boundary escape
+    hatch in Lightning's own loop tests ``val_check_batch == inf``, which timed mode never sets.
+    An epoch shorter than the interval therefore ends with no validation at all — no fresh
+    metrics for the epoch-end checkpoint, and none for early stopping.
+
+    The rule here asks one question: has a check run since this epoch began? That deliberately
+    needs no estimate of how long an epoch takes. An epoch's duration is unknown before the
+    first epoch and can change mid-run — a corpus, batch-size or hardware change moves steps per
+    epoch — so an interval derived from an earlier epoch would go stale with nothing to notice it.
+    Validation stays at most one interval (plus a batch) apart in either direction.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        # Validations at or before this step belong to an earlier epoch.
+        self._counts_from = 0
+        self._forced_pending = False
+
+    def setup(self, trainer: L.Trainer, pl_module: L.LightningModule, stage: str) -> None:
+        # The interval is parsed at Trainer construction, so a non-timed run can be rejected
+        # before training starts. The stamp this class writes is only created once the fit loop
+        # runs, so that half is checked at the write site instead.
+        if getattr(trainer, "_val_check_time_interval", None) is None:
+            raise RuntimeError(
+                "epoch-boundary validation needs a timed val_check_interval; this trainer has "
+                "no trainer._val_check_time_interval, so the boundary check cannot be triggered"
+            )
+
+    def on_train_epoch_start(self, trainer: L.Trainer, pl_module: L.LightningModule) -> None:
+        self._counts_from = trainer.global_step
+
+    def on_validation_epoch_end(self, trainer: L.Trainer, pl_module: L.LightningModule) -> None:
+        if self._forced_pending and not trainer.sanity_checking:
+            # A forced check runs on the first batch of the NEXT epoch, so it closes the epoch
+            # that asked for it. Crediting it to the new epoch would satisfy that epoch's test as
+            # well, and one check would then cover every second epoch.
+            self._forced_pending = False
+            self._counts_from = trainer.global_step
+
+    def on_train_epoch_end(self, trainer: L.Trainer, pl_module: RealSpeclibModule) -> None:
+        validated = pl_module.last_validation_step
+        if validated is not None and validated > self._counts_from:
+            return
+        # Say so loudly if the stamp is gone: a silent no-op here would return the run to
+        # validating on the interval alone, which is exactly the behaviour this class exists to fix.
+        if not hasattr(trainer, "_last_val_time"):
+            raise RuntimeError(
+                "epoch-boundary validation forces a check by backdating trainer._last_val_time, "
+                "which this Lightning version does not set; the boundary check cannot be triggered"
+            )
+        self._forced_pending = True
+        # The interval test is ``now - _last_val_time >= interval``, and the evaluation loop
+        # restamps it when a check runs — so backdating makes the next batch end due exactly once.
+        trainer._last_val_time = float("-inf")
+
+
 class _RealCheckpoint(L.Callback):
     """Persist inference-ready latest/best snapshots during real-data training."""
 
@@ -781,6 +842,10 @@ def fit_realspeclib_datasets(
             for dataset_id in val_dataset_ids
         }
         callbacks.insert(0, _RealCheckpoint(checkpoint_dir, checkpoint_keys, artifact_mirror))
+    # Only a timed interval leaves the epoch boundary untriggered; a batch-count interval already
+    # validates on the last batch of an unsized loader.
+    if val_ds is not None and isinstance(trainer_kwargs.get("val_check_interval"), timedelta):
+        callbacks.append(_RealEpochValidation())
     trainer = build_trainer(epochs, accelerator, grad_clip, callbacks=callbacks, **trainer_kwargs)
     train_loader = loader(train_ds, True)
     val_loader = loader(val_ds, False)
