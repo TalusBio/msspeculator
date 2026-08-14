@@ -121,6 +121,21 @@ def test_spectral_angle_series_recovers_its_mean_from_counts():
     assert series.mean() == pytest.approx(float(values.mean()), abs=1.0 / SA_HISTOGRAM_BINS)
     assert SpectralAngleSeries("empty", [0] * SA_HISTOGRAM_BINS).mean() is None
 
+    # Interpolated within the containing bin, so also good to within one bin width.
+    assert series.median() == pytest.approx(float(np.median(values)), abs=1.0 / SA_HISTOGRAM_BINS)
+    assert SpectralAngleSeries("empty", [0] * SA_HISTOGRAM_BINS).median() is None
+
+    # A skewed distribution is where the two statistics have to disagree; recovering both from one
+    # histogram is the only reason to show them together.
+    skewed = np.clip(1.0 - np.abs(np.random.default_rng(1).normal(0.0, 0.15, 20_000)), 0.0, 1.0)
+    piled = SpectralAngleSeries("skewed", sa_histogram(skewed)["counts"])
+    assert piled.median() > piled.mean()
+    assert piled.median() == pytest.approx(float(np.median(skewed)), abs=1.0 / SA_HISTOGRAM_BINS)
+
+    # Interpolation is what keeps every near-perfect dataset off one shared bin-center value.
+    lopsided = SpectralAngleSeries("lopsided", [0] * (SA_HISTOGRAM_BINS - 1) + [1000])
+    assert lopsided.median() == pytest.approx(0.99, abs=1e-9)
+
 
 def test_spectral_angle_violins_render_three_series_per_dataset(tmp_path):
     """The panel the corpus, the teacher and the student are all binned for.
@@ -166,6 +181,21 @@ def test_spectral_angle_violins_render_three_series_per_dataset(tmp_path):
 
     with pytest.raises(ValueError, match="at least one group"):
         plot_spectral_angle_violins([], tmp_path / "empty.png")
+
+    # A corpus-sized panel wraps instead of growing one unreadable axis. Rows make the figure
+    # taller and no wider than a single full row, which is the whole point of wrapping.
+    many = [(f"dataset_{index:02d}", groups[index % 2][1]) for index in range(25)]
+    wrapped = plot_spectral_angle_violins(many, tmp_path / "wrapped.png", groups_per_row=8)
+    single = plot_spectral_angle_violins(many[:8], tmp_path / "single.png", groups_per_row=8)
+    assert wrapped.exists()
+    from PIL import Image
+
+    with Image.open(wrapped) as figure, Image.open(single) as one_row:
+        assert figure.width == one_row.width
+        assert figure.height > 2.5 * one_row.height  # 25 groups over 8 columns is four rows
+
+    with pytest.raises(ValueError, match="groups_per_row must be positive"):
+        plot_spectral_angle_violins(groups, tmp_path / "bad.png", groups_per_row=0)
 
 
 def test_reference_distributions_load_and_panel_uses_them(tmp_path):

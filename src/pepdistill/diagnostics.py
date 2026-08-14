@@ -369,39 +369,44 @@ class SpectralAngleSeries:
         centers = (np.asarray(SA_HISTOGRAM_EDGES[:-1]) + np.asarray(SA_HISTOGRAM_EDGES[1:])) / 2
         return float((counts * centers).sum() / counts.sum())
 
+    def median(self) -> float | None:
+        """Median interpolated within the bin holding the halfway count.
+
+        An estimate, not the exact median: the raw values are gone by the time counts reach here.
+        Interpolating across the containing bin rather than returning its center keeps the error
+        below one bin width, which matters where these distributions pile up against 1.0 and a
+        bin-center answer would quantize every good dataset onto the same value.
+        """
+        counts = np.asarray(self.counts, dtype=np.float64)
+        total = counts.sum()
+        if total <= 0:
+            return None
+        edges = np.asarray(SA_HISTOGRAM_EDGES, dtype=np.float64)
+        cumulative = np.cumsum(counts)
+        index = int(np.searchsorted(cumulative, total / 2.0, side="left"))
+        below = cumulative[index - 1] if index else 0.0
+        within = counts[index]
+        # `within` is positive: searchsorted lands on the first bin that reaches the halfway
+        # count, which an empty bin cannot do.
+        fraction = (total / 2.0 - below) / within
+        return float(edges[index] + fraction * (edges[index + 1] - edges[index]))
+
     def total(self) -> int:
         return int(sum(self.counts))
 
 
-def plot_spectral_angle_violins(
-    groups: Sequence[tuple[str, Sequence[SpectralAngleSeries]]],
-    path: str | Path,
+def _draw_violin_row(
+    ax,
+    row: Sequence[tuple[str, Sequence[SpectralAngleSeries]]],
     *,
-    title: str = "Spectral angle: student vs teacher vs achievable ceiling",
-) -> Path:
-    """Grouped violins of spectral angle per group, drawn from histogram counts.
-
-    The shape is built directly from the counts rather than from a kernel density estimate: the
-    inputs are already binned on :data:`SA_HISTOGRAM_EDGES`, and smoothing a diagnostic would
-    invent density near 1.0 where the real distribution is a hard edge.
-
-    Each series is annotated with its mean and the number of spectra behind it, because the three
-    are not measured on the same population size -- the ceiling needs replicates, the teacher and
-    student need one spectrum -- and a violin with no ``n`` invites reading a handful of points as
-    a distribution.
-    """
-    if not groups:
-        raise ValueError("at least one group is required")
-    plt = _pyplot()
-    edges = np.asarray(SA_HISTOGRAM_EDGES, dtype=np.float64)
-    centers = (edges[:-1] + edges[1:]) / 2
-    names = list(dict.fromkeys(series.label for _, group in groups for series in group))
-    palette = plt.get_cmap("tab10")
-    colors = {name: palette(index % 10) for index, name in enumerate(names)}
-
-    fig, ax = plt.subplots(figsize=(max(7.0, 1.9 * len(groups)), 6.5), constrained_layout=True)
+    names: Sequence[str],
+    colors: dict,
+    centers: np.ndarray,
+    columns: int,
+) -> None:
+    """Draw one row of grouped violins, each annotated with its median, mean and ``n``."""
     slot = 1.0 / (len(names) + 1)
-    for group_index, (_, group) in enumerate(groups):
+    for group_index, (_, group) in enumerate(row):
         for series in group:
             counts = np.asarray(series.counts, dtype=np.float64)
             if counts.sum() <= 0:
@@ -419,42 +424,112 @@ def plot_spectral_angle_violins(
                 alpha=0.75,
                 linewidth=0,
             )
-            mean = series.mean()
-            if mean is None:
+            median, mean = series.median(), series.mean()
+            if median is None or mean is None:
                 continue
-            ax.hlines(mean, x - 0.5 * slot, x + 0.5 * slot, color="black", linewidth=1.0)
-            # Mean and n share one label: these distributions reach 0, so a separate annotation
-            # along the bottom axis would sit on top of the violin bodies. Flip the label above
-            # the line for a low mean so it cannot fall off the axis.
-            below = mean > 0.12
+            # Median solid and full width, mean dashed and narrower: the two often sit within a
+            # bin of each other, and matching them in style would read as one thick line. Their
+            # gap is the skew, which is the point of showing both.
+            ax.hlines(median, x - 0.5 * slot, x + 0.5 * slot, color="black", linewidth=1.0)
+            ax.hlines(
+                mean,
+                x - 0.32 * slot,
+                x + 0.32 * slot,
+                color="black",
+                linewidth=0.9,
+                linestyles="dashed",
+            )
+            # One label per series rather than one per statistic: these distributions reach 0, so
+            # annotations along the bottom axis would sit on the violin bodies. Anchor it to the
+            # lower of the two lines, and flip it above when that would fall off the axis.
+            anchor = min(median, mean)
+            below = anchor > 0.16
             ax.annotate(
-                f"{mean:.3f}\nn={series.total():,}",
-                xy=(x, mean),
+                f"med {median:.3f}\nmean {mean:.3f}\nn={series.total():,}",
+                xy=(x, anchor),
                 xytext=(0, -4 if below else 4),
                 textcoords="offset points",
                 ha="center",
                 va="top" if below else "bottom",
-                fontsize=6.5,
+                fontsize=6.0,
             )
-    ax.set_xticks(range(len(groups)))
-    ax.set_xticklabels([label for label, _ in groups], rotation=30, ha="right")
+    ax.set_xticks(range(len(row)))
+    ax.set_xticklabels([label for label, _ in row], rotation=30, ha="right", fontsize=7)
+    # Every row spans the same number of columns, so a short final row keeps the same violin
+    # width and spacing as a full one instead of stretching to fill the figure.
+    ax.set_xlim(-0.5, columns - 0.5)
     ax.set_ylim(0.0, 1.0)
     ax.set_ylabel("Spectral angle")
+    ax.grid(axis="y", alpha=0.25)
+
+
+def plot_spectral_angle_violins(
+    groups: Sequence[tuple[str, Sequence[SpectralAngleSeries]]],
+    path: str | Path,
+    *,
+    title: str = "Spectral angle: student vs teacher vs achievable ceiling",
+    groups_per_row: int = 8,
+) -> Path:
+    """Grouped violins of spectral angle per group, drawn from histogram counts.
+
+    The shape is built directly from the counts rather than from a kernel density estimate: the
+    inputs are already binned on :data:`SA_HISTOGRAM_EDGES`, and smoothing a diagnostic would
+    invent density near 1.0 where the real distribution is a hard edge.
+
+    Each series is annotated with its median, its mean, and the number of spectra behind it. The
+    three series are not measured on the same population size -- the ceiling needs replicates, the
+    teacher and student need one spectrum -- and a violin with no ``n`` invites reading a handful
+    of points as a distribution.
+
+    Groups wrap onto rows of at most ``groups_per_row``. A corpus with dozens of datasets on one
+    axis is too wide to read at any sensible aspect ratio, so rows are the readable shape; each
+    row keeps its own dataset labels and they all share the [0, 1] scale.
+    """
+    if not groups:
+        raise ValueError("at least one group is required")
+    if groups_per_row < 1:
+        raise ValueError("groups_per_row must be positive")
+    plt = _pyplot()
+    edges = np.asarray(SA_HISTOGRAM_EDGES, dtype=np.float64)
+    centers = (edges[:-1] + edges[1:]) / 2
+    names = list(dict.fromkeys(series.label for _, group in groups for series in group))
+    palette = plt.get_cmap("tab10")
+    colors = {name: palette(index % 10) for index, name in enumerate(names)}
+
+    rows = [
+        groups[start : start + groups_per_row] for start in range(0, len(groups), groups_per_row)
+    ]
+    columns = min(groups_per_row, len(groups))
+    fig, axes = plt.subplots(
+        len(rows),
+        1,
+        # 2.4in per group is set by the annotations, not the violins: three series each carry a
+        # median/mean/n label, and anything narrower runs neighbouring labels into each other.
+        figsize=(max(7.0, 2.4 * columns), 3.4 * len(rows)),
+        constrained_layout=True,
+        squeeze=False,
+    )
+    for ax, row in zip(axes[:, 0], rows):
+        _draw_violin_row(ax, row, names=names, colors=colors, centers=centers, columns=columns)
+
     handles = [
         plt.Line2D([], [], color=colors[name], linewidth=6, alpha=0.75, label=name)
         for name in names
+    ] + [
+        plt.Line2D([], [], color="black", linewidth=1.0, label="median"),
+        plt.Line2D([], [], color="black", linewidth=0.9, linestyle="dashed", label="mean"),
     ]
-    # Above the axes: every series can occupy any part of [0, 1], so no corner is reliably free.
-    ax.legend(
+    # Above the top axes: every series can occupy any part of [0, 1], so no corner within a row is
+    # reliably free.
+    axes[0, 0].legend(
         handles=handles,
         loc="lower center",
         bbox_to_anchor=(0.5, 1.0),
-        ncol=len(names),
+        ncol=len(handles),
         fontsize=8,
         frameon=False,
     )
-    ax.set_title(title, pad=26)
-    ax.grid(axis="y", alpha=0.25)
+    axes[0, 0].set_title(title, pad=26)
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(path, dpi=150)
