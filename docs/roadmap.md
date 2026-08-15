@@ -84,6 +84,14 @@ inference is the Rust path via `export-rust`.
    combinations instead of relying mostly on incidental variable modifications. Measure
    modified-peptide spectral agreement separately by modification class and retain an
    unmodified control so improved PTM behavior cannot hide a base-peptide regression.
+10. **Fit context rows in Rust.** Given a library and a trained checkpoint, allocate a context row
+    and gradient-descend only that row against the library's spectra, leaving the backbone frozen.
+    Two questions share this one mechanism: what chromatography row makes a new run's RT
+    predictable, and what acquisition context a library with no recorded instrument or collision
+    energy behaves like. It is a 16-to-32-dimensional fit against a frozen model, so it belongs
+    beside inference in the Rust runtime rather than in the training stack; the Python
+    `freeze_backbone` path already does the equivalent and can serve as the reference
+    implementation to check it against.
 
 ## Parked
 
