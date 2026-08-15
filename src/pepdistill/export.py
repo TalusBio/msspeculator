@@ -67,8 +67,15 @@ def export_safetensors(ckpt_path: str | Path, out_path: str | Path) -> Path:
         for key, val in ctx.runbook.state_dict().items():
             tensors[f"runbook.{key}"] = val.contiguous().cpu()
         meta["has_runbook"] = True
-    if ctx is not None and ctx.dataset_index is not None:
-        meta["dataset_index"] = ctx.dataset_index
+    # From the book itself when it has an index: the runtime resolves `--chrom-context NAME`
+    # through this map, so it has to be the one that names the rows being exported beside it.
+    index = (
+        ctx.runbook.names
+        if ctx is not None and ctx.runbook is not None and ctx.runbook.names
+        else (ctx.dataset_index if ctx is not None else None)
+    )
+    if index:
+        meta["dataset_index"] = index
 
     out_path = Path(out_path)
     save_file(tensors, str(out_path), metadata={"pepdistill": json.dumps(meta)})

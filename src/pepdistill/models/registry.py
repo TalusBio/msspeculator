@@ -60,9 +60,13 @@ def _encoder_blob(enc: MSContextEncoder) -> dict:
 
 
 def _runbook_blob(book: ChromRunbook) -> dict:
+    # `names` rides with `state_dict` deliberately: a row is meaningless without the dataset it
+    # was trained for, and storing the two apart is what let a growing corpus renumber the names
+    # while the weights stayed put.
     return {
         "n_datasets": book.n_datasets,
         "context_dim": book.context_dim,
+        "names": book.names,
         "state_dict": book.state_dict(),
     }
 
@@ -84,10 +88,16 @@ def save_checkpoint(
     """
     blob: dict = {"config": model.cfg.to_dict(), "state_dict": model.state_dict()}
     if encoder is not None or runbook is not None or dataset_index is not None:
+        if runbook is not None and dataset_index and not runbook.names:
+            # A caller that still threads the index separately: adopt it into the book so the
+            # rows and their names are stored together from here on.
+            runbook.adopt_names(dataset_index)
         blob["context"] = {
             "encoder": _encoder_blob(encoder) if encoder is not None else None,
             "runbook": _runbook_blob(runbook) if runbook is not None else None,
-            "dataset_index": dataset_index,
+            "dataset_index": runbook.names
+            if runbook is not None and runbook.names
+            else dataset_index,
         }
     if training_metadata is not None:
         # Plain scalar/container metadata remains inspectable with torch.load and is ignored by
@@ -130,7 +140,14 @@ def load_context(path: str | Path, map_location: str = "cpu") -> ContextBundle |
         encoder.eval()
     if ctx.get("runbook"):
         r = ctx["runbook"]
-        runbook = ChromRunbook(r["n_datasets"], r["context_dim"])
+        # Checkpoints written before the book owned its index keep the map beside it; read either,
+        # so an older checkpoint still resumes with its rows correctly named.
+        runbook = ChromRunbook(
+            r["n_datasets"],
+            r["context_dim"],
+            names=r.get("names") or ctx.get("dataset_index"),
+        )
         runbook.load_state_dict(r["state_dict"])
         runbook.eval()
-    return ContextBundle(encoder=encoder, runbook=runbook, dataset_index=ctx.get("dataset_index"))
+    index = runbook.names if runbook is not None and runbook.names else ctx.get("dataset_index")
+    return ContextBundle(encoder=encoder, runbook=runbook, dataset_index=index)

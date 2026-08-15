@@ -26,7 +26,7 @@ import shutil
 import time
 import tomllib
 import warnings
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass, field, replace
 from datetime import timedelta
 from pathlib import Path
@@ -607,26 +607,22 @@ def _wandb_loggers(cfg: RunConfig, out: Path):
     return root, pretrain, train
 
 
-def _runbook_for_index(
-    existing: ChromRunbook | None, dataset_index: dict[str, int], context_dim: int
+def _runbook_for_datasets(
+    existing: ChromRunbook | None, datasets: Iterable[str], context_dim: int
 ) -> ChromRunbook:
-    """Reuse a checkpoint's runbook, expanding it without discarding learned rows if needed."""
-    needed = max(dataset_index.values(), default=0)
-    if existing is None:
-        return ChromRunbook(n_datasets=needed, context_dim=context_dim)
-    if existing.context_dim != context_dim:
+    """Reuse a checkpoint's runbook, giving any new dataset a row without moving trained ones.
+
+    Row assignment is the book's own job (:meth:`ChromRunbook.ensure`), so this only has to
+    resolve which book to use. The manifest's own numbering is deliberately not consulted: it is
+    assigned by sorted position and therefore moves whenever the corpus gains a source.
+    """
+    book = existing if existing is not None else ChromRunbook(n_datasets=0, context_dim=context_dim)
+    if book.context_dim != context_dim:
         raise ValueError(
-            f"checkpoint runbook context_dim {existing.context_dim} != model's {context_dim}"
+            f"checkpoint runbook context_dim {book.context_dim} != model's {context_dim}"
         )
-    if existing.n_datasets >= needed:
-        return existing
-    expanded = ChromRunbook(n_datasets=needed, context_dim=context_dim)
-    rows = existing.n_datasets + 1  # include neutral row zero
-    with torch.no_grad():
-        expanded.emb.weight[:rows].copy_(existing.emb.weight)
-        expanded.log_scale.weight[:rows].copy_(existing.log_scale.weight)
-        expanded.shift.weight[:rows].copy_(existing.shift.weight)
-    return expanded
+    book.ensure(sorted(datasets))
+    return book
 
 
 def _diagnostic_renderer(cfg: RunConfig, teacher, out: Path):
@@ -840,7 +836,6 @@ def run_pipeline(cfg: RunConfig, log=print) -> dict:
         # already drawn from it.
         L.seed_everything(cfg.seed, verbose=False)
         prepared_manifest = PreparedManifest.load(cfg.train.prepared_prefix)
-        dataset_index = prepared_manifest.datasets
         local_cache = Path(cfg.train.local_cache) if cfg.train.local_cache else None
         train_ds = PreparedStreamingDataset(
             prepared_manifest,
@@ -876,15 +871,14 @@ def run_pipeline(cfg: RunConfig, log=print) -> dict:
             )
         else:
             log("[train] RT affine inherited from an earlier stage; not recalibrated")
-        # Size by the HIGHEST row, not the count: rows are contiguous from 1 only when the
-        # index was built from scratch. resolve_dataset_index(existing=...) keeps whatever rows
-        # a continued curriculum already had, which can be sparse, and len() would then size an
-        # embedding that the top row indexes past.
-        runbook = _runbook_for_index(
+        # The book assigns its own rows, so a corpus that gained a source since this checkpoint
+        # was written keeps every trained dataset where it was and only the new one moves.
+        runbook = _runbook_for_datasets(
             loaded_context.runbook if loaded_context else None,
-            dataset_index,
+            prepared_manifest.datasets,
             model.cfg.context_dim,
         )
+        dataset_index = runbook.names
         log(
             f"[train] streaming prepared chunks directly; "
             f"train rows={len(train_ds):,}, val rows={len(val_ds):,}, "

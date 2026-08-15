@@ -18,6 +18,8 @@ only these modules.
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping
+
 import torch
 from torch import nn
 
@@ -110,14 +112,31 @@ class ChromRunbook(nn.Module):
     """Per-dataset chromatography context for the RT head. One embedding keyed by dataset with
     row 0 reserved as the iRT / neutral row (context-free). Zero-init, so an untrained book and
     the neutral row both reproduce the base (iRT) RT; other rows learn each dataset's LC offset.
+
+    The book owns the name -> row map rather than being handed one. A row means nothing without
+    the name it was trained for, and while the two lived apart a corpus that gained a source
+    renumbered the names (the prepared manifest numbers them by sorted position) while the rows
+    stayed put, silently reattaching every learned row to a different dataset.
     """
 
-    def __init__(self, n_datasets: int, context_dim: int = 16) -> None:
+    def __init__(
+        self,
+        n_datasets: int,
+        context_dim: int = 16,
+        names: Mapping[str, int] | None = None,
+    ) -> None:
         super().__init__()
         self.emb = nn.Embedding(
             n_datasets + 1, context_dim, padding_idx=0
         )  # +1: index 0 = neutral (iRT)
         nn.init.zeros_(self.emb.weight)
+        self._names: dict[str, int] = dict(names or {})
+        for name, row in self._names.items():
+            if not 1 <= row <= n_datasets:
+                raise ValueError(
+                    f"dataset {name!r} claims row {row}, outside 1..{n_datasets}; row 0 is the "
+                    "neutral iRT row and is never a dataset"
+                )
         # Per-dataset output affine on the RT head. `emb` above is an ADDITIVE bias in feature
         # space, which can bend the mapping but cannot express a rescale — yet a dataset's raw
         # RT differs from the iRT frame by SCALE as much as offset (gradient length, minutes vs
@@ -135,6 +154,90 @@ class ChromRunbook(nn.Module):
     @property
     def n_datasets(self) -> int:
         return self.emb.num_embeddings - 1
+
+    @property
+    def names(self) -> dict[str, int]:
+        """Dataset name -> row, travelling with the weights those rows index."""
+        return dict(self._names)
+
+    def row(self, name: str) -> int:
+        """Row for a dataset this book has learned.
+
+        Raises for an unknown name: guessing a row would silently predict one dataset's
+        chromatography for another, which reads as a mediocre model rather than a mistake.
+        """
+        try:
+            return self._names[name]
+        except KeyError:
+            known = ", ".join(sorted(self._names)) or "none"
+            raise KeyError(
+                f"no chromatography row for {name!r}; this book knows: {known}"
+            ) from None
+
+    def ensure(self, names: Iterable[str]) -> None:
+        """Give every name a row, growing the embeddings if needed, leaving trained rows put.
+
+        The only way a row is assigned. A dataset that already has one keeps it, so a corpus that
+        gains a source cannot renumber what is already trained:
+
+        >>> book = ChromRunbook(n_datasets=2, context_dim=4, names={"alpha": 1, "beta": 2})
+        >>> book.ensure(["aardvark", "alpha", "beta"])
+        >>> book.names
+        {'alpha': 1, 'beta': 2, 'aardvark': 3}
+        >>> book.n_datasets
+        3
+
+        Names already present are a no-op, so repeated calls across a curriculum are safe:
+
+        >>> book.ensure(["alpha"])
+        >>> book.names
+        {'alpha': 1, 'beta': 2, 'aardvark': 3}
+
+        New rows go above the highest in use, so a book whose index is already sparse stays that
+        way rather than reusing a gap some earlier curriculum left behind:
+
+        >>> sparse = ChromRunbook(n_datasets=7, context_dim=4, names={"alpha": 7})
+        >>> sparse.ensure(["gamma"])
+        >>> sparse.names
+        {'alpha': 7, 'gamma': 8}
+        """
+        fresh = [name for name in dict.fromkeys(names) if name not in self._names]
+        if not fresh:
+            return
+        next_row = max(self._names.values(), default=0) + 1
+        assigned = {name: next_row + offset for offset, name in enumerate(fresh)}
+        needed = max(assigned.values())
+        if needed > self.n_datasets:
+            self._grow(needed)
+        self._names.update(assigned)
+
+    def adopt_names(self, names: Mapping[str, int]) -> None:
+        """Take an externally-held index, for a book that was built before it had one.
+
+        The transition path only: every new call site assigns rows through :meth:`ensure`. Refuses
+        to overwrite an index the book already has, since the two disagreeing is the failure this
+        whole arrangement exists to prevent.
+        """
+        if self._names and dict(names) != self._names:
+            raise ValueError(
+                f"runbook already names {sorted(self._names)}; refusing to replace that with "
+                f"{sorted(names)}"
+            )
+        for name, row in names.items():
+            if not 1 <= row <= self.n_datasets:
+                raise ValueError(f"dataset {name!r} claims row {row}, outside 1..{self.n_datasets}")
+        self._names = dict(names)
+
+    def _grow(self, n_datasets: int) -> None:
+        """Widen every table to `n_datasets` rows, copying what is already trained."""
+        rows = self.n_datasets + 1  # include the neutral row
+        for name, width in (("emb", self.context_dim), ("log_scale", 1), ("shift", 1)):
+            table = getattr(self, name)
+            wider = nn.Embedding(n_datasets + 1, width, padding_idx=0)
+            nn.init.zeros_(wider.weight)
+            with torch.no_grad():
+                wider.weight[:rows].copy_(table.weight)
+            setattr(self, name, wider)
 
     def forward(self, dataset_id: torch.Tensor) -> torch.Tensor:
         return self.emb(dataset_id) * dataset_id.ne(0).unsqueeze(-1)

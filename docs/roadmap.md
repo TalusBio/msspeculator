@@ -93,6 +93,12 @@ inference is the Rust path via `export-rust`.
     `freeze_backbone` path already does the equivalent and can serve as the reference
     implementation to check it against.
 
+11. **Decay the learning rate during real-data training.** The stage runs at a constant `lr`, and
+    the first full local run's validation agreement oscillated in a 0.4% band from epoch 3 to
+    epoch 8 without trending — a converged-at-this-rate signature rather than an impatient one, so
+    raising early-stop patience buys more of the same oscillation. The pretrain stage already
+    carries OneCycle settings; the real-data stage has no schedule at all.
+
 ## Parked
 
 - A portable export format (ONNX or otherwise), until a concrete consumer requires one. The ONNX

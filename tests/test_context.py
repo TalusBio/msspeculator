@@ -41,6 +41,40 @@ def test_context_roundtrip(tmp_path):
     assert torch.allclose(b.runbook(torch.tensor([1])), book(torch.tensor([1])), atol=1e-6)
 
 
+def test_a_new_source_cannot_renumber_trained_rows(tmp_path):
+    """The corpus growing a source must not move a dataset that already learned a row.
+
+    The prepared manifest numbers datasets by sorted position, so adding a source that sorts first
+    renumbers everything after it. While the name->row map lived apart from the weights, that
+    renumbering silently handed each trained row to a different dataset: no error, just RT context
+    predicted from the wrong chromatography.
+    """
+    from pepdistill.distill.pipeline import _runbook_for_datasets
+
+    model = build_student("small")
+    book = ChromRunbook(n_datasets=2, context_dim=model.cfg.context_dim)
+    book.ensure(["multi_ptm_ps", "prospect_tum_hla"])
+    assert book.names == {"multi_ptm_ps": 1, "prospect_tum_hla": 2}
+    with torch.no_grad():
+        book.emb.weight[book.row("multi_ptm_ps")].fill_(0.25)
+        book.emb.weight[book.row("prospect_tum_hla")].fill_(0.75)
+
+    # A library whose name sorts before both of them: under sorted numbering it would take row 1.
+    grown = _runbook_for_datasets(
+        book, ["evosep_library", "multi_ptm_ps", "prospect_tum_hla"], model.cfg.context_dim
+    )
+    assert grown.names == {"multi_ptm_ps": 1, "prospect_tum_hla": 2, "evosep_library": 3}
+    assert torch.allclose(grown.emb.weight[grown.row("multi_ptm_ps")], torch.tensor(0.25))
+    assert torch.allclose(grown.emb.weight[grown.row("prospect_tum_hla")], torch.tensor(0.75))
+    # The new row starts neutral, so the library contributes nothing until it trains.
+    assert torch.count_nonzero(grown.emb.weight[grown.row("evosep_library")]) == 0
+
+    # And the map survives the round trip that the runtime resolves names through.
+    path = tmp_path / "grown.ckpt"
+    save_checkpoint(model, path, runbook=grown)
+    assert load_context(path).runbook.names == grown.names
+
+
 def test_zero_ms_context_is_base_ms2():
     m = build_student("small").eval()
     b = _batch()
