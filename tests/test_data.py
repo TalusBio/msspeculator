@@ -77,6 +77,33 @@ def test_split_is_deterministic_and_partitions():
     assert 0.72 < frac_train < 0.88
 
 
+def _reference_unit_hash(sequence: str, salt: str) -> float:
+    """The split hash as Python used to compute it, kept only to pin the Rust port.
+
+    Production reads the Rust implementation, since the corpus is split here while a library is
+    split there during a context fit. If these two ever disagree, a peptide the model trained on
+    can reach a held-out score without anything failing — so the reference stays, in the tests.
+    """
+    import hashlib
+
+    digest = hashlib.blake2b(f"{salt}:{sequence}".encode(), digest_size=8).digest()
+    return int.from_bytes(digest, "big") / float(1 << 64)
+
+
+def test_rust_split_matches_the_python_reference():
+    cfg = SplitConfig()
+    sequences = [f"PEPTIDE{chr(65 + i % 26)}{i}K" for i in range(500)]
+    for sequence in sequences:
+        h = _reference_unit_hash(sequence, cfg.salt)
+        expected = "train" if h < cfg.train else "val" if h < cfg.train + cfg.val else "test"
+        assert assign_split(sequence, cfg) == expected, (
+            f"{sequence}: hash {h!r} says {expected}, Rust says {assign_split(sequence, cfg)}"
+        )
+    # A different salt has to reassign, or the salt is not doing its job on the Rust side either.
+    salted = SplitConfig(salt="a-different-salt")
+    assert any(assign_split(s, cfg) != assign_split(s, salted) for s in sequences)
+
+
 def test_split_ignores_mods_and_charge():
     # Split keys on the bare sequence, so it does not depend on charge/mods.
     cfg = SplitConfig()

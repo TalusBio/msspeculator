@@ -3,28 +3,22 @@
 Hashing (not RNG) means the split is stable across runs, machines, and dataset
 growth: a peptide keeps its assignment even if the FASTA changes. All mod-forms and
 charge states of one bare sequence land in the same split, so nothing leaks.
+
+The hash itself lives in Rust (``pepdistill_core::split``) because a library is split there
+during a context fit while the corpus is split here, and two implementations that disagree would
+put a peptide the model trained on into a held-out score with nothing failing. A reference
+implementation of the hash is kept in ``tests/test_data.py`` purely to pin the port.
 """
 
 from __future__ import annotations
 
-import hashlib
+import pepdistill_rs
 
 from .config import SplitConfig
 
 Split = str  # "train" | "val" | "test"
 
 
-def _unit_hash(sequence: str, salt: str) -> float:
-    """Map a sequence to a stable float in [0, 1)."""
-    digest = hashlib.blake2b(f"{salt}:{sequence}".encode(), digest_size=8).digest()
-    return int.from_bytes(digest, "big") / float(1 << 64)
-
-
 def assign_split(sequence: str, cfg: SplitConfig) -> Split:
     """Assign a bare (unmodified) sequence to a split."""
-    h = _unit_hash(sequence, cfg.salt)
-    if h < cfg.train:
-        return "train"
-    if h < cfg.train + cfg.val:
-        return "val"
-    return "test"
+    return pepdistill_rs.assign_split(sequence, cfg.salt, cfg.train, cfg.val)

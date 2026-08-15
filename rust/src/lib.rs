@@ -16,6 +16,7 @@ use std::hash::{Hash, Hasher};
 
 use pepdistill_core::chem;
 use pepdistill_core::peptide::{ModSpec, Peptide as CorePeptide, Site};
+use pepdistill_core::split as speclib_split;
 use pepdistill_core::{bucket, proforma, speclib, tokenize, unimod};
 
 fn to_pyerr(e: anyhow::Error) -> PyErr {
@@ -337,6 +338,28 @@ fn bucket_fragment_mz<'py>(
     Ok((mz.into_pyarray_bound(py), pmz.into_pyarray_bound(py)))
 }
 
+/// Assign a bare sequence to a split, from the Rust port of `pepdistill.data.split`.
+///
+/// Exposed so the two implementations can be compared directly. They have to agree exactly: the
+/// corpus is split in Python and a library is split in Rust, and a disagreement would put a
+/// peptide the model trained on into a held-out score without anything failing.
+#[pyfunction]
+#[pyo3(signature = (sequence, salt, train, val))]
+fn assign_split(sequence: &str, salt: &str, train: f64, val: f64) -> PyResult<String> {
+    let cfg = speclib_split::SplitConfig {
+        train,
+        val,
+        test: 1.0 - train - val,
+        salt: salt.to_string(),
+    };
+    Ok(match speclib_split::assign_split(sequence, &cfg) {
+        speclib_split::Split::Train => "train",
+        speclib_split::Split::Val => "val",
+        speclib_split::Split::Test => "test",
+    }
+    .to_string())
+}
+
 /// Read a spectral library into columnar arrays.
 ///
 /// Fragments come back in CSR form rather than a dense grid: a library reports roughly a dozen of
@@ -467,6 +490,7 @@ fn pepdistill_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(bucket_arrays, m)?)?;
     m.add_function(wrap_pyfunction!(bucket_fragment_mz, m)?)?;
     m.add_function(wrap_pyfunction!(read_speclib, m)?)?;
+    m.add_function(wrap_pyfunction!(assign_split, m)?)?;
 
     m.add("PROTON", chem::PROTON)?;
     m.add("H2O", chem::H2O)?;

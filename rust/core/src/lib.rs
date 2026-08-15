@@ -12,6 +12,7 @@ pub mod model;
 pub mod peptide;
 pub mod proforma;
 pub mod speclib;
+pub mod split;
 pub mod tokenize;
 pub mod unimod;
 
