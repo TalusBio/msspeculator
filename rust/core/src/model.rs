@@ -6,7 +6,7 @@
 //! features; `chrom_context` shifts the RT head; CCS takes no context.
 
 use anyhow::{anyhow, Result};
-use ndarray::{s, Array1, Array2, Array3, ArrayBase, Data, Ix1, Ix2};
+use ndarray::{s, Array1, Array2, Array3, ArrayBase, ArrayView1, Data, Ix1, Ix2};
 
 use crate::artifact::Artifact;
 use crate::peptide::Peptide;
@@ -369,8 +369,18 @@ impl<'a> Predictor<'a> {
         energy: Option<f32>,
     ) -> Result<Array1<f32>> {
         let ctx = self.encode_ms_context(instrument, detector, fragmentation, energy)?;
+        self.context_shift(ctx.view())
+    }
+
+    /// Project any acquisition context vector into the additive fragment-feature shift.
+    ///
+    /// Split out of [`Self::ms_context_shift`] because a fitted context has no acquisition factors
+    /// behind it — it is a vector in the same space, optimized directly, and it has to reach the
+    /// heads through exactly the projection a factor-derived context uses or the fit would be
+    /// optimizing against a different model than inference runs.
+    pub fn context_shift(&self, context: ArrayView1<'_, f32>) -> Result<Array1<f32>> {
         Ok(linear1(
-            &ctx,
+            &context.to_owned(),
             &self.art.get2("model.ms_to_frag.weight")?,
             &self.art.get1("model.ms_to_frag.bias")?,
         ))

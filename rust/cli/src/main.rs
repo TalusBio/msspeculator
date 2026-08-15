@@ -4,7 +4,7 @@ use std::str::FromStr;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use pepdistill_core::{predict, Artifact, MsContext, Prediction};
+use pepdistill_core::{fit, predict, speclib, Artifact, MsContext, Prediction};
 use serde_json::json;
 
 mod diagnostics;
@@ -28,6 +28,45 @@ enum Command {
     Library(LibraryArgs),
     /// Run a built-in model health panel and write diagnostic artifacts.
     RunDoctor(DoctorArgs),
+    /// Fit the acquisition context that best explains a published spectral library.
+    FitContext(FitContextArgs),
+}
+
+/// `--add-unimod ACCESSION[:MASS]`: a modification the library contains.
+///
+/// The mass is optional and only needed when the file spells a shift more coarsely than the
+/// automatic tolerance accepts — DIA-NN writes 6C-CysPAT as `+221.082`, which is 3e-4 from the
+/// table. Stating it is a declaration that the rounding is intended, not a widening of the
+/// tolerance for every modification.
+#[derive(Clone)]
+struct AddUnimod {
+    accession: u32,
+    observed_mass: Option<f64>,
+}
+
+impl FromStr for AddUnimod {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let (accession, mass) = match value.split_once(':') {
+            Some((accession, mass)) => (accession, Some(mass)),
+            None => (value, None),
+        };
+        Ok(Self {
+            accession: accession
+                .trim()
+                .parse()
+                .map_err(|_| format!("{accession:?} is not a UNIMOD accession"))?,
+            observed_mass: match mass {
+                Some(mass) => Some(
+                    mass.trim()
+                        .parse()
+                        .map_err(|_| format!("{mass:?} is not a mass"))?,
+                ),
+                None => None,
+            },
+        })
+    }
 }
 
 #[derive(clap::Args)]
@@ -169,6 +208,100 @@ struct DoctorArgs {
     out: String,
 }
 
+#[derive(clap::Args)]
+struct FitContextArgs {
+    #[command(flatten)]
+    artifact: ArtifactArgs,
+    /// Local path to a Spectronaut or DIA-NN TSV library. Remote libraries are downloaded first:
+    /// this reads the file directly and has no object-store client.
+    #[arg(long)]
+    library: String,
+    /// Modification present in the library, as ACCESSION or ACCESSION:MASS. Repeatable.
+    #[arg(long = "add-unimod", value_name = "ACCESSION[:MASS]")]
+    add_unimod: Vec<AddUnimod>,
+    /// Acquisition factors the library was measured with. Omitted names resolve to the neutral
+    /// row, so a library from an unrecorded setup still fits.
+    #[arg(long, default_value = "")]
+    instrument: String,
+    #[arg(long, default_value = "")]
+    detector: String,
+    #[arg(long, default_value = "")]
+    fragmentation: String,
+    /// Maximum passes over the training precursors. Held-out agreement is checked after each and
+    /// the best-scoring context is returned, so raising this cannot make the answer worse.
+    #[arg(long, default_value_t = 12)]
+    epochs: usize,
+    /// Act on DIA-NN's `ExcludeFromAssay`. Off by default: it marks transitions skipped for
+    /// quantification, not wrong ones, and honouring it can cut a library's depth by two thirds.
+    #[arg(long)]
+    drop_excluded: bool,
+}
+
+fn run_fit_context(args: FitContextArgs) -> Result<()> {
+    let mut artifact = Artifact::load(&args.artifact.model)?;
+    library::apply_activation_override(&mut artifact, args.artifact.activation.as_deref())?;
+
+    let spec = speclib::LibrarySpec {
+        context: args.library.clone(),
+        instrument: args.instrument.clone(),
+        detector: args.detector.clone(),
+        fragmentation: args.fragmentation.clone(),
+        aliases: args
+            .add_unimod
+            .iter()
+            .map(|declared| speclib::ModAlias {
+                accession: declared.accession,
+                observed_mass: declared.observed_mass,
+            })
+            .collect(),
+        retention: speclib::RetentionSource::Normalized,
+        drop_excluded: args.drop_excluded,
+    };
+    let (precursors, stats) = speclib::read_speclib(std::path::Path::new(&args.library), &spec)?;
+    if !stats.unmapped_masses.is_empty() {
+        anyhow::bail!(
+            "library contains mass shifts no --add-unimod explains: {}. Declare each one, with \
+             its spelled mass if the file rounds it.",
+            stats.unmapped_masses.join(", ")
+        );
+    }
+
+    let config = fit::FitConfig {
+        epochs: args.epochs,
+        ..fit::FitConfig::default()
+    };
+    let report = fit::fit_ms_context(&artifact, &precursors, &config)?;
+    println!(
+        "{}",
+        serde_json::to_string(&serde_json::json!({
+            "library": args.library,
+            "stats": {
+                "rows": stats.rows,
+                "decoys": stats.decoys,
+                "excluded": stats.excluded,
+                "precursors": stats.precursors,
+                "precursors_without_fragments": stats.precursors_without_fragments,
+                "fragments_dropped": stats.fragments_dropped,
+            },
+            "split": {
+                "salt": config.split.salt,
+                "train": report.train,
+                "val": report.val,
+                "test": report.test,
+            },
+            "fit": {
+                "context_dim": report.context_dim,
+                "spectral_angle_before": report.spectral_angle_before,
+                "spectral_angle_after": report.spectral_angle_after,
+                "context": report.context,
+            },
+            "objective": report.objective,
+            "held_out": report.held_out,
+        }))?
+    );
+    Ok(())
+}
+
 fn to_json(
     prediction: &Prediction,
     ms_context: Option<&String>,
@@ -280,5 +413,6 @@ fn main() -> Result<()> {
         Command::Predict(args) => run_predict(args),
         Command::Library(args) => run_library(args),
         Command::RunDoctor(args) => run_doctor(args),
+        Command::FitContext(args) => run_fit_context(args),
     }
 }

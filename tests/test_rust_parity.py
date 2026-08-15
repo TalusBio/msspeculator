@@ -17,7 +17,7 @@ import numpy as np
 import torch
 
 from pepdistill.chem import Peptide
-from pepdistill.data.encode import collate
+from pepdistill.data.encode import FRAG_OFFSET, collate
 from pepdistill.data.precursors import Precursor
 from pepdistill.export import export_safetensors
 from pepdistill.models.context import ChromRunbook, MSContextEncoder
@@ -442,3 +442,101 @@ def test_rust_rejects_a_v1_artifact(artifact, tmp_path):
     )
     assert r.returncode != 0
     assert "format_version" in r.stderr
+
+
+def _spectronaut_library(path, model, peptides):
+    """Write a Spectronaut TSV whose intensities are the model's own, shifted.
+
+    Predictions rather than random numbers so a fit has something coherent to find, and shifted
+    so the zero-context starting point is not already optimal — the point of the test is that
+    fitting moves the held-out score, which a library the model already predicts perfectly
+    could not show.
+    """
+    header = (
+        "ModifiedPeptide\tStrippedPeptide\tPrecursorMz\tPrecursorCharge\tTr_recalibrated\t"
+        "IonMobility\tProteinID\tDecoy\tFragmentMz\tRelativeIntensity\tFragmentType\t"
+        "FragmentNumber\tFragmentCharge\tFragmentLossType\n"
+    )
+    rows = [header]
+    for sequence in peptides:
+        peptide = Peptide(sequence)
+        batch = collate([Precursor(peptide, 2, "lib")])
+        with torch.no_grad():
+            ms2 = model.forward_context(batch)["ms2"][0].numpy()
+        sites = len(sequence) - 1
+        for site in range(sites):
+            for ion, (kind, z) in enumerate((("b", 1), ("y", 1), ("b", 2), ("y", 2))):
+                intensity = float(ms2[FRAG_OFFSET + site, ion])
+                # Tilt the spectrum along the fragment axis: a systematic distortion is what an
+                # acquisition context can absorb, unlike noise.
+                intensity *= 1.0 + 0.6 * (site / max(sites - 1, 1))
+                if intensity < 0.02:
+                    continue
+                ordinal = site + 1 if kind == "b" else sites - site
+                rows.append(
+                    f"_{sequence}_\t{sequence}\t500.0\t2\t0.5\t0.9\tP1\t0\t"
+                    f"100.0\t{intensity:.5f}\t{kind}\t{ordinal}\t{z}\tnoloss\n"
+                )
+    path.write_text("".join(rows))
+    return path
+
+
+def test_fit_context_improves_a_held_out_library_score(artifact, tmp_path):
+    """Fitting a context has to move a score on peptides it never fitted on.
+
+    Not compared to the Python reference value: the two objectives differ slightly (Python's grid
+    carries the padded fragment rows, and it differentiates exactly rather than by finite
+    differences), so pinning a number here would pin the difference rather than the behaviour.
+    """
+    from pepdistill.data.split import assign_split
+    from pepdistill.data.config import SplitConfig
+
+    # Enough peptides that the project's hash split yields both halves; asserted, not assumed.
+    peptides = [f"PEPTIDE{chr(65 + i % 26)}{chr(65 + i // 26)}K" for i in range(220)]
+    splits = {assign_split(s, SplitConfig()) for s in peptides}
+    assert {"train", "val"} <= splits, f"fixture needs both splits, got {splits}"
+
+    library = _spectronaut_library(tmp_path / "lib.tsv", artifact["model"], peptides)
+    r = subprocess.run(
+        [
+            _binary(),
+            "fit-context",
+            "--model",
+            str(artifact["path"]),
+            "--library",
+            str(library),
+            "--epochs",
+            "2",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert r.returncode == 0, r.stderr
+    report = json.loads(r.stdout)
+
+    assert report["split"]["train"] > 0 and report["split"]["val"] > 0
+    assert report["fit"]["context_dim"] == artifact["model"].cfg.context_dim
+    assert len(report["fit"]["context"]) == report["fit"]["context_dim"]
+    after = report["fit"]["spectral_angle_after"]
+    before = report["fit"]["spectral_angle_before"]
+    assert after > before, f"fitting did not improve held-out agreement: {before} -> {after}"
+    # One entry per epoch, over the whole training set, so it is comparable across epochs.
+    assert len(report["objective"]) == 2
+
+
+def test_fit_context_refuses_an_undeclared_modification(artifact, tmp_path):
+    """An unexplained mass shift stops the fit rather than being silently dropped."""
+    library = tmp_path / "modified.tsv"
+    library.write_text(
+        "ModifiedPeptide\tStrippedPeptide\tPrecursorMz\tPrecursorCharge\tTr_recalibrated\t"
+        "IonMobility\tProteinID\tDecoy\tFragmentMz\tRelativeIntensity\tFragmentType\t"
+        "FragmentNumber\tFragmentCharge\tFragmentLossType\n"
+        "_PEPT[+79.96633]IDEK_\tPEPTIDEK\t540.1\t2\t0.4\t0.9\tP1\t0\t120.0\t0.7\tb\t3\t1\tnoloss\n"
+    )
+    r = subprocess.run(
+        [_binary(), "fit-context", "--model", str(artifact["path"]), "--library", str(library)],
+        capture_output=True,
+        text=True,
+    )
+    assert r.returncode != 0
+    assert "+79.96633" in r.stderr and "--add-unimod" in r.stderr
