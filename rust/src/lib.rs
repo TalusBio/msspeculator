@@ -16,7 +16,7 @@ use std::hash::{Hash, Hasher};
 
 use pepdistill_core::chem;
 use pepdistill_core::peptide::{ModSpec, Peptide as CorePeptide, Site};
-use pepdistill_core::{bucket, proforma, tokenize, unimod};
+use pepdistill_core::{bucket, proforma, speclib, tokenize, unimod};
 
 fn to_pyerr(e: anyhow::Error) -> PyErr {
     pyo3::exceptions::PyValueError::new_err(e.to_string())
@@ -337,6 +337,121 @@ fn bucket_fragment_mz<'py>(
     Ok((mz.into_pyarray_bound(py), pmz.into_pyarray_bound(py)))
 }
 
+/// Read a spectral library into columnar arrays.
+///
+/// Fragments come back in CSR form rather than a dense grid: a library reports roughly a dozen of
+/// the fifty-odd cells, and the offsets are also exactly the record of which cells it reported.
+/// The peptide crosses as a ProForma string so it re-enters through the same parser the prepared
+/// corpus uses, instead of introducing a second peptide representation at the boundary.
+#[pyfunction]
+#[pyo3(signature = (path, spec))]
+fn read_speclib<'py>(
+    py: Python<'py>,
+    path: &str,
+    spec: &Bound<'py, PyDict>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let text = |key: &str| -> PyResult<String> {
+        spec.get_item(key)?
+            .ok_or_else(|| {
+                pyo3::exceptions::PyKeyError::new_err(format!("spec is missing {key:?}"))
+            })?
+            .extract::<String>()
+    };
+    let mut aliases = Vec::new();
+    if let Some(items) = spec.get_item("aliases")? {
+        for item in items.iter()? {
+            let entry = item?;
+            let mapping = entry
+                .downcast::<PyDict>()
+                .map_err(|_| pyo3::exceptions::PyTypeError::new_err("each alias must be a dict"))?;
+            let accession = mapping
+                .get_item("accession")?
+                .ok_or_else(|| pyo3::exceptions::PyKeyError::new_err("alias needs an accession"))?
+                .extract::<u32>()?;
+            let observed_mass = match mapping.get_item("observed_mass")? {
+                Some(value) if !value.is_none() => Some(value.extract::<f64>()?),
+                _ => None,
+            };
+            aliases.push(speclib::ModAlias {
+                accession,
+                observed_mass,
+            });
+        }
+    }
+    let retention = match spec.get_item("retention_column")? {
+        Some(value) if !value.is_none() => {
+            speclib::RetentionSource::Column(value.extract::<String>()?)
+        }
+        _ => speclib::RetentionSource::Normalized,
+    };
+    let parsed = speclib::LibrarySpec {
+        context: text("context")?,
+        instrument: text("instrument")?,
+        detector: text("detector")?,
+        fragmentation: text("fragmentation")?,
+        aliases,
+        retention,
+        drop_excluded: match spec.get_item("drop_excluded")? {
+            Some(value) if !value.is_none() => value.extract::<bool>()?,
+            _ => false,
+        },
+    };
+    let (precursors, stats) =
+        speclib::read_speclib(std::path::Path::new(path), &parsed).map_err(to_pyerr)?;
+
+    let mut proforma = Vec::with_capacity(precursors.len());
+    let mut charge = Vec::with_capacity(precursors.len());
+    let mut retention_out = Vec::with_capacity(precursors.len());
+    let mut mobility = Vec::with_capacity(precursors.len());
+    let mut offsets = Vec::with_capacity(precursors.len() + 1);
+    let mut sites = Vec::new();
+    let mut ions = Vec::new();
+    let mut values = Vec::new();
+    offsets.push(0_i64);
+    for precursor in &precursors {
+        proforma.push(precursor.peptide.modified_sequence());
+        charge.push(precursor.charge as i64);
+        retention_out.push(precursor.retention);
+        mobility.push(precursor.ion_mobility.unwrap_or(f32::NAN));
+        for fragment in &precursor.fragments {
+            sites.push(fragment.site as i32);
+            ions.push(fragment.ion as i8);
+            values.push(fragment.intensity);
+        }
+        offsets.push(sites.len() as i64);
+    }
+
+    let stats_dict = PyDict::new_bound(py);
+    stats_dict.set_item("rows", stats.rows)?;
+    stats_dict.set_item("decoys", stats.decoys)?;
+    stats_dict.set_item("excluded", stats.excluded)?;
+    stats_dict.set_item("precursors", stats.precursors)?;
+    stats_dict.set_item(
+        "precursors_without_fragments",
+        stats.precursors_without_fragments,
+    )?;
+    stats_dict.set_item("fragments_dropped", stats.fragments_dropped)?;
+    stats_dict.set_item("unmapped_masses", stats.unmapped_masses)?;
+
+    let d = PyDict::new_bound(py);
+    d.set_item("proforma", proforma)?;
+    d.set_item("charge", Array1::from(charge).into_pyarray_bound(py))?;
+    d.set_item(
+        "retention",
+        Array1::from(retention_out).into_pyarray_bound(py),
+    )?;
+    d.set_item(
+        "ion_mobility",
+        Array1::from(mobility).into_pyarray_bound(py),
+    )?;
+    d.set_item("frag_offset", Array1::from(offsets).into_pyarray_bound(py))?;
+    d.set_item("frag_site", Array1::from(sites).into_pyarray_bound(py))?;
+    d.set_item("frag_ion", Array1::from(ions).into_pyarray_bound(py))?;
+    d.set_item("frag_value", Array1::from(values).into_pyarray_bound(py))?;
+    d.set_item("stats", stats_dict)?;
+    Ok(d)
+}
+
 #[pymodule]
 fn pepdistill_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Peptide>()?;
@@ -351,6 +466,7 @@ fn pepdistill_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(collate_prepared, m)?)?;
     m.add_function(wrap_pyfunction!(bucket_arrays, m)?)?;
     m.add_function(wrap_pyfunction!(bucket_fragment_mz, m)?)?;
+    m.add_function(wrap_pyfunction!(read_speclib, m)?)?;
 
     m.add("PROTON", chem::PROTON)?;
     m.add("H2O", chem::H2O)?;
