@@ -66,6 +66,9 @@ batch_size = 256
 num_workers = 0
 model_threads = 4
 lr = 3e-4
-early_stop_patience = 5
+# Patience counts validation checks, and those now land once per epoch rather than once an hour,
+# so 5 had quietly become ~2.5h of tolerance instead of ~5h. Ten restores the wall-clock leash.
+# The first run under the per-epoch cadence stopped at epoch 8 having peaked at epoch 3.
+early_stop_patience = 10
 early_stop_min_delta = 0.001
 validation_interval_minutes = 60.0

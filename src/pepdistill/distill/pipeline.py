@@ -963,8 +963,14 @@ def run_pipeline(cfg: RunConfig, log=print) -> dict:
     return summary
 
 
-def _energy_curve(encoder, ce_min: float, ce_max: float, n: int = 5) -> dict:
-    """ms_context magnitude across the energy range — a quick read on what the encoder learned."""
+def _energy_curve(encoder, ce_min: float, ce_max: float, n: int = 5) -> dict[str, float]:
+    """ms_context magnitude across the energy range — a quick read on what the encoder learned.
+
+    Keys are strings because this dict is handed to W&B's run summary, whose encoder builds key
+    paths by concatenation and raises on a non-string key. `json.dumps` coerces float keys
+    silently, so `summary.json` looked correct while every tracked run died on the summary update
+    after training had finished.
+    """
     import torch
 
     ces = [ce_min + (ce_max - ce_min) * i / (n - 1) for i in range(n)]
@@ -972,7 +978,7 @@ def _energy_curve(encoder, ce_min: float, ce_max: float, n: int = 5) -> dict:
     energy = torch.tensor(ces, dtype=torch.float32)
     with torch.no_grad():
         norms = encoder(zeros, zeros, zeros, energy=energy).norm(dim=1)
-    return {round(c, 1): round(float(v), 4) for c, v in zip(ces, norms)}
+    return {f"{c:.1f}": round(float(v), 4) for c, v in zip(ces, norms)}
 
 
 def _bench(model, cfg: BenchCfg, log) -> dict:

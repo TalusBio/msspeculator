@@ -172,6 +172,24 @@ def test_wandb_stage_loggers_share_one_run(tmp_path: Path, monkeypatch):
     assert train.logged[-1] == ({"train_metrics/ms2_cosine_loss": 0.1}, 4)
 
 
+def test_run_summary_survives_the_wandb_encoder():
+    """Every value in the run summary has to be encodable, keys included.
+
+    W&B builds summary key paths by concatenating them, so a non-string key raises there while
+    `json.dumps` coerces it without complaint. That combination let `summary.json` look correct
+    on disk while the summary update at the very end of every tracked run raised, after training
+    had finished and the checkpoints were already written.
+    """
+    from pepdistill.distill.pipeline import _energy_curve
+    from pepdistill.models.context import MSContextEncoder
+
+    curve = _energy_curve(MSContextEncoder(context_dim=8), 20.0, 40.0)
+    assert curve, "the curve should not be empty"
+    assert all(isinstance(key, str) for key in curve), f"non-string keys: {list(curve)}"
+    # The failure mode itself: concatenating a path onto each key, as W&B does.
+    assert all(isinstance("summary/" + key, str) for key in curve)
+
+
 def test_rate_limit_thins_batches_but_never_drops_an_epoch_boundary():
     """A per-epoch payload has to survive the batches that follow it milliseconds later.
 
