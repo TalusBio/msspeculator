@@ -191,8 +191,19 @@ def _modification_embeddings(model) -> tuple[list[LabeledEmbedding], list[Embedd
 
 def _context_trajectories(
     encoder, nce_min: float, nce_max: float
-) -> tuple[list[LabeledEmbedding], list[EmbeddingConnection]]:
-    """Combined acquisition vectors, rather than misleading isolated factor embeddings."""
+) -> tuple[list[LabeledEmbedding], list[EmbeddingConnection], list[LabeledEmbedding]]:
+    """Combined acquisition vectors, rather than misleading isolated factor embeddings.
+
+    Also returns the subset that is fully trained, which the caller fits the PCA frame on: a
+    combination resting on an untrained factor should not help define the axes everything else
+    is read in.
+
+    A combination is drawn even when one of its factors never trained, because the other two
+    still move it across the NCE sweep -- so the label names the untrained factor rather than
+    saying only that one exists. The zero vector is drawn too: every untrained row is exactly
+    zero, so it marks where "nothing was learned" sits, and distance from it is what the plot
+    is really showing.
+    """
     candidates = (
         ("Lumos", "ITMS", "HCD", "Lumos:ITMS:HCD"),
         ("Lumos", "FTMS", "HCD", "Lumos:Orbitrap/FTMS:HCD"),
@@ -210,18 +221,30 @@ def _context_trajectories(
     energies = np.linspace(nce_min, nce_max, num=5, dtype=np.float32)
     points: list[LabeledEmbedding] = []
     connections: list[EmbeddingConnection] = []
+    trained: list[LabeledEmbedding] = []
     device = next(encoder.parameters()).device
     with torch.inference_mode():
         for instrument, detector, fragmentation, display_name in combinations:
-            supported = all(
-                float(weight[index].detach().norm()) > 1e-10
-                for weight, index in (
-                    (encoder.inst_emb.weight, encoder.instrument_id(instrument)),
-                    (encoder.det_emb.weight, encoder.detector_id(detector)),
-                    (encoder.frag_emb.weight, encoder.fragmentation_id(fragmentation)),
+            untrained = [
+                name
+                for name, weight, index in (
+                    (instrument, encoder.inst_emb.weight, encoder.instrument_id(instrument)),
+                    (detector, encoder.det_emb.weight, encoder.detector_id(detector)),
+                    (
+                        fragmentation,
+                        encoder.frag_emb.weight,
+                        encoder.fragmentation_id(fragmentation),
+                    ),
                 )
+                if float(weight[index].detach().norm()) <= 1e-10
+            ]
+            supported = not untrained
+            # Naming the untrained factor matters: the reader otherwise cannot tell whether the
+            # whole combination is guesswork or whether only one of its three rows never trained
+            # while the others carry it across the sweep.
+            family = (
+                display_name if supported else f"{display_name} [{'+'.join(untrained)} untrained]"
             )
-            family = display_name if supported else f"{display_name} [untrained factor]"
             n = len(energies)
             vectors = (
                 encoder(
@@ -247,11 +270,20 @@ def _context_trajectories(
                 zip(labels, energies, vectors, strict=True)
             ):
                 annotation = f"{energy:g}" if index in (0, n - 1) else ""
-                points.append(LabeledEmbedding(label, family, vector, annotation))
+                point = LabeledEmbedding(label, family, vector, annotation)
+                points.append(point)
+                if supported:
+                    trained.append(point)
             connections.extend(
                 EmbeddingConnection(first, second) for first, second in zip(labels, labels[1:])
             )
-    return points, connections
+    # One marker for the zero vector rather than one per untrained row: they are all exactly
+    # zero, so plotting each would stack identical markers on one spot and say nothing extra.
+    width = encoder.inst_emb.weight.shape[1]
+    points.append(
+        LabeledEmbedding("zero", "no context (untrained rows sit here)", np.zeros(width), "0")
+    )
+    return points, connections, trained
 
 
 class TrainingDiagnosticRenderer:
@@ -305,6 +337,7 @@ class TrainingDiagnosticRenderer:
         path: Path,
         title: str,
         connections: list[EmbeddingConnection] | None = None,
+        fit_on: list[LabeledEmbedding] | None = None,
     ) -> Path | None:
         vectors = np.stack([np.asarray(point.vector) for point in points])
         # The acquisition encoder intentionally starts at exactly zero. Fitting PCA to that
@@ -312,12 +345,19 @@ class TrainingDiagnosticRenderer:
         # could hide most later motion. Defer this one basis until the context actually learns.
         if key not in self._bases and float(np.var(vectors)) <= 1e-16:
             return None
+        basis = self._bases.get(key)
+        if basis is None and fit_on:
+            # Fit the frame on what actually trained, so an untrained factor cannot help define
+            # the axes that every other point is then read in.
+            anchors = np.stack([np.asarray(point.vector) for point in fit_on])
+            if anchors.shape[0] >= 2 and float(np.var(anchors)) > 1e-16:
+                basis = PcaBasis.fit(anchors)
         target, basis = plot_labeled_embedding_pca(
             points,
             path,
             title=title,
             connections=connections or (),
-            basis=self._bases.get(key),
+            basis=basis,
         )
         self._bases.setdefault(key, basis)
         return target
@@ -417,7 +457,9 @@ class TrainingDiagnosticRenderer:
             )
             assert mod_path is not None
             paths["modifications"] = mod_path
-            context_points, context_connections = _context_trajectories(encoder, *self.nce_range)
+            context_points, context_connections, context_trained = _context_trajectories(
+                encoder, *self.nce_range
+            )
             context_path = self._embedding_plot(
                 "acquisition_contexts",
                 context_points,
@@ -425,6 +467,7 @@ class TrainingDiagnosticRenderer:
                 f"Combined acquisition-context trajectories — NCE "
                 f"{self.nce_range[0]:g}→{self.nce_range[1]:g}",
                 context_connections,
+                fit_on=context_trained,
             )
             if context_path is not None:
                 paths["acquisition_contexts"] = context_path

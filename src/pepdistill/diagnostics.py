@@ -347,7 +347,15 @@ def plot_labeled_embedding_pca(
     ax.axhline(0, color="0.88", linewidth=0.8, zorder=0)
     ax.axvline(0, color="0.88", linewidth=0.8, zorder=0)
     ax.margins(x=0.08, y=0.08)
-    ax.legend(frameon=False)
+    # Below the axes rather than inside: family names carry qualifiers ("[timsTOF untrained]"),
+    # and an in-axes legend large enough to hold them lands on the trajectories it describes.
+    ax.legend(
+        frameon=False,
+        loc="upper center",
+        bbox_to_anchor=(0.5, -0.09),
+        ncol=2,
+        fontsize=8,
+    )
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(target, dpi=160)
