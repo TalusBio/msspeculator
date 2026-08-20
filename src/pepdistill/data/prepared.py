@@ -341,8 +341,8 @@ class PreparedStreamingDataset:
         return frozenset(self.dataset_ids[chunk.dataset] for chunk in self.manifest.chunks)
 
     def _decode_chunk(self, chunk: PreparedChunk, position: str) -> pl.DataFrame:
-        """Read one shard into the frame the batcher consumes: this split's finite rows, sorted
-        by length, tagged with the dataset row."""
+        """Read one shard into the frame the batcher consumes: this split's rows, sorted by
+        length, tagged with the dataset row."""
         opened_at = time.perf_counter()
         stream = _open_parquet(chunk.uri, self.local_cache)
         open_seconds = time.perf_counter() - opened_at
@@ -352,11 +352,10 @@ class PreparedStreamingDataset:
             # containing Int128 even when that column is not selected. Read with Polars,
             # use the ID only for validation selection, and drop it before Pandas conversion.
             read_at = time.perf_counter()
-            frame = read_prepared_parquet(stream).filter(
-                pl.col("split").is_in(self.splits)
-                & pl.col("irt").is_finite()
-                & pl.col("raw_rt").is_finite()
-            )
+            # Split is the only admission test. A row missing one RT label keeps the other two
+            # heads' supervision, and the loss masks the missing term per row
+            # (:func:`pepdistill.distill.losses.labeled_mse`).
+            frame = read_prepared_parquet(stream).filter(pl.col("split").is_in(self.splits))
             if self.splits == frozenset({"val"}) and self.manifest.val_winners:
                 keep = [
                     int(value) in self.manifest.val_winners

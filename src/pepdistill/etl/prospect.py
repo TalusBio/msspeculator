@@ -239,9 +239,7 @@ def _val_winners(chunks: list[str], out_uri: str) -> list[int]:
         return []
     values = (
         canonical_prepared_scan(chunks)
-        .filter(
-            (pl.col("split") == "val") & pl.col("irt").is_finite() & pl.col("raw_rt").is_finite()
-        )
+        .filter(pl.col("split") == "val")
         # Keyed on the peptidoform, not the stripped sequence. Keying on the stripped sequence kept
         # only the best-scoring modform of a peptide at each charge, so a phosphorylated form and
         # its unmodified counterpart -- different molecules with different spectra -- competed for
@@ -265,9 +263,9 @@ def _val_winners(chunks: list[str], out_uri: str) -> list[int]:
 def _irt_stats(chunks: list[str]) -> tuple[int, float, float]:
     row = (
         canonical_prepared_scan(chunks)
-        .filter(
-            (pl.col("split") == "train") & pl.col("irt").is_finite() & pl.col("raw_rt").is_finite()
-        )
+        # iRT statistics over the rows that supervise iRT. A row reporting only its own run's
+        # retention time trains the conditioned head and must not move this affine.
+        .filter((pl.col("split") == "train") & pl.col("irt").is_finite())
         .select(
             pl.len().alias("n"),
             pl.col("irt").sum().alias("sum"),
@@ -280,9 +278,9 @@ def _irt_stats(chunks: list[str]) -> tuple[int, float, float]:
 
 
 def _split_rows(chunks: list[str]) -> dict[str, int]:
+    """Rows per split, counted exactly as the loader admits them -- split alone, no RT test."""
     rows = (
         canonical_prepared_scan(chunks)
-        .filter(pl.col("irt").is_finite() & pl.col("raw_rt").is_finite())
         .group_by("split")
         .agg(pl.len().alias("rows"))
         .collect(engine="streaming")
@@ -293,7 +291,6 @@ def _split_rows(chunks: list[str]) -> dict[str, int]:
 def _split_datasets(chunks: list[str]) -> dict[str, list[str]]:
     rows = (
         canonical_prepared_scan(chunks)
-        .filter(pl.col("irt").is_finite() & pl.col("raw_rt").is_finite())
         .select(["dataset", "split"])
         .unique()
         .collect(engine="streaming")

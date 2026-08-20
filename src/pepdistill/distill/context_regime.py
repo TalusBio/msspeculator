@@ -51,7 +51,7 @@ from ..models.student import StudentModel
 from ..teacher.base import PrecursorLabels
 from .dataset import BatchIterable, LabeledBatch, MSFactors, collate_with_labels, iter_batch_indices
 from .lightning import build_trainer
-from .losses import mod_align_loss, ms2_cosine_loss, spectral_angle
+from .losses import labeled_mse, mod_align_loss, ms2_cosine_loss, spectral_angle
 
 if TYPE_CHECKING:
     from ..data.prospect import RealLabels
@@ -224,10 +224,9 @@ class RealSpeclibModule(L.LightningModule):
         out = self._forward(rb, inputs)
         loss_ms2 = ms2_cosine_loss(out["ms2"], lb.ms2_target, lb.inputs.frag_mask)
         # rt_base (context-free) -> iRT; the chrom_context-conditioned rt -> this dataset's raw RT.
-        loss_irt = torch.nn.functional.mse_loss(
-            out["rt_base"], self.model.standardize_rt(lb.rt_target)
-        )
-        loss_raw = torch.nn.functional.mse_loss(out["rt"], self.model.standardize_rt(rb.raw_rt))
+        # Both masked per row: a source can carry one RT label and not the other.
+        loss_irt = labeled_mse(out["rt_base"], self.model.standardize_rt(lb.rt_target))
+        loss_raw = labeled_mse(out["rt"], self.model.standardize_rt(rb.raw_rt))
         # This is deliberately the single source of truth for the objective and its loss
         # telemetry: adding a term to optimization necessarily adds it to logging too.
         loss_terms = {
@@ -248,6 +247,10 @@ class RealSpeclibModule(L.LightningModule):
             train_sa = spectral_angle(out["ms2"], lb.ms2_target, lb.inputs.frag_mask).mean()
         log = {name: value for name, (_, value) in loss_terms.items()}
         log["train_spectral_angle"] = train_sa
+        # An unlabeled row still supervises MS2, so a low fraction is a corpus fact rather than
+        # a fault -- but it has to be visible, or an iRT term training on a tenth of the batch
+        # reads as a converged one.
+        log["train_irt_labeled_fraction"] = torch.isfinite(lb.rt_target).float().mean()
         if self.residue_substitution_probability:
             log["train_residue_augmented_fraction"] = (
                 (inputs.tokens != lb.inputs.tokens).any(dim=1).float().mean()
@@ -264,8 +267,19 @@ class RealSpeclibModule(L.LightningModule):
         out = self._forward(rb)
         lb = rb.base
         sa = spectral_angle(out["ms2"], lb.ms2_target, lb.inputs.frag_mask)
-        irt_error = (self.model.unstandardize_rt(out["rt_base"]) - lb.rt_target).abs()
-        rawrt_error = (self.model.unstandardize_rt(out["rt"]) - rb.raw_rt).abs()
+        # Paired with the mask of rows that carry the label, keyed on the target rather than on
+        # the error, so an unlabeled row is skipped while a NaN *prediction* still shows up as
+        # a NaN metric instead of being masked away with it.
+        rt_errors = {
+            "irt_mae": (
+                (self.model.unstandardize_rt(out["rt_base"]) - lb.rt_target).abs(),
+                torch.isfinite(lb.rt_target),
+            ),
+            "rawrt_mae": (
+                (self.model.unstandardize_rt(out["rt"]) - rb.raw_rt).abs(),
+                torch.isfinite(rb.raw_rt),
+            ),
+        }
 
         # A pooled score is dominated by whichever source contributes the most val winners and
         # hides regressions on smaller sources. Report each dataset as its own measurement.
@@ -296,15 +310,14 @@ class RealSpeclibModule(L.LightningModule):
                 bins=SA_HISTOGRAM_BINS,
                 range=(0.0, 1.0),
             )[0]
-            self.log_dict(
-                {
-                    f"{prefix}/spectral_angle": sa[mask].mean(),
-                    f"{prefix}/irt_mae": irt_error[mask].mean(),
-                    f"{prefix}/rawrt_mae": rawrt_error[mask].mean(),
-                },
-                prog_bar=False,
-                batch_size=n,
-            )
+            self.log(f"{prefix}/spectral_angle", sa[mask].mean(), batch_size=n)
+            # Each RT metric is weighted by its own labeled count, not by the batch: weighting a
+            # half-labeled source's MAE by every row would let it outvote a fully labeled one.
+            for metric, (error, labeled) in rt_errors.items():
+                selected = mask & labeled
+                rows = int(selected.sum())
+                if rows:
+                    self.log(f"{prefix}/{metric}", error[selected].mean(), batch_size=rows)
             self.log(f"{prefix}/n", float(n), reduce_fx="sum")
 
     def on_validation_epoch_start(self) -> None:
@@ -921,8 +934,14 @@ def fit_realspeclib(
     # calibration, leaving a trained head whose predictions denormalize to raw standardized
     # values.
     if not bool(model.norm_established):
-        irt_train = np.array([e.label.rt for e in train], dtype=np.float64)
-        model.set_norm(rt_mean=float(irt_train.mean()), rt_std=float(irt_train.std() or 1.0))
+        labeled = np.array([e.label.rt for e in train], dtype=np.float64)
+        labeled = labeled[np.isfinite(labeled)]
+        if not labeled.size:
+            raise ValueError(
+                "no iRT labels to establish the RT affine from; every training example in this "
+                "source reports its own retention time only"
+            )
+        model.set_norm(rt_mean=float(labeled.mean()), rt_std=float(labeled.std() or 1.0))
 
     train_ds = RealSpeclibDataset(train)
     val_ds = RealSpeclibDataset(_dedupe_val(val, dataset_name)) if val else None

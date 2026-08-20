@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import shutil
 from pathlib import Path
 
@@ -307,7 +308,10 @@ def test_shard_catalog_range_and_finalize(tmp_path):
     assert PreparedManifest.load(str(out)).chunks[0].rows == 2
 
 
-def test_finalize_and_reader_exclude_nonfinite_rt_rows(tmp_path):
+def test_a_row_missing_its_irt_is_kept_but_left_out_of_the_affine(tmp_path):
+    """A row without iRT still carries MS2 and its own run's retention time, so it belongs in
+    the corpus with the iRT term masked (see ``losses.labeled_mse``) rather than dropped. The
+    affine is the one place it must not appear: it would have no value to contribute."""
     root, stem = _source(tmp_path)
     out = tmp_path / "prepared-finite-rt"
     config = _config(root, stem, out)
@@ -321,11 +325,14 @@ def test_finalize_and_reader_exclude_nonfinite_rt_rows(tmp_path):
     pd.concat([frame, invalid], ignore_index=True).to_parquet(data, index=False)
 
     finalized = finalize_catalog(config, log=None)
-    assert finalized["irt_stats"][0] == 1
-    assert finalized["split_rows"] == {"train": 1, "val": 1}
+    assert finalized["irt_stats"][0] == 1  # the unlabeled row cannot move the RT affine
+    # split_rows is the loader's own row count, so it must include the unlabeled row.
+    assert finalized["split_rows"] == {"train": 2, "val": 1}
     manifest = PreparedManifest.load(str(out))
     ds = PreparedStreamingDataset(manifest, MSContextEncoder(context_dim=8), frozenset({"train"}))
-    assert len(list(ds.iter_examples(0, shuffle=False))) == 1
+    examples = list(ds.iter_examples(0, shuffle=False))
+    assert len(examples) == 2
+    assert sum(1 for example in examples if math.isnan(example.label.rt)) == 1
 
 
 def test_prepared_reader_accepts_int128_spectrum_ids(tmp_path):

@@ -56,9 +56,10 @@ def _fill_optional(
     as a helper call it was five calls, either of which costs more than filling a column once.
 
     Retention time is in this group rather than treated as required. One source carries 100 null
-    retention times, and ``finalize_catalog`` already excludes non-finite RT rows from the corpus,
-    so a missing one is a row to drop later rather than a reason to fail a whole shard. Pandas
-    surfaced these as NaN, which is why they never surfaced before.
+    retention times, and a NaN label is masked out of the RT loss for that row alone
+    (:func:`pepdistill.distill.losses.labeled_mse`), so a missing one costs that row's RT
+    supervision rather than failing a whole shard. Pandas surfaced these as NaN, which is why
+    they never surfaced before.
     """
     numeric = (s.collision_energy, s.andromeda_score, s.precursor_intensity, *retention)
     labels = (s.mass_analyzer, s.fragmentation)

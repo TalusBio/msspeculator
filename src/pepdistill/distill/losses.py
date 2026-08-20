@@ -67,6 +67,30 @@ def distill_loss(
     return total, parts
 
 
+def labeled_mse(prediction: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    """MSE over the rows whose target is finite.
+
+    Masked per row rather than per batch because the RT labels are per source: a spectral
+    library reports its own run's retention time and no iRT, so requiring both would throw
+    away that row's MS2 as well. Dropping the row is the strictly worse trade -- partial
+    supervision on three heads beats none on all three.
+
+    NaN targets are substituted before the subtraction, not masked after it: ``0 * NaN`` is
+    still NaN, so a masked NaN residual would poison the shared trunk's gradients anyway.
+
+    >>> labeled_mse(torch.tensor([1.0, 5.0]), torch.tensor([0.0, float("nan")]))
+    tensor(1.)
+    """
+    labeled = torch.isfinite(target)
+    n = labeled.sum()
+    if int(n) == 0:
+        # A batch drawn entirely from a source without this label. Zero, graph-connected, so
+        # callers add the term unconditionally; the weighted sum stays differentiable.
+        return prediction.sum() * 0.0
+    residual = prediction - torch.where(labeled, target, torch.zeros_like(target))
+    return ((residual * labeled) ** 2).sum() / n
+
+
 def mod_align_loss(
     mod_g: torch.Tensor, mod_m: torch.Tensor, mod_has_composition: torch.Tensor
 ) -> torch.Tensor:

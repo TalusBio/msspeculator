@@ -7,7 +7,9 @@ per-dataset offset.
 
 import json
 import math
+from dataclasses import replace
 from datetime import timedelta
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -479,3 +481,72 @@ def test_epoch_shorter_than_the_validation_interval_still_checkpoints(tmp_path):
         torch.load(bare / "latest.ckpt", weights_only=False)["training"]["validation"]["mean"]
         is None
     )
+
+
+def _module_with_names(names: dict[str, int]) -> RealSpeclibModule:
+    model = build_student("flash")
+    cdim = model.cfg.context_dim
+    model.set_norm(rt_mean=0.0, rt_std=1.0)
+    return RealSpeclibModule(
+        model,
+        ChromRunbook(len(names), cdim),
+        MSContextEncoder(context_dim=cdim),
+        dataset_index=names,
+    )
+
+
+def _batch_missing_irt(rows: int, unlabeled: int) -> tuple[RealSpeclibModule, object]:
+    """A batch where ``unlabeled`` of ``rows`` report a raw retention time and no iRT -- the
+    shape a spectral library arrives in."""
+    examples = _make_examples(rows)
+    for example in examples[:unlabeled]:
+        example.label = replace(example.label, rt=float("nan"))
+    ds = RealSpeclibDataset(examples)
+    gen = torch.Generator().manual_seed(0)
+    return _module_with_names({"rfA": 1}), next(iter(ds.batches(rows, False, gen)))
+
+
+def test_a_row_without_irt_trains_its_other_heads():
+    """The whole point of masking per row: the unlabeled row must still supervise MS2 and raw
+    RT, and must not put a NaN into any shared gradient on its way there."""
+    module, batch = _batch_missing_irt(rows=4, unlabeled=1)
+    module.log_dict = lambda values, **_kwargs: None
+    module.on_train_epoch_start()
+
+    loss = module.training_step(batch, 0)
+    loss.backward()
+
+    assert torch.isfinite(loss)
+    grads = [p.grad for p in module.model.parameters() if p.grad is not None]
+    assert grads and all(torch.isfinite(g).all() for g in grads)
+
+
+def test_a_batch_with_no_irt_at_all_still_trains():
+    """A library-only batch. Its iRT term is zero, so the run keeps going on MS2 and raw RT
+    rather than early-stopping on a NaN it never had labels to avoid."""
+    module, batch = _batch_missing_irt(rows=4, unlabeled=4)
+    logged: list[dict] = []
+    module.log_dict = lambda values, **_kwargs: logged.append(values)
+    module.on_train_epoch_start()
+
+    loss = module.training_step(batch, 0)
+
+    assert torch.isfinite(loss)
+    assert float(logged[-1]["train_irt"].detach()) == 0.0
+    assert float(logged[-1]["train_irt_labeled_fraction"]) == 0.0
+
+
+def test_validation_reports_no_irt_mae_for_a_source_that_has_no_irt():
+    """A NaN mean is worse than a missing series: it poisons the chart and any metric watching
+    it. Skip the key for the source that cannot supply it, keep the one it can."""
+    module, batch = _batch_missing_irt(rows=4, unlabeled=4)
+    module._trainer = SimpleNamespace(sanity_checking=False)
+    logged: dict[str, float] = {}
+    module.log = lambda name, value, **_kwargs: logged.__setitem__(name, float(value))
+
+    module.on_validation_epoch_start()
+    module.validation_step(batch, 0)
+
+    assert "val/rfA/irt_mae" not in logged
+    assert math.isfinite(logged["val/rfA/rawrt_mae"])
+    assert math.isfinite(logged["val/rfA/spectral_angle"])
