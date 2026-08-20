@@ -58,7 +58,10 @@ inference is the Rust path via `export-rust`.
   gradient-descends one acquisition context row against a library with the backbone frozen,
   stores it in the artifact under a name, and `--ms-context NAME` then predicts with it. On the
   timsTOF heron library a fitted row moved held-out agreement 0.4691 -> 0.5316 where borrowing
-  the closest existing instrument row reached only 0.5026.
+  the closest existing instrument row reached only 0.5026. The Python `freeze_backbone` reference,
+  re-run under the same project split, reached 0.4656 -> 0.5355, so the Rust fit recovers 89% of
+  its improvement — the remaining gap is the finite-difference gradient and the padded fragment
+  rows Python's grid carries, not a disagreement about the objective.
 - The RT losses mask per row, so a source carrying only one of the two retention labels is
   supervised on what it has instead of being dropped from the corpus.
 - Real-data training decays `lr` on the same plateau signal early stopping watches, cutting the
