@@ -272,14 +272,23 @@ def test_two_parsers_one_strict_one_tolerant_of_prospect_only():
         assert reread.sequence == "ACDEMK"
 
 
-def test_parquet_storage_options_are_explicit_for_remote_targets():
-    """Polars must be handed credentials, not left to resolve them.
+def _fake_botocore(monkeypatch, credentials):
+    """Stand in for the ambient AWS session.
 
-    Its object store reads the environment and instance metadata but not the AWS SSO cache, so a
-    bare remote read works on a Batch worker and fails on a laptop. botocore resolves all of those,
-    so passing what it finds makes the same call work everywhere; `ast-grep` enforces that every
-    Polars read does so.
+    What this module owns is the translation from botocore's triple to the keys Polars' object
+    store reads. Resolving that triple for real would make the test pass or fail on whether the
+    machine happens to hold a live session -- and an expired one does not return None, it raises
+    from inside the refresh, which no skip guard on the return value can catch.
     """
+
+    class Session:
+        def get_credentials(self):
+            return credentials
+
+    monkeypatch.setattr("botocore.session.get_session", lambda: Session())
+
+
+def test_only_a_remote_target_needs_credentials():
     from pepdistill.data.storage import is_remote, parquet_storage_options
 
     assert is_remote("s3://bucket/key.parquet")
@@ -292,10 +301,56 @@ def test_parquet_storage_options_are_explicit_for_remote_targets():
     assert parquet_storage_options("/tmp/local.parquet") == {}
     assert parquet_storage_options(Path("/tmp/local.parquet")) == {}
 
-    options = parquet_storage_options("s3://bucket/key.parquet")
-    if not options:
-        pytest.skip("no AWS credentials resolvable in this environment")
-    assert {"aws_access_key_id", "aws_secret_access_key", "aws_region"} <= set(options)
+
+def test_parquet_storage_options_are_explicit_for_remote_targets(monkeypatch):
+    """Polars must be handed credentials, not left to resolve them.
+
+    Its object store reads the environment and instance metadata but not the AWS SSO cache, so a
+    bare remote read works on a Batch worker and fails on a laptop. botocore resolves all of those,
+    so passing what it finds makes the same call work everywhere; `ast-grep` enforces that every
+    Polars read does so.
+    """
+    from pepdistill.data.storage import parquet_storage_options
+
+    class Frozen:  # botocore's ReadOnlyCredentials shape
+        access_key = "AKIAEXAMPLE"
+        secret_key = "secret"
+        token = "session-token"
+
+    class Credentials:
+        def get_frozen_credentials(self):
+            return Frozen()
+
+    _fake_botocore(monkeypatch, Credentials())
+    assert parquet_storage_options("s3://bucket/key.parquet") == {
+        "aws_access_key_id": "AKIAEXAMPLE",
+        "aws_secret_access_key": "secret",
+        "aws_region": "us-west-2",
+        "aws_session_token": "session-token",
+    }
+
+
+def test_with_no_credentials_anywhere_polars_is_left_to_its_own_resolution(monkeypatch):
+    """An empty mapping is not a failure: a public bucket still reads, and a private one fails
+    with the object store's own message instead of one invented here."""
+    from pepdistill.data.storage import parquet_storage_options
+
+    _fake_botocore(monkeypatch, None)
+    assert parquet_storage_options("s3://bucket/key.parquet") == {}
+
+
+def test_an_unusable_session_is_reported_rather_than_downgraded(monkeypatch):
+    """An expired SSO session raises from the refresh. It must propagate: silently returning {}
+    would turn a renewable login into an object-store timeout against instance metadata."""
+    from pepdistill.data.storage import parquet_storage_options
+
+    class Expired:
+        def get_frozen_credentials(self):
+            raise RuntimeError("SSO token expired")
+
+    _fake_botocore(monkeypatch, Expired())
+    with pytest.raises(RuntimeError, match="SSO token expired"):
+        parquet_storage_options("s3://bucket/key.parquet")
 
 
 def _meta_rows(rows):
