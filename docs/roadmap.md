@@ -61,6 +61,10 @@ inference is the Rust path via `export-rust`.
   the closest existing instrument row reached only 0.5026.
 - The RT losses mask per row, so a source carrying only one of the two retention labels is
   supervised on what it has instead of being dropped from the corpus.
+- Real-data training decays `lr` on the same plateau signal early stopping watches, cutting the
+  rate before the run is allowed to end. A horizon-based schedule does not apply to this stage:
+  it ends wherever early stopping lands, and the first full local run stopped at epoch 8 of a
+  nominal 60. Off by default; the local full-run config cuts by half after 3 flat checks.
 - The full preparation config selects all non-test `prospect`, `tmt`, `multi_ptm`, and `tmt_ptm`
   archives. The separately labelled `test_ptm` record is excluded from training.
 
@@ -97,12 +101,6 @@ inference is the Rust path via `export-rust`.
     and the named acquisition row are all in place; what is missing is the decision of whether a
     library enters as a prepared source or as extra shards, and threading `setup_id` through the
     batch so its row trains alongside the factor terms rather than only being fitted afterwards.
-
-11. **Decay the learning rate during real-data training.** The stage runs at a constant `lr`, and
-    the first full local run's validation agreement oscillated in a 0.4% band from epoch 3 to
-    epoch 8 without trending — a converged-at-this-rate signature rather than an impatient one, so
-    raising early-stop patience buys more of the same oscillation. The pretrain stage already
-    carries OneCycle settings; the real-data stage has no schedule at all.
 
 ## Parked
 

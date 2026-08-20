@@ -24,6 +24,7 @@ from pepdistill.distill.context_regime import (
     RealExample,
     RealSpeclibDataset,
     RealSpeclibModule,
+    _RealPlateauDecay,
     _RealValidationEarlyStop,
     _build_examples,
     establish_rt_norm,
@@ -542,7 +543,11 @@ def test_validation_reports_no_irt_mae_for_a_source_that_has_no_irt():
     module, batch = _batch_missing_irt(rows=4, unlabeled=4)
     module._trainer = SimpleNamespace(sanity_checking=False)
     logged: dict[str, float] = {}
-    module.log = lambda name, value, **_kwargs: logged.__setitem__(name, float(value))
+
+    def record(name, value, **_kwargs):
+        logged[name] = float(value.detach()) if torch.is_tensor(value) else float(value)
+
+    module.log = record
 
     module.on_validation_epoch_start()
     module.validation_step(batch, 0)
@@ -550,3 +555,93 @@ def test_validation_reports_no_irt_mae_for_a_source_that_has_no_irt():
     assert "val/rfA/irt_mae" not in logged
     assert math.isfinite(logged["val/rfA/rawrt_mae"])
     assert math.isfinite(logged["val/rfA/spectral_angle"])
+
+
+class _DecayTrainer:
+    """Just enough Trainer for the plateau callbacks: the metrics of one check, and one
+    optimizer whose rate they are allowed to change."""
+
+    sanity_checking = False
+    current_epoch = 0
+    global_step = 0
+    should_stop = False
+
+    def __init__(self, agreement: float, lr: float = 1e-3) -> None:
+        self.callback_metrics = {"val/pool/spectral_angle": torch.tensor(agreement)}
+        self.optimizers = [torch.optim.SGD([torch.zeros(1, requires_grad=True)], lr=lr)]
+        self.lines: list[str] = []
+        self.print = self.lines.append
+
+    def check(self, callback, agreement: float) -> None:
+        self.callback_metrics = {"val/pool/spectral_angle": torch.tensor(agreement)}
+        callback.on_validation_epoch_end(self, None)
+
+    @property
+    def lr(self) -> float:
+        return float(self.optimizers[0].param_groups[0]["lr"])
+
+
+def _decay(patience: int = 2, factor: float = 0.5, min_lr: float = 0.0) -> _RealPlateauDecay:
+    return _RealPlateauDecay(
+        patience=patience,
+        factor=factor,
+        min_lr=min_lr,
+        min_delta=1e-3,
+        expected_keys={"val/pool/spectral_angle"},
+    )
+
+
+def test_a_plateau_cuts_the_rate_and_an_improvement_holds_it():
+    callback, trainer = _decay(patience=2), _DecayTrainer(0.5)
+
+    trainer.check(callback, 0.50)  # first check: a new best, nothing to decay from
+    trainer.check(callback, 0.50)  # flat 1 of 2
+    assert trainer.lr == pytest.approx(1e-3)
+    trainer.check(callback, 0.50)  # flat 2 of 2 -> cut
+    assert trainer.lr == pytest.approx(5e-4)
+    assert callback.bad == 0  # the counter resets so the next cut needs another plateau
+    assert "[lr-decay]" in trainer.lines[-1]
+
+    trainer.check(callback, 0.60)  # the smaller rate found something: hold it
+    trainer.check(callback, 0.60)
+    assert trainer.lr == pytest.approx(5e-4)
+
+
+def test_a_later_plateau_is_judged_against_the_best_agreement_not_the_plateau():
+    """Keeping `best` across a cut is what stops a slowly sagging run from reading as progress:
+    each new cut has to beat the best ever seen, not whatever the last plateau settled at."""
+    callback, trainer = _decay(patience=1), _DecayTrainer(0.5)
+
+    trainer.check(callback, 0.60)  # best = 0.60
+    trainer.check(callback, 0.50)  # worse -> cut
+    assert trainer.lr == pytest.approx(5e-4)
+    trainer.check(callback, 0.55)  # better than the plateau, still below best -> cut again
+    assert trainer.lr == pytest.approx(2.5e-4)
+    assert callback.best == pytest.approx(0.60)
+
+
+def test_the_rate_stops_at_its_floor_without_reporting_a_cut():
+    callback, trainer = _decay(patience=1, min_lr=6e-4), _DecayTrainer(0.5)
+
+    trainer.check(callback, 0.50)
+    trainer.check(callback, 0.50)
+    assert trainer.lr == pytest.approx(6e-4)  # clamped, not 5e-4
+    cuts = len([line for line in trainer.lines if "[lr-decay]" in line])
+
+    trainer.check(callback, 0.50)  # nothing left to give: silence, and early stop takes over
+    assert trainer.lr == pytest.approx(6e-4)
+    assert len([line for line in trainer.lines if "[lr-decay]" in line]) == cuts
+
+
+def test_an_incomplete_check_is_left_to_early_stopping_to_report():
+    """The decay must not count a check it could not read as a plateau -- early stopping raises
+    on the same check, and a rate cut on the way there would be noise in the traceback."""
+    callback = _decay(patience=1)
+    trainer = _DecayTrainer(0.5)
+    trainer.callback_metrics = {"val/other/spectral_angle": torch.tensor(0.5)}
+
+    callback.on_validation_epoch_end(trainer, None)
+    callback.on_validation_epoch_end(trainer, None)
+
+    assert callback.bad == 0
+    assert trainer.lr == pytest.approx(1e-3)

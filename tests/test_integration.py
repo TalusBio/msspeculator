@@ -232,6 +232,7 @@ def test_wandb_namespaces_split_validation_and_diagnostics_into_panels():
         {
             "train_ms2": 0.1,
             "train_spectral_angle": 0.75,
+            "train_irt_labeled_fraction": 0.99,
             "val/pool/spectral_angle": 0.8,
             "val/pool/irt_mae": 2.0,
             "val/pool/rawrt_mae": 3.0,
@@ -243,6 +244,7 @@ def test_wandb_namespaces_split_validation_and_diagnostics_into_panels():
     assert metrics == {
         "train_metrics/ms2_cosine_loss": 0.1,
         "train_metrics/spectral_angle": 0.75,
+        "train_metrics/irt_labeled_fraction": 0.99,
         "val_sa/pool": 0.8,
         "val_irt_mae/pool": 2.0,
         "val_rawrt_mae/pool": 3.0,

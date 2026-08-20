@@ -185,3 +185,22 @@ def test_invalid_augmentation_probability_and_validation_interval_fail(tmp_path)
                 tmp_path, BASE.replace("epochs = 5", "epochs = 5\nvalidation_interval_minutes = 0")
             )
         )
+
+
+def test_lr_decay_knobs_parse(tmp_path):
+    text = BASE + "\nearly_stop_patience = 10\nlr_decay_patience = 3\nlr_decay_factor = 0.25\n"
+    cfg = RunConfig.from_toml(_write(tmp_path, text))
+    assert (cfg.train.lr_decay_patience, cfg.train.lr_decay_factor) == (3, 0.25)
+
+
+def test_a_decay_that_could_never_fire_is_refused(tmp_path):
+    """Caught at config load, not hours into a run: with the decay no more impatient than the
+    stop, the run ends at the same plateau that was supposed to trigger the smaller rate."""
+    text = BASE + "\nearly_stop_patience = 3\nlr_decay_patience = 3\n"
+    with pytest.raises(ValueError, match="must be below early_stop_patience"):
+        RunConfig.from_toml(_write(tmp_path, text))
+
+
+def test_lr_decay_is_off_by_default(tmp_path):
+    cfg = RunConfig.from_toml(_write(tmp_path, BASE))
+    assert cfg.train.lr_decay_patience == 0

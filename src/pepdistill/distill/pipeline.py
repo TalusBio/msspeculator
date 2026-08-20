@@ -161,6 +161,12 @@ class TrainCfg:
     # Validation spectral-angle early stop; 0 disables it. Patience counts validation checks.
     early_stop_patience: int = 0
     early_stop_min_delta: float = 1e-3
+    # Cut `lr` by `lr_decay_factor` after this many validation checks with no improvement;
+    # 0 disables it. Must be below `early_stop_patience`, which is checked, or the run would
+    # stop before the rate was ever cut. `early_stop_min_delta` defines improvement for both.
+    lr_decay_patience: int = 0
+    lr_decay_factor: float = 0.5
+    lr_decay_min: float = 0.0
     # Lightning's native wall-clock interval runs validation after the first completed batch
     # that crosses this duration. Long streaming epochs therefore get useful feedback without
     # tying validation cadence to corpus size.
@@ -169,6 +175,15 @@ class TrainCfg:
     def __post_init__(self) -> None:
         if self.validation_interval_minutes <= 0:
             raise ValueError("[train] validation_interval_minutes must be positive")
+        # Rejected here rather than at the trainer, where it would surface hours into a run.
+        if 0 < self.early_stop_patience <= self.lr_decay_patience:
+            raise ValueError(
+                f"[train] lr_decay_patience {self.lr_decay_patience} must be below "
+                f"early_stop_patience {self.early_stop_patience}, or the run stops before the "
+                "learning rate is ever cut"
+            )
+        if not 0.0 < self.lr_decay_factor < 1.0:
+            raise ValueError("[train] lr_decay_factor must be between 0 and 1")
 
 
 @dataclass
@@ -415,6 +430,7 @@ def _wandb_metric_namespaces(metrics: dict, stage: str) -> dict:
         "train_total": "total_loss",
         "train_mod_align": "mod_alignment_loss",
         "train_residue_augmented_fraction": "residue_augmented_fraction",
+        "train_irt_labeled_fraction": "irt_labeled_fraction",
     }
     result = {}
     for raw_key, value in metrics.items():
@@ -909,6 +925,9 @@ def run_pipeline(cfg: RunConfig, log=print) -> dict:
             mod_align_weight=cfg.train.mod_align_weight,
             early_stop_patience=cfg.train.early_stop_patience,
             early_stop_min_delta=cfg.train.early_stop_min_delta,
+            lr_decay_patience=cfg.train.lr_decay_patience,
+            lr_decay_factor=cfg.train.lr_decay_factor,
+            lr_decay_min=cfg.train.lr_decay_min,
             residue_substitution_probability=(cfg.augmentation.residue_substitution_probability),
             val_check_interval=timedelta(minutes=cfg.train.validation_interval_minutes),
             check_val_every_n_epoch=None,

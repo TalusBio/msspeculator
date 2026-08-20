@@ -139,6 +139,9 @@ num_workers = 0                 # Polars decodes in-process; avoids unsafe post-
 model_threads = 4               # intra-op threads in the model process
 loss_weights = [1.0, 1.0, 1.0]   # (ms2, iRT, raw_rt)
 validation_interval_minutes = 60.0 # wall-clock cadence; checked after the crossing batch
+early_stop_patience = 10         # flat validation checks before stopping; 0 disables
+lr_decay_patience = 3            # flat checks before halving `lr`; must be below the above
+lr_decay_factor = 0.5
 
 [diagnostics]                    # fixed longitudinal panel; optional
 enabled = true
@@ -171,6 +174,14 @@ render_initial = true
   on that cadence. A final check runs after fitting only when the last optimizer step was not
   already validated. Early-stop patience therefore counts validation checks, not epochs;
   metrics JSONL records both `validation_check` and `global_step`.
+- **Learning-rate decay**: the real-data stage has no horizon to schedule against — it ends
+  wherever early stopping lands — so the rate follows the same plateau signal instead. After
+  `lr_decay_patience` checks with no improvement beyond `early_stop_min_delta`, every parameter
+  group's `lr` is multiplied by `lr_decay_factor` and the decay's counter resets. The stopping
+  counter does not reset, so `early_stop_patience` still bounds the run: at 3 and 10 there is
+  room for three cuts inside the same leash. The config refuses a decay patience at or above the
+  stopping patience, which would stop the run before the rate ever moved. `lr-AdamW` in W&B
+  shows the steps.
 - **Checkpoint evidence**: `latest.ckpt`, `best.ckpt`, and the final `model.ckpt` record the
   global step plus the per-dataset spectral angles and mean used by validation/early stopping
   under the checkpoint's `training` metadata. Inference loaders ignore this optional metadata.

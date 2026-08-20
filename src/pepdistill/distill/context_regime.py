@@ -463,6 +463,82 @@ class _RealTrainProgress(L.Callback):
             )
 
 
+def _validation_metrics(trainer: L.Trainer, expected_keys: set[str]) -> dict[str, float]:
+    """The scalar validation metrics of `expected_keys` this check logged.
+
+    One reader for the three callbacks that watch validation, each of which reacts differently
+    to an incomplete set: the checkpoint saves anyway, early stopping raises, the decay waits.
+    """
+    return {
+        key: float(value.detach().cpu())
+        for key, value in trainer.callback_metrics.items()
+        if key in expected_keys and torch.is_tensor(value) and value.numel() == 1
+    }
+
+
+class _RealPlateauDecay(L.Callback):
+    """Cut the learning rate when mean per-dataset agreement stops improving.
+
+    Deliberately more impatient than early stopping, and validated as such where both are
+    registered: they watch the same aggregate at the same validation checks, so a decay patience
+    at or above the stopping patience would end the run before the rate ever moved.
+
+    A horizon-based schedule is the obvious alternative and does not fit this stage. Cosine and
+    OneCycle need to know where the end is; here the end is wherever early stopping lands, and
+    the first full local run stopped at epoch 8 of a nominal 60 -- a cosine over that horizon
+    would still have been at 98% of the initial rate. What that run actually showed was
+    agreement oscillating in a 0.4% band from epoch 3 onward without trending, which is a
+    converged-at-this-rate signature: more patience buys more oscillation, a smaller step does
+    not.
+    """
+
+    def __init__(
+        self, patience: int, factor: float, min_lr: float, min_delta: float, expected_keys: set[str]
+    ) -> None:
+        super().__init__()
+        if not 0.0 < factor < 1.0:
+            raise ValueError(f"lr_decay_factor must be between 0 and 1, got {factor}")
+        if min_lr < 0:
+            raise ValueError("lr_decay_min must be non-negative")
+        self.patience = patience
+        self.factor = factor
+        self.min_lr = min_lr
+        self.min_delta = min_delta
+        self.expected_keys = expected_keys
+        self.best = float("-inf")
+        self.bad = 0
+
+    def on_validation_epoch_end(self, trainer: L.Trainer, pl_module: L.LightningModule) -> None:
+        if trainer.sanity_checking:
+            return
+        metrics = _validation_metrics(trainer, self.expected_keys)
+        if len(metrics) != len(self.expected_keys):
+            return  # early stopping owns reporting an incomplete check
+        current = sum(metrics.values()) / len(metrics)
+        if current - self.best > self.min_delta:
+            self.best, self.bad = current, 0
+            return
+        self.bad += 1
+        if self.bad < self.patience:
+            return
+        groups = [group for optimizer in trainer.optimizers for group in optimizer.param_groups]
+        if all(float(group["lr"]) <= self.min_lr for group in groups):
+            # Nothing left to give. Say nothing and let early stopping end the run, rather than
+            # reporting a decay every `patience` checks that does not change the rate.
+            return
+        # Reset the counter but keep `best`: the next decay has to earn its way from the best
+        # agreement seen so far, not from whatever this plateau happens to sit at.
+        self.bad = 0
+        before = min(float(group["lr"]) for group in groups)
+        for group in groups:
+            group["lr"] = max(float(group["lr"]) * self.factor, self.min_lr)
+        after = min(float(group["lr"]) for group in groups)
+        getattr(trainer, "print", print)(
+            f"[lr-decay] agreement plateaued at {current:.4f} (best {self.best:.4f}) -> lr "
+            f"{before:.3e} to {after:.3e}"
+        )
+
+
 class _RealValidationEarlyStop(L.Callback):
     """Stop real-data training when mean per-dataset spectral agreement plateaus."""
 
@@ -481,11 +557,7 @@ class _RealValidationEarlyStop(L.Callback):
         # dataset, so checking completeness here would reject a healthy run before training.
         if trainer.sanity_checking:
             return
-        metrics = {
-            key: value
-            for key, value in trainer.callback_metrics.items()
-            if key in self.expected_keys and torch.is_tensor(value) and value.numel() == 1
-        }
+        metrics = _validation_metrics(trainer, self.expected_keys)
         missing = sorted(self.expected_keys - metrics.keys())
         if missing:
             available = sorted(
@@ -497,8 +569,7 @@ class _RealValidationEarlyStop(L.Callback):
                 "early stopping expected per-dataset validation metrics that were not logged: "
                 f"missing={missing}, available={available}"
             )
-        values = [float(value) for value in metrics.values()]
-        current = sum(values) / len(values)
+        current = sum(metrics.values()) / len(metrics)
         improved = current - self.best > self.min_delta
         if improved:
             self.best, self.bad = current, 0
@@ -594,11 +665,7 @@ class _RealCheckpoint(L.Callback):
         self.best = float("-inf")
 
     def _validation_values(self, trainer: L.Trainer) -> dict[str, float]:
-        return {
-            key: float(value.detach().cpu())
-            for key, value in trainer.callback_metrics.items()
-            if key in self.expected_keys and torch.is_tensor(value) and value.numel() == 1
-        }
+        return _validation_metrics(trainer, self.expected_keys)
 
     def _save(
         self,
@@ -769,6 +836,9 @@ def fit_realspeclib_datasets(
     artifact_mirror=None,
     early_stop_patience: int = 0,
     early_stop_min_delta: float = 1e-3,
+    lr_decay_patience: int = 0,
+    lr_decay_factor: float = 0.5,
+    lr_decay_min: float = 0.0,
     residue_substitution_probability: float = 0.0,
     num_workers: int = 0,
     **trainer_kwargs,
@@ -843,12 +913,33 @@ def fit_realspeclib_datasets(
         raise ValueError("early_stop_patience must be non-negative")
     if early_stop_min_delta < 0:
         raise ValueError("early_stop_min_delta must be non-negative")
-    if early_stop_patience > 0 and val_ds is not None and val_dataset_ids:
+    if lr_decay_patience < 0:
+        raise ValueError("lr_decay_patience must be non-negative")
+    if 0 < early_stop_patience <= lr_decay_patience:
+        raise ValueError(
+            f"lr_decay_patience {lr_decay_patience} must be below early_stop_patience "
+            f"{early_stop_patience}, or the run stops before the rate is ever cut"
+        )
+    if val_ds is not None and val_dataset_ids:
         expected_names = {module.dataset_names[int(dataset_id)] for dataset_id in val_dataset_ids}
         expected_keys = {f"val/{name}/spectral_angle" for name in expected_names}
-        callbacks.append(
-            _RealValidationEarlyStop(early_stop_patience, early_stop_min_delta, expected_keys)
-        )
+        # Decay before stop, so a plateau that the smaller rate resolves is not counted as a
+        # stopping signal that a later callback has already acted on. Both take
+        # `early_stop_min_delta`: what counts as an improvement is one decision, not two.
+        if lr_decay_patience > 0:
+            callbacks.append(
+                _RealPlateauDecay(
+                    lr_decay_patience,
+                    lr_decay_factor,
+                    lr_decay_min,
+                    early_stop_min_delta,
+                    expected_keys,
+                )
+            )
+        if early_stop_patience > 0:
+            callbacks.append(
+                _RealValidationEarlyStop(early_stop_patience, early_stop_min_delta, expected_keys)
+            )
     if checkpoint_dir is not None:
         checkpoint_keys = {
             f"val/{module.dataset_names[int(dataset_id)]}/spectral_angle"

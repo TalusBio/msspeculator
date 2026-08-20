@@ -71,4 +71,8 @@ lr = 3e-4
 # The first run under the per-epoch cadence stopped at epoch 8 having peaked at epoch 3.
 early_stop_patience = 10
 early_stop_min_delta = 0.001
+# Halve the rate after 3 flat checks. The stopping counter is not reset by a decay, so the
+# 10-check leash still bounds the run while leaving room for three cuts inside it.
+lr_decay_patience = 3
+lr_decay_factor = 0.5
 validation_interval_minutes = 60.0
