@@ -63,6 +63,12 @@ def export_safetensors(ckpt_path: str | Path, out_path: str | Path) -> Path:
             "detectors": list(enc.detectors),
             "fragmentations": list(enc.fragmentations),
         }
+        # Named acquisition setups: `--ms-context NAME` resolves through this map into the
+        # `enc.setup_emb.weight` rows exported above it, the same arrangement `dataset_index`
+        # has with the runbook. Omitted when empty so its absence stays unambiguous -- no
+        # index means no setup was ever named, not one whose names were lost.
+        if enc.setups:
+            meta["ms_context_index"] = enc.setups
     if ctx is not None and ctx.runbook is not None:
         for key, val in ctx.runbook.state_dict().items():
             tensors[f"runbook.{key}"] = val.contiguous().cpu()

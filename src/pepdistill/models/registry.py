@@ -50,11 +50,14 @@ class ContextBundle:
 
 
 def _encoder_blob(enc: MSContextEncoder) -> dict:
+    # `setups` rides with `state_dict` for the same reason `names` does below: a fitted
+    # acquisition row means nothing without the setup it was fitted for.
     return {
         "context_dim": enc.context_dim,
         "instruments": enc.instruments,
         "detectors": enc.detectors,
         "fragmentations": enc.fragmentations,
+        "setups": enc.setups,
         "state_dict": enc.state_dict(),
     }
 
@@ -135,8 +138,15 @@ def load_context(path: str | Path, map_location: str = "cpu") -> ContextBundle |
             instruments=tuple(e.get("instruments", DEFAULT_INSTRUMENTS)),
             detectors=tuple(e.get("detectors", DEFAULT_DETECTORS)),
             fragmentations=tuple(e.get("fragmentations", DEFAULT_FRAGMENTATIONS)),
+            setups=e.get("setups"),
         )
-        encoder.load_state_dict(e["state_dict"])
+        # A checkpoint written before named setups existed has no `setup_emb`. Its absence is
+        # not ambiguous -- there were none to save -- so the zero-init table stands, which is
+        # exactly the neutral term an unnamed source gets. Filled in by name rather than with a
+        # non-strict load, which would swallow a genuinely mismatched checkpoint too.
+        state = dict(e["state_dict"])
+        state.setdefault("setup_emb.weight", encoder.setup_emb.weight.detach().clone())
+        encoder.load_state_dict(state)
         encoder.eval()
     if ctx.get("runbook"):
         r = ctx["runbook"]

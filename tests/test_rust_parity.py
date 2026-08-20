@@ -26,6 +26,9 @@ from pepdistill.predict.fast import TorchRunner, predict_library_fast
 
 RUST_DIR = Path(__file__).resolve().parents[1] / "rust"
 BIN = RUST_DIR / "target" / "release" / "pepdistill-cli"
+# An acquisition setup addressed by name rather than composed from factors, which is the only
+# thing available for a library that records neither instrument nor collision energy.
+NAMED_SETUP = "Evosep60SPD_heron"
 PRED_ATOL = 1e-3
 PRED_RTOL = 2e-5
 MZ_ATOL = 1e-7
@@ -65,6 +68,9 @@ def artifact(tmp_path_factory):
     torch.manual_seed(0)
     model = build_student("small")
     enc = MSContextEncoder(model.cfg.context_dim)
+    # A named setup before the random init below, so its row is as non-trivial as every other
+    # weight: a Rust side that quietly fell back to the neutral row would answer differently.
+    enc.ensure_setups([NAMED_SETUP])
     runbook = ChromRunbook(2, model.cfg.context_dim)
     for mod in (model, enc, runbook):
         for p in mod.parameters():
@@ -540,3 +546,114 @@ def test_fit_context_refuses_an_undeclared_modification(artifact, tmp_path):
     )
     assert r.returncode != 0
     assert "+79.96633" in r.stderr and "--add-unimod" in r.stderr
+
+
+def test_parity_named_ms_context(artifact, capsys):
+    """`--ms-context NAME` reaches the heads through the same projection a factor-composed
+    context does, so what is under test is that both sides agree on which row the name means."""
+    binary = _binary()
+    enc, model = artifact["enc"], artifact["model"]
+    unknown = torch.zeros(1, dtype=torch.long)
+    ms_vec = (
+        enc(unknown, unknown, unknown, None, setup_id=torch.tensor([enc.setup_row(NAMED_SETUP)]))
+        .detach()
+        .numpy()[0]
+    )
+    lib = predict_library_fast(
+        TorchRunner(model, "cpu", ms_context=ms_vec),
+        [Precursor(peptide=Peptide(PEPTIDE), charge=CHARGE, split="train")],
+        min_intensity=0.01,
+    )
+    rj = _rust(binary, artifact["path"], ["--ms-context", NAMED_SETUP])
+    base = _rust(binary, artifact["path"], [])
+
+    py, rs = _frag_map_py(lib), _frag_map_rust(rj)
+    assert set(py) == set(rs)
+    with capsys.disabled():
+        print(f"\n[named-setup] n={len(py)} rows={enc.setups}")
+    _assert_close(
+        "named setup relative intensity",
+        [py[key][1] for key in py],
+        [rs[key][1] for key in py],
+    )
+    # The named row must actually move MS2 off the base, or the comparison above proves nothing.
+    base_map = _frag_map_rust(base)
+    assert max(abs(rs[key][1] - base_map[key][1]) for key in rs) > 1e-4
+
+
+def test_rust_refuses_a_setup_it_has_no_row_for(artifact):
+    """Answering with the neutral row would report a prediction for a setup it never fitted."""
+    r = subprocess.run(
+        [
+            _binary(),
+            "predict",
+            "--model",
+            str(artifact["path"]),
+            "--peptide",
+            PEPTIDE,
+            "--charge",
+            str(CHARGE),
+            "--ms-context",
+            "never_fitted",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert r.returncode != 0
+    assert "unknown --ms-context" in r.stderr and NAMED_SETUP in r.stderr
+
+
+def test_a_fitted_context_can_be_saved_and_then_addressed_by_name(artifact, tmp_path):
+    """The loop the fit exists to close: fit a library's context, name it, predict with it.
+
+    The saved artifact has to predict exactly what the fit reported the context to be, or the
+    number in the report describes something other than what was stored.
+    """
+    peptides = [f"PEPTIDE{chr(65 + i % 26)}{chr(65 + i // 26)}K" for i in range(220)]
+    library = _spectronaut_library(tmp_path / "lib.tsv", artifact["model"], peptides)
+    out = tmp_path / "fitted.safetensors"
+    r = subprocess.run(
+        [
+            _binary(),
+            "fit-context",
+            "--model",
+            str(artifact["path"]),
+            "--library",
+            str(library),
+            "--epochs",
+            "1",
+            "--save-as",
+            "diaPASEF_cyspat",
+            "--out",
+            str(out),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert r.returncode == 0, r.stderr
+    report = json.loads(r.stdout)
+    assert report["saved"] == {
+        "setup": "diaPASEF_cyspat",
+        "row": 2,  # 1 is the fixture's own named setup; a new name must not take its row
+        "artifact": str(out),
+    }
+
+    fitted = _rust(_binary(), out, ["--ms-context", "diaPASEF_cyspat"])
+    # The row the fit wrote, applied by hand through the exported weights, must reproduce it.
+    enc, model = artifact["enc"], artifact["model"]
+    context = torch.tensor([report["fit"]["context"]], dtype=torch.float32)
+    lib = predict_library_fast(
+        TorchRunner(model, "cpu", ms_context=context.numpy()[0]),
+        [Precursor(peptide=Peptide(PEPTIDE), charge=CHARGE, split="train")],
+        min_intensity=0.01,
+    )
+    py, rs = _frag_map_py(lib), _frag_map_rust(fitted)
+    assert set(py) == set(rs)
+    _assert_close(
+        "saved context relative intensity",
+        [py[key][1] for key in py],
+        [rs[key][1] for key in py],
+    )
+    # The setup already in the artifact has to survive the write.
+    assert enc.setups[NAMED_SETUP] == 1
+    assert _rust(_binary(), out, ["--ms-context", NAMED_SETUP])["fragments"]["rel"]

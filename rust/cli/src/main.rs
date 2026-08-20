@@ -79,19 +79,34 @@ struct ArtifactArgs {
     activation: Option<String>,
 }
 
+/// A parsed `--ms-context`, keeping the text the user wrote so the report echoes their words
+/// rather than a re-rendering of them.
 #[derive(Clone)]
-struct FullMsContext {
+struct MsContextArg {
     raw: String,
-    instrument: String,
-    detector: String,
-    fragmentation: String,
-    energy: f32,
+    resolved: MsContext,
 }
 
-impl FromStr for FullMsContext {
+impl FromStr for MsContextArg {
     type Err = String;
 
+    /// Four `::`-separated acquisition factors, or a bare name for a setup fitted into the
+    /// artifact. The separator is what distinguishes them: a library's setup name is a label,
+    /// and nothing about it parses as a factor list, so there is no ambiguity to resolve.
     fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let raw = value.to_string();
+        if !value.contains("::") {
+            if value.trim().is_empty() {
+                return Err(
+                    "expected a setup name or INSTRUMENT::DETECTOR::FRAGMENTATION::ENERGY"
+                        .to_string(),
+                );
+            }
+            return Ok(Self {
+                raw,
+                resolved: MsContext::Named(value.to_string()),
+            });
+        }
         let parts: Vec<&str> = value.split("::").collect();
         if parts.len() != 4 {
             return Err("expected INSTRUMENT::DETECTOR::FRAGMENTATION::ENERGY".to_string());
@@ -100,20 +115,23 @@ impl FromStr for FullMsContext {
             .parse()
             .map_err(|_| format!("energy {:?} is not a number", parts[3]))?;
         Ok(Self {
-            raw: value.to_string(),
-            instrument: parts[0].to_string(),
-            detector: parts[1].to_string(),
-            fragmentation: parts[2].to_string(),
-            energy,
+            raw,
+            resolved: MsContext::Factors {
+                instrument: parts[0].to_string(),
+                detector: parts[1].to_string(),
+                fragmentation: parts[2].to_string(),
+                energy: Some(energy),
+            },
         })
     }
 }
 
 #[derive(clap::Args)]
 struct ContextArgs {
-    /// Full acquisition context "INSTRUMENT::DETECTOR::FRAGMENTATION::ENERGY".
+    /// Acquisition context: a named setup fitted with `fit-context`, or the factors spelled out
+    /// as "INSTRUMENT::DETECTOR::FRAGMENTATION::ENERGY".
     #[arg(long, conflicts_with = "nce")]
-    ms_context: Option<FullMsContext>,
+    ms_context: Option<MsContextArg>,
     /// Shorthand: collision energy only (unknown instrument/detector/fragmentation).
     #[arg(long, conflicts_with = "ms_context")]
     nce: Option<f32>,
@@ -126,14 +144,9 @@ impl ContextArgs {
     fn ms_context(&self) -> Option<MsContext> {
         self.ms_context
             .as_ref()
-            .map(|context| MsContext {
-                instrument: context.instrument.clone(),
-                detector: context.detector.clone(),
-                fragmentation: context.fragmentation.clone(),
-                energy: Some(context.energy),
-            })
+            .map(|context| context.resolved.clone())
             .or_else(|| {
-                self.nce.map(|energy| MsContext {
+                self.nce.map(|energy| MsContext::Factors {
                     instrument: String::new(),
                     detector: String::new(),
                     fragmentation: String::new(),
@@ -235,6 +248,14 @@ struct FitContextArgs {
     /// quantification, not wrong ones, and honouring it can cut a library's depth by two thirds.
     #[arg(long)]
     drop_excluded: bool,
+    /// Store the fitted context in the artifact under this name, addressable afterwards as
+    /// `--ms-context NAME`. Requires `--out`; refitting an existing name replaces its row.
+    #[arg(long, value_name = "NAME", requires = "out")]
+    save_as: Option<String>,
+    /// Where to write the artifact carrying the fitted row. Never in place: the input artifact
+    /// is the reference point a fit is judged against.
+    #[arg(long, requires = "save_as")]
+    out: Option<String>,
 }
 
 fn run_fit_context(args: FitContextArgs) -> Result<()> {
@@ -271,6 +292,12 @@ fn run_fit_context(args: FitContextArgs) -> Result<()> {
         ..fit::FitConfig::default()
     };
     let report = fit::fit_ms_context(&artifact, &precursors, &config)?;
+    let mut saved = serde_json::Value::Null;
+    if let (Some(name), Some(out)) = (&args.save_as, &args.out) {
+        let row = artifact.set_ms_context(name, &report.context)?;
+        artifact.save(out)?;
+        saved = serde_json::json!({"setup": name, "row": row, "artifact": out});
+    }
     println!(
         "{}",
         serde_json::to_string(&serde_json::json!({
@@ -297,6 +324,7 @@ fn run_fit_context(args: FitContextArgs) -> Result<()> {
             },
             "objective": report.objective,
             "held_out": report.held_out,
+            "saved": saved,
         }))?
     );
     Ok(())
@@ -414,5 +442,38 @@ fn main() -> Result<()> {
         Command::Library(args) => run_library(args),
         Command::RunDoctor(args) => run_doctor(args),
         Command::FitContext(args) => run_fit_context(args),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ms_context_reads_a_bare_name_as_a_setup_and_four_parts_as_factors() {
+        let factors: MsContextArg = "Lumos::FTMS::HCD::28".parse().unwrap();
+        match factors.resolved {
+            MsContext::Factors {
+                instrument, energy, ..
+            } => {
+                assert_eq!(instrument, "Lumos");
+                assert_eq!(energy, Some(28.0));
+            }
+            MsContext::Named(name) => panic!("read a factor list as the setup {name:?}"),
+        }
+
+        let named: MsContextArg = "Evosep60SPD_heron".parse().unwrap();
+        match named.resolved {
+            MsContext::Named(name) => assert_eq!(name, "Evosep60SPD_heron"),
+            MsContext::Factors { .. } => panic!("read a setup name as factors"),
+        }
+    }
+
+    #[test]
+    fn a_half_written_factor_list_is_an_error_rather_than_a_setup_name() {
+        // The failure this guards: silently treating "Lumos::FTMS::HCD" as a setup name would
+        // report an unknown setup, sending the user looking for the wrong mistake.
+        assert!("Lumos::FTMS::HCD".parse::<MsContextArg>().is_err());
+        assert!("".parse::<MsContextArg>().is_err());
     }
 }

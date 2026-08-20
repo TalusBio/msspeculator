@@ -28,6 +28,33 @@ DEFAULT_DETECTORS = ("unknown", "FTMS", "ITMS", "TOF")
 DEFAULT_FRAGMENTATIONS = ("unknown", "HCD", "CID", "ETD", "EThcD")
 
 
+def _widened(table: nn.Embedding, rows: int) -> nn.Embedding:
+    """A zero-init table of `rows` rows holding everything `table` has already trained.
+
+    Rebuilt rather than resized in place: the old parameter may already be registered with an
+    optimizer, and copying forward is what keeps a trained row attached to its own name.
+    """
+    wider = nn.Embedding(rows, table.embedding_dim, padding_idx=0)
+    nn.init.zeros_(wider.weight)
+    with torch.no_grad():
+        wider.weight[: table.num_embeddings].copy_(table.weight)
+    return wider
+
+
+def _assign_rows(existing: Mapping[str, int], names: Iterable[str]) -> dict[str, int]:
+    """Rows for the names `existing` does not already hold, numbered above its highest.
+
+    Above rather than into gaps, so a sparse index left by an earlier curriculum stays sparse
+    instead of handing a new source a row some other source's weights were trained in.
+
+    >>> _assign_rows({"alpha": 1, "beta": 4}, ["beta", "gamma", "gamma", "delta"])
+    {'gamma': 5, 'delta': 6}
+    """
+    fresh = [name for name in dict.fromkeys(names) if name not in existing]
+    start = max(existing.values(), default=0) + 1
+    return {name: start + offset for offset, name in enumerate(fresh)}
+
+
 class MSContextEncoder(nn.Module):
     """Compose ``ms_context`` (MS2 side) from acquisition factors: instrument, detector,
     fragmentation (categorical embeddings, index 0 = unknown/blank -> zero row) plus collision
@@ -40,6 +67,14 @@ class MSContextEncoder(nn.Module):
     that term contributes zero for exactly those rows. (``energy=None`` omits the term for a
     whole call; the real-data path always passes a tensor and relies on the mask, so it is
     reachable only from callers that have no energy axis at all, e.g. tests.)
+
+    Alongside the factors it carries a table of **named acquisition setups**: rows addressed by
+    name rather than composed from metadata, for a source that records no factors to compose
+    from. A published spectral library is the case — it reports no instrument and no collision
+    energy, and a timsTOF ramps energy with ion mobility anyway, so there is nothing for the
+    factor terms to consume and its offset from the base model has to be fitted as a row.
+    Additive alongside the factor terms and zero-init like them, so a setup nobody named
+    changes nothing, and a source with both factors and a name gets both.
     """
 
     def __init__(
@@ -48,6 +83,7 @@ class MSContextEncoder(nn.Module):
         instruments: tuple[str, ...] = DEFAULT_INSTRUMENTS,
         detectors: tuple[str, ...] = DEFAULT_DETECTORS,
         fragmentations: tuple[str, ...] = DEFAULT_FRAGMENTATIONS,
+        setups: Mapping[str, int] | None = None,
     ) -> None:
         super().__init__()
         self.instruments = tuple(instruments)
@@ -66,10 +102,53 @@ class MSContextEncoder(nn.Module):
             nn.init.zeros_(emb.weight)
         nn.init.zeros_(self.energy_mlp[-1].weight)  # energy term starts neutral (0)
         nn.init.zeros_(self.energy_mlp[-1].bias)
+        # Row 0 is the unnamed setup, kept neutral by `padding_idx` exactly as the factor
+        # tables' unknown row is: "this source has no name" must cost nothing.
+        self._setups: dict[str, int] = dict(setups or {})
+        self.setup_emb = nn.Embedding(
+            max(self._setups.values(), default=0) + 1, context_dim, padding_idx=0
+        )
+        nn.init.zeros_(self.setup_emb.weight)
 
     @property
     def context_dim(self) -> int:
         return self.inst_emb.embedding_dim
+
+    @property
+    def setups(self) -> dict[str, int]:
+        """Setup name -> row, travelling with the weights those rows index."""
+        return dict(self._setups)
+
+    def setup_row(self, name: str) -> int:
+        """Row for a setup this encoder has a vector for.
+
+        Raises for an unknown name: substituting row 0 would answer with the base model while
+        reporting that the requested setup had been applied.
+        """
+        try:
+            return self._setups[name]
+        except KeyError:
+            known = ", ".join(sorted(self._setups)) or "none"
+            raise KeyError(f"no acquisition setup named {name!r}; this encoder knows: {known}")
+
+    def ensure_setups(self, names: Iterable[str]) -> None:
+        """Give every name a row, growing the table if needed, leaving trained rows put.
+
+        >>> enc = MSContextEncoder(context_dim=4)
+        >>> enc.ensure_setups(["Evosep60SPD_heron", "Evosep60SPD_heron", "diaPASEF_cyspat"])
+        >>> enc.setups
+        {'Evosep60SPD_heron': 1, 'diaPASEF_cyspat': 2}
+        >>> enc.ensure_setups(["Evosep60SPD_heron"])  # already named: a no-op
+        >>> enc.setups
+        {'Evosep60SPD_heron': 1, 'diaPASEF_cyspat': 2}
+        """
+        assigned = _assign_rows(self._setups, names)
+        if not assigned:
+            return
+        needed = max(assigned.values()) + 1  # +1: row 0 is the unnamed setup
+        if needed > self.setup_emb.num_embeddings:
+            self.setup_emb = _widened(self.setup_emb, needed)
+        self._setups.update(assigned)
 
     def instrument_id(self, name: str) -> int:
         return self._inst_ix.get(name, 0)
@@ -86,6 +165,7 @@ class MSContextEncoder(nn.Module):
         detector_id: torch.Tensor,
         fragmentation_id: torch.Tensor,
         energy: torch.Tensor | None,
+        setup_id: torch.Tensor | None = None,
     ) -> torch.Tensor:
         # `padding_idx=0` keeps the unknown rows gradient-free. Multiplying by the masks also
         # protects neutrality when loading an older checkpoint whose row 0 learned before that
@@ -94,6 +174,8 @@ class MSContextEncoder(nn.Module):
         det = self.det_emb(detector_id) * detector_id.ne(0).unsqueeze(-1)
         frag = self.frag_emb(fragmentation_id) * fragmentation_id.ne(0).unsqueeze(-1)
         out = inst + det + frag
+        if setup_id is not None:
+            out = out + self.setup_emb(setup_id) * setup_id.ne(0).unsqueeze(-1)
         if energy is not None:
             # Per-example masking, not imputation. A NaN energy means the run recorded none,
             # and it must contribute exactly zero rather than a value we invented.
@@ -201,11 +283,9 @@ class ChromRunbook(nn.Module):
         >>> sparse.names
         {'alpha': 7, 'gamma': 8}
         """
-        fresh = [name for name in dict.fromkeys(names) if name not in self._names]
-        if not fresh:
+        assigned = _assign_rows(self._names, names)
+        if not assigned:
             return
-        next_row = max(self._names.values(), default=0) + 1
-        assigned = {name: next_row + offset for offset, name in enumerate(fresh)}
         needed = max(assigned.values())
         if needed > self.n_datasets:
             self._grow(needed)
@@ -230,14 +310,8 @@ class ChromRunbook(nn.Module):
 
     def _grow(self, n_datasets: int) -> None:
         """Widen every table to `n_datasets` rows, copying what is already trained."""
-        rows = self.n_datasets + 1  # include the neutral row
-        for name, width in (("emb", self.context_dim), ("log_scale", 1), ("shift", 1)):
-            table = getattr(self, name)
-            wider = nn.Embedding(n_datasets + 1, width, padding_idx=0)
-            nn.init.zeros_(wider.weight)
-            with torch.no_grad():
-                wider.weight[:rows].copy_(table.weight)
-            setattr(self, name, wider)
+        for name in ("emb", "log_scale", "shift"):
+            setattr(self, name, _widened(getattr(self, name), n_datasets + 1))
 
     def forward(self, dataset_id: torch.Tensor) -> torch.Tensor:
         return self.emb(dataset_id) * dataset_id.ne(0).unsqueeze(-1)

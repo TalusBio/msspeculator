@@ -386,6 +386,28 @@ impl<'a> Predictor<'a> {
         ))
     }
 
+    /// ms_context for a named acquisition setup (`enc.setup_emb.weight` row lookup).
+    ///
+    /// The alternative to [`Self::encode_ms_context`], not a variant of it: a published library
+    /// records no instrument and no collision energy, so there are no factors to compose and
+    /// the setup's offset from the base model is a row fitted directly against its spectra.
+    pub fn named_ms_context(&self, setup: &str) -> Result<Array1<f32>> {
+        let index = self
+            .art
+            .meta
+            .ms_context_index
+            .as_ref()
+            .ok_or_else(|| anyhow!("artifact names no acquisition setups"))?;
+        let row = *index
+            .get(setup)
+            .ok_or_else(|| anyhow!("unknown --ms-context {setup:?}; known: {index:?}"))?;
+        Ok(self
+            .art
+            .get2("enc.setup_emb.weight")?
+            .row(row as usize)
+            .to_owned())
+    }
+
     /// chrom_context for a named dataset (ChromRunbook row lookup).
     pub fn chrom_context(&self, dataset: &str) -> Result<Array1<f32>> {
         let index = self

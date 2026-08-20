@@ -394,6 +394,33 @@ Notes:
   (`format_version` 1) is **rejected**, not read with defaults. Re-export from the checkpoint.
 - `--ms-context INSTRUMENT::DETECTOR::FRAGMENTATION::ENERGY` conditions MS2; `--chrom-context NAME`
   routes RT through a saved dataset's runbook row (else RT is the context-free iRT base).
+- `--ms-context` also takes a **bare setup name** for a context fitted with `fit-context` (see
+  below). The `::` separator is what tells the two apart, so a partial factor list is an error
+  rather than a name nobody fitted.
+
+### Fit an acquisition context to a published library
+
+A library reports no instrument and no collision energy, and a timsTOF ramps energy with ion
+mobility anyway, so there are no acquisition factors to compose a context from. Fit one instead:
+the backbone stays frozen and only the context row moves, judged on peptides held out by the
+project's own sequence hash.
+
+```bash
+aws s3 cp s3://.../spectral_library.tsv ./lib.tsv   # local path: the CLI has no S3 client
+cargo run -q --release -p pepdistill-cli -- \
+  fit-context --model runs/full/model.safetensors --library ./lib.tsv \
+  --add-unimod 35 --add-unimod 21 --add-unimod 2057:221.082 \
+  --save-as Evosep60SPD_heron --out runs/full/model-fitted.safetensors
+# -> JSON: library stats, the split, spectral_angle_before/after, the fitted vector, {"saved": ...}
+```
+
+`--add-unimod ACCESSION[:MASS]` declares a modification the file contains; the optional mass is
+for a shift spelled more coarsely than the automatic 1e-4 tolerance accepts (DIA-NN writes
+6C-CysPAT as `+221.082`). An unexplained mass shift stops the fit rather than being dropped.
+
+`--save-as NAME` writes the row into `--out`, never in place — the input artifact is the reference
+the fit is judged against. Afterwards `--ms-context NAME` predicts with it, in `predict` and in
+`library`. Refitting an existing name replaces that row and leaves every other one alone.
 
 ### Alternative: torch, via a one-line FASTA (whole library, not single-peptide)
 `pepdistill predict` digests a FASTA / reads a precursor table and writes a parquet library — it

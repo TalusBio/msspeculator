@@ -1,6 +1,6 @@
 # Roadmap
 
-Updated 2026-08-11. The product milestone is a reproducible path from FASTA and prepared
+Updated 2026-08-20. The product milestone is a reproducible path from FASTA and prepared
 experimental data to a Rust-generated spectral library that produces useful search results.
 Validation is reported per dataset; a pooled score is not an acceptance criterion. Production
 inference is the Rust path via `export-rust`.
@@ -51,6 +51,16 @@ inference is the Rust path via `export-rust`.
 - Real-data validation runs on a wall-clock cadence (hourly in full-run configs) rather than
   waiting for the end of multi-hour streaming epochs, plus one final check if needed. Early-stop
   patience counts checks.
+- `ChromRunbook` owns its dataset name -> row map, so a corpus that gains a source cannot
+  renumber rows that are already trained, and the map travels with the weights it indexes
+  through the checkpoint and into the exported artifact.
+- A published spectral library can be read, scored, and fitted against in Rust. `fit-context`
+  gradient-descends one acquisition context row against a library with the backbone frozen,
+  stores it in the artifact under a name, and `--ms-context NAME` then predicts with it. On the
+  timsTOF heron library a fitted row moved held-out agreement 0.4691 -> 0.5316 where borrowing
+  the closest existing instrument row reached only 0.5026.
+- The RT losses mask per row, so a source carrying only one of the two retention labels is
+  supervised on what it has instead of being dropped from the corpus.
 - The full preparation config selects all non-test `prospect`, `tmt`, `multi_ptm`, and `tmt_ptm`
   archives. The separately labelled `test_ptm` record is excluded from training.
 
@@ -66,9 +76,8 @@ inference is the Rust path via `export-rust`.
    adapter version, and precursor/transition counts.
 4. **Characterize mobility calibration.** Recheck the CCS-to-1/K0 residual on the larger model
    and data run before deciding whether calibration belongs in training or export.
-5. **Close checkpoint/data-contract debt.** Serialize dataset names atomically with
-   `ChromRunbook` rows, remove obsolete test-only real-data decode paths, and consolidate the
-   duplicated RT-normalization implementations.
+5. **Close checkpoint/data-contract debt.** Remove obsolete test-only real-data decode paths and
+   consolidate the duplicated RT-normalization implementations.
 6. **Evaluate representation augmentation.** Compare the 1%-of-peptides chemistry-preserving
    substitution run against an unaugmented control before changing its rate or policy.
 7. **Regenerate vendored UNIMOD assets reproducibly.** Refresh the generation logic from the
@@ -84,14 +93,10 @@ inference is the Rust path via `export-rust`.
    combinations instead of relying mostly on incidental variable modifications. Measure
    modified-peptide spectral agreement separately by modification class and retain an
    unmodified control so improved PTM behavior cannot hide a base-peptide regression.
-10. **Fit context rows in Rust.** Given a library and a trained checkpoint, allocate a context row
-    and gradient-descend only that row against the library's spectra, leaving the backbone frozen.
-    Two questions share this one mechanism: what chromatography row makes a new run's RT
-    predictable, and what acquisition context a library with no recorded instrument or collision
-    energy behaves like. It is a 16-to-32-dimensional fit against a frozen model, so it belongs
-    beside inference in the Rust runtime rather than in the training stack; the Python
-    `freeze_backbone` path already does the equivalent and can serve as the reference
-    implementation to check it against.
+10. **Train on a corpus that includes a spectral library.** The reader, the per-row RT masking,
+    and the named acquisition row are all in place; what is missing is the decision of whether a
+    library enters as a prepared source or as extra shards, and threading `setup_id` through the
+    batch so its row trains alongside the factor terms rather than only being fitted afterwards.
 
 11. **Decay the learning rate during real-data training.** The stage runs at a constant `lr`, and
     the first full local run's validation agreement oscillated in a 0.4% band from epoch 3 to

@@ -41,12 +41,21 @@ pub struct Prediction {
     pub fragments: Fragments,
 }
 
-/// Optional MS acquisition context, parsed by the caller.
-pub struct MsContext {
-    pub instrument: String,
-    pub detector: String,
-    pub fragmentation: String,
-    pub energy: Option<f32>,
+/// How the caller addressed the MS acquisition side.
+///
+/// Two ways in, not two spellings of one: `Factors` composes the context out of recorded
+/// metadata through the encoder, which is available only because the source recorded that
+/// metadata. `Named` is for a source that recorded none — a published library reports no
+/// instrument and no collision energy — and points at a row fitted against its spectra.
+#[derive(Clone)]
+pub enum MsContext {
+    Factors {
+        instrument: String,
+        detector: String,
+        fragmentation: String,
+        energy: Option<f32>,
+    },
+    Named(String),
 }
 
 /// Context terms resolved once for repeated predictions with one acquisition setup.
@@ -64,13 +73,18 @@ impl PreparedContext {
         chrom_context: Option<&str>,
     ) -> Result<Self> {
         let predictor = Predictor::new(art);
+        // Both arms end at the same projection: a fitted row lives in the space the encoder
+        // produces, so it has to reach the heads the way an encoded context does.
         let ms_shift = match ms_context {
-            Some(c) => Some(predictor.ms_context_shift(
-                &c.instrument,
-                &c.detector,
-                &c.fragmentation,
-                c.energy,
-            )?),
+            Some(MsContext::Factors {
+                instrument,
+                detector,
+                fragmentation,
+                energy,
+            }) => Some(predictor.ms_context_shift(instrument, detector, fragmentation, *energy)?),
+            Some(MsContext::Named(setup)) => {
+                Some(predictor.context_shift(predictor.named_ms_context(setup)?.view())?)
+            }
             None => None,
         };
         // A named dataset supplies both its feature shift and output affine. Resolving only one
