@@ -243,9 +243,9 @@ in_memory = true
 ### Audit a finished corpus, and the teacher's ceiling on it
 
 Both commands are read-only and regenerate a committed Markdown view beside their JSON, so the
-numbers in `docs/` stay reproducible rather than hand-maintained. Note the report's `rows retained`
-counts rows on disk while the manifest's `split_rows` counts rows training sees; they differ by rows
-with non-finite iRT, which are published but filtered out by the loader.
+numbers in `docs/` stay reproducible rather than hand-maintained. The report's `rows retained` and
+the manifest's `split_rows` now count the same population: a row missing an RT label is trained on
+what it does carry, so the loader admits every published row of the split.
 
 ```bash
 # Per-source retention, empty shards, unusable intensity, clamped windows.
@@ -440,7 +440,7 @@ does not take a bare peptide, and it enumerates charges 2–4 by default:
 ```bash
 printf '>p\nPEPTIDER\n' > one.fasta
 pepdistill predict --model runs/full/model.ckpt --fasta one.fasta -o one.parquet \
-  --ms-context "Lumos::FTMS::HCD::30"     # torch runtime only; needs a saved encoder
+  --ms-context "Lumos::FTMS::HCD::30"     # or a fitted setup name; needs a saved encoder
 ```
 
 ## Outputs recap

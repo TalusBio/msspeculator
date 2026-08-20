@@ -136,6 +136,10 @@ pepdistill predict --model work/model.ckpt --fasta proteome.fasta -o library.par
 pepdistill predict --model work/model.ckpt --fasta proteome.fasta -o library.parquet --nce 30
 ```
 
+`--ms-context` also takes the bare name of an acquisition setup fitted with `pepdistill-cli
+fit-context`, for a library that records no instrument or collision energy to compose a context
+from. The `::` separator is what tells the two forms apart.
+
 RT and CCS are always predicted context-free (RT through the runbook's neutral/iRT row); only
 MS2 fragment intensities move with `--ms-context`/`--nce`.
 

@@ -16,6 +16,14 @@ a missing factor contributes the zero/neutral value.
 CCS is single-point for now (mobility distribution deferred). CCS is deliberately peptide+charge
 only — no MS Context.
 
+Beside the factors, `MSContextEncoder` carries a table of **named acquisition setups**: rows
+addressed by name, additive and zero-init like the factor terms. A source that records no factors
+has nothing for them to compose from — a published library reports no instrument and no collision
+energy, and a timsTOF ramps energy with ion mobility — so its offset from the base model is fitted
+as a row instead (`pepdistill-cli fit-context --save-as NAME`) and addressed with
+`--ms-context NAME`. This does not weaken the neutral convention: a source nobody named uses row
+0 and changes nothing.
+
 ## Module tree (shapes; N batch, S residues, E model dim, W fragment channels)
 
 ```
@@ -73,7 +81,10 @@ defaults, no `resolve_ce`, no fabricated NCE.
 - `distill/lightning.py` and `distill/context_regime.py` pass raw MS factors and dataset ids.
   Parameter-efficient context-only fitting can freeze the student backbone.
 - `models/registry.py` persists `MSContextEncoder`, `ChromRunbook`, and `dataset_index` in the
-  checkpoint contract; Rust export carries the corresponding tensors and metadata.
+  checkpoint contract; Rust export carries the corresponding tensors and metadata. Both name
+  indices travel with the weights they index — the runbook owns its dataset names, the encoder its
+  setup names — because a row stored apart from its name let a growing corpus renumber one while
+  the other stayed put.
 - Teacher batches carry their fixed acquisition factors and per-row NCE; real-data batches use
   recorded metadata, with missing energy represented as missing rather than imputed.
 
@@ -93,3 +104,5 @@ defaults, no `resolve_ce`, no fabricated NCE.
 - freeze_backbone: only MSContextEncoder + ChromRunbook params receive grad.
 - Checkpoint round-trip: encoder + runbook + dataset_index reload and reproduce predictions.
 - Parity guard: predict path (`predict/fast.py`, CLI `--ms-context`/`--nce`) maps to the new factors.
+- Named setup: a row fitted in Rust and addressed by name predicts what the same vector predicts
+  through the torch path, and an unknown name is refused rather than served from row 0.

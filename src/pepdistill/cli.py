@@ -280,7 +280,7 @@ def predict(
         "--ms-context",
         help=(
             "Full acquisition context 'INSTRUMENT::DETECTOR::FRAGMENTATION::ENERGY', "
-            "e.g. Lumos::FTMS::HCD::30."
+            "e.g. Lumos::FTMS::HCD::30, or the bare name of a fitted acquisition setup."
         ),
     ),
     enzyme: str = "trypsin",
@@ -317,19 +317,23 @@ def predict(
     else:
         precs = frame_to_precursors(pd.read_parquet(precursors))
 
-    # Resolve MS context: --ms-context "INSTRUMENT::DETECTOR::FRAGMENTATION::ENERGY" wins;
-    # else --nce is a shorthand for unknown categoricals + energy only.
-    instrument, detector, fragmentation = "", "", ""
-    if ms_context is not None:
+    # Resolve MS context. `--ms-context` is either four `::`-separated factors or the bare name of
+    # a setup fitted into the checkpoint; the separator tells them apart, exactly as in the Rust
+    # CLI. `--nce` is a shorthand for unknown categoricals + energy only.
+    instrument, detector, fragmentation, setup = "", "", "", None
+    if ms_context is not None and "::" not in ms_context:
+        setup = ms_context
+    elif ms_context is not None:
         parts = ms_context.split("::")
         if len(parts) != 4:
             raise typer.BadParameter(
-                "--ms-context must be 'INSTRUMENT::DETECTOR::FRAGMENTATION::ENERGY'"
+                "--ms-context must be 'INSTRUMENT::DETECTOR::FRAGMENTATION::ENERGY' "
+                "or the bare name of a fitted acquisition setup"
             )
         instrument, detector, fragmentation, nce = parts[0], parts[1], parts[2], float(parts[3])
 
     ms_ctx_vec = None
-    if nce is not None:
+    if nce is not None or setup is not None:
         from .models.registry import load_context
 
         ctx = load_context(model)
@@ -338,19 +342,28 @@ def predict(
                 f"{model} has no saved acquisition encoder; can't condition MS2"
             )
         enc = ctx.encoder
+        try:
+            setup_id = torch.tensor([0 if setup is None else enc.setup_row(setup)])
+        except KeyError as exc:
+            raise typer.BadParameter(str(exc)) from None
         ms_ctx_vec = (
             enc(
                 torch.tensor([enc.instrument_id(instrument)]),
                 torch.tensor([enc.detector_id(detector)]),
                 torch.tensor([enc.fragmentation_id(fragmentation)]),
-                torch.tensor([float(nce)]),
+                None if nce is None else torch.tensor([float(nce)]),
+                setup_id=setup_id,
             )
             .detach()
             .numpy()[0]
         )
+        described = (
+            setup
+            if setup is not None
+            else (f"{instrument or '-'}::{detector or '-'}::{fragmentation or '-'}::{nce}")
+        )
         typer.echo(
-            f"context-aware: {instrument or '-'}::{detector or '-'}::"
-            f"{fragmentation or '-'}::{nce} "
+            f"context-aware: {described} "
             f"-> ms_context |v|={float((ms_ctx_vec**2).sum() ** 0.5):.3f}"
         )
     runner = TorchRunner(load_checkpoint(model), resolve_device(device), ms_context=ms_ctx_vec)

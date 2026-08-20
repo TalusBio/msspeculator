@@ -1,6 +1,7 @@
 """Vectorized predictor matches the reference."""
 
 import numpy as np
+import torch
 
 from pepdistill.chem import Peptide
 from pepdistill.data.precursors import Precursor
@@ -46,8 +47,6 @@ def test_fast_empty_on_high_threshold():
 
 def test_torch_runner_stores_ms_context(tmp_path):
     from pepdistill.models.context import MSContextEncoder
-    from pepdistill.models.registry import build_student
-    import torch
 
     m = build_student("small")
     enc = MSContextEncoder(context_dim=m.cfg.context_dim)
@@ -64,3 +63,84 @@ def test_torch_runner_stores_ms_context(tmp_path):
     )
     runner = TorchRunner(m, torch.device("cpu"), ms_context=ctx)
     assert isinstance(runner.ms_context, np.ndarray)
+
+
+def _checkpoint_with_a_named_setup(tmp_path):
+    """A checkpoint carrying one fitted acquisition setup, weights randomized so the row is not
+    the neutral one."""
+    from pepdistill.models.context import ChromRunbook, MSContextEncoder
+    from pepdistill.models.registry import save_checkpoint
+
+    torch.manual_seed(0)
+    model = build_student("flash")
+    encoder = MSContextEncoder(model.cfg.context_dim)
+    encoder.ensure_setups(["Evosep60SPD_heron"])
+    torch.nn.init.normal_(encoder.setup_emb.weight, std=0.3)
+    model.set_norm(31.0, 4.0, 410.0, 25.0)
+    path = tmp_path / "m.ckpt"
+    save_checkpoint(
+        model,
+        path,
+        encoder=encoder,
+        runbook=ChromRunbook(1, model.cfg.context_dim),
+        dataset_index={"ds": 1},
+    )
+    return path, encoder
+
+
+def test_predict_takes_a_named_setup_as_ms_context(tmp_path):
+    """`--ms-context` accepts a bare setup name in the torch CLI too, or the two runtimes would
+    disagree about what the same flag means."""
+    from typer.testing import CliRunner
+
+    from pepdistill.cli import app
+
+    path, _ = _checkpoint_with_a_named_setup(tmp_path)
+    fasta = tmp_path / "one.fasta"
+    fasta.write_text(">p\nPEPTIDEK\n")
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "predict",
+            "--model",
+            str(path),
+            "--fasta",
+            str(fasta),
+            "-o",
+            str(tmp_path / "lib.parquet"),
+            "--ms-context",
+            "Evosep60SPD_heron",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    # The row is randomized, so a neutral context would report a zero-length vector.
+    assert "context-aware: Evosep60SPD_heron -> ms_context |v|=" in result.output
+    assert "|v|=0.000" not in result.output
+
+
+def test_predict_refuses_a_setup_the_checkpoint_has_no_row_for(tmp_path):
+    from typer.testing import CliRunner
+
+    from pepdistill.cli import app
+
+    path, _ = _checkpoint_with_a_named_setup(tmp_path)
+    fasta = tmp_path / "one.fasta"
+    fasta.write_text(">p\nPEPTIDEK\n")
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "predict",
+            "--model",
+            str(path),
+            "--fasta",
+            str(fasta),
+            "-o",
+            str(tmp_path / "lib.parquet"),
+            "--ms-context",
+            "never_fitted",
+        ],
+    )
+    assert result.exit_code != 0
+    assert "never_fitted" in result.output and "Evosep60SPD_heron" in result.output
