@@ -26,12 +26,9 @@ from pepdistill.distill.context_regime import (
     RealSpeclibModule,
     _RealPlateauDecay,
     _RealValidationEarlyStop,
-    _build_examples,
     establish_rt_norm,
-    fit_realspeclib,
     fit_realspeclib_datasets,
 )
-from pepdistill.data.prospect import RealLabels
 from pepdistill.models.context import ChromRunbook, MSContextEncoder
 from pepdistill.models.registry import build_student
 from pepdistill.teacher.base import PrecursorLabels
@@ -60,31 +57,55 @@ def _make_examples(n: int) -> list[RealExample]:
     ]
 
 
-def _real():
+def _two_run_examples(encoder: MSContextEncoder) -> tuple[list[RealExample], list[str]]:
+    """One dataset observed through two runs whose raw RT differs by a fixed offset.
+
+    Both runs share the dataset row: raw RT is keyed per dataset, not per raw file, so the row
+    has to absorb their offset from the iRT frame. Splits come from the project's own hash, so a
+    peptide's mod-forms and charges stay on one side of it.
+    """
     aa = "ACDEFGHIKLMNPQRSTVWY"
     seqs = ["".join(aa[(i * 7 + j * 3) % 20] for j in range(8 + i % 4)) + "K" for i in range(40)]
     base = FakeTeacher().predict([Precursor(Peptide(s), 2, "t") for s in seqs])
-    precs, labels, raw_rt, sources = [], [], [], []
-    for s, lab in zip(seqs, base):
-        split = assign_split(s, SplitConfig())
-        for src, off in (("rfA", 0.0), ("rfB", OFFSET)):
-            precs.append(Precursor(Peptide(s), 2, split))
-            labels.append(PrecursorLabels(ms2=lab.ms2, rt=lab.rt, ccs=float("nan")))
-            raw_rt.append(lab.rt + off)
-            sources.append(src)
-    return RealLabels(precs, labels, raw_rt, sources, {"rfA": {}, "rfB": {}}), seqs
+    examples = []
+    for sequence, label in zip(seqs, base):
+        split = assign_split(sequence, SplitConfig())
+        for offset in (0.0, OFFSET):
+            examples.append(
+                RealExample(
+                    precursor=Precursor(Peptide(sequence), 2, split),
+                    label=PrecursorLabels(ms2=label.ms2, rt=label.rt, ccs=float("nan")),
+                    raw_rt=label.rt + offset,
+                    instrument_id=encoder.instrument_id("Lumos"),
+                    detector_id=0,
+                    fragmentation_id=0,
+                    energy=float("nan"),
+                    dataset_id=1,
+                )
+            )
+    return examples, seqs
 
 
 def test_runbook_learns_dataset_offset():
-    real, seqs = _real()  # existing fixture; two raw_files, one dataset
     model = build_student("small")
-    module = fit_realspeclib(
+    encoder = MSContextEncoder(context_dim=model.cfg.context_dim)
+    examples, seqs = _two_run_examples(encoder)
+    train = [e for e in examples if e.precursor.split != "val"]
+    labels = [e.label.rt for e in train]
+    assert establish_rt_norm(model, [(len(labels), sum(labels), sum(v * v for v in labels))]), (
+        "the affine must be set before fitting, or the RT head trains in the wrong units"
+    )
+
+    module = fit_realspeclib_datasets(
         model,
-        real,
+        RealSpeclibDataset(train),
+        RealSpeclibDataset([e for e in examples if e.precursor.split == "val"]),
+        runbook=ChromRunbook(1, model.cfg.context_dim),
+        dataset_index={"dsA": 1},
+        encoder=encoder,
         epochs=60,
         batch_size=32,
         accelerator="cpu",
-        dataset_name="dsA",
         enable_progress_bar=False,
     )
     assert module.dataset_index == {"dsA": 1}
@@ -97,37 +118,6 @@ def test_runbook_learns_dataset_offset():
         rt_ds = m.forward(b, chrom_context=module.runbook(ds_row))["rt"]
         rt_irt = m.forward(b, chrom_context=module.runbook(torch.tensor([0])))["rt"]
     assert not torch.allclose(rt_ds, rt_irt)
-
-
-def test_build_examples_uses_config_instrument_not_per_run_metadata():
-    """PROSPECT acquisition metadata carries no instrument column, so instrument must come from
-    the config constant (threaded through fit_realspeclib) rather than a per-run lookup — every
-    example gets the same instrument_id regardless of source, even if a run's acquisition dict
-    happened to carry an 'instrument' key."""
-    real, _ = _real()
-    real.acquisition["rfB"]["instrument"] = "QExactive"  # per-run value must be ignored
-    encoder = MSContextEncoder(context_dim=8)
-    examples = _build_examples(real, encoder, dataset_id=1, instrument="Lumos")
-    expected = encoder.instrument_id("Lumos")
-    assert all(e.instrument_id == expected for e in examples)
-
-
-def test_fit_realspeclib_threads_instrument_into_examples():
-    real, _ = _real()
-    model = build_student("small")
-    module = fit_realspeclib(
-        model,
-        real,
-        epochs=1,
-        batch_size=32,
-        accelerator="cpu",
-        dataset_name="dsA",
-        instrument="Lumos",
-        enable_progress_bar=False,
-    )
-    expected = module.encoder.instrument_id("Lumos")
-    examples = _build_examples(real, module.encoder, dataset_id=1, instrument="Lumos")
-    assert all(e.instrument_id == expected for e in examples)
 
 
 def test_freeze_backbone_trains_only_context():

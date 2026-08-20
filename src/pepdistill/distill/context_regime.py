@@ -32,7 +32,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any, Protocol
 
 import lightning as L
 import numpy as np
@@ -44,7 +44,7 @@ from ..data.augmentation import substitute_residues
 from ..data.encode import Batch
 from ..diagnostics import SA_HISTOGRAM_BINS, SA_HISTOGRAM_EDGES
 from ..data.precursors import Precursor
-from ..eval import best_per_key, ms2_intensity, precursor_key
+
 from ..models.context import ChromRunbook, MSContextEncoder
 from ..models.registry import save_checkpoint
 from ..models.student import StudentModel
@@ -52,9 +52,6 @@ from ..teacher.base import PrecursorLabels
 from .dataset import BatchIterable, LabeledBatch, MSFactors, collate_with_labels, iter_batch_indices
 from .lightning import build_trainer
 from .losses import labeled_mse, mod_align_loss, ms2_cosine_loss, spectral_angle
-
-if TYPE_CHECKING:
-    from ..data.prospect import RealLabels
 
 
 @dataclass(slots=True)
@@ -88,6 +85,22 @@ class RealBatch:
             dataset_id=self.dataset_id.to(device),
             ms_factors=self.ms_factors.to(device),
         )
+
+
+class BatchSource(Protocol):
+    """What the trainer needs of a dataset: a row count, and this epoch's batches.
+
+    Two implementations satisfy it — the in-memory :class:`RealSpeclibDataset` below and the
+    streaming ``PreparedStreamingDataset``, which is what production passes. Annotating the
+    concrete in-memory class named only one of the two and would have made a type checker
+    reject the real call site.
+    """
+
+    def __len__(self) -> int: ...
+
+    def batches(
+        self, batch_size: int, shuffle: bool, generator: torch.Generator
+    ) -> Iterator[RealBatch]: ...
 
 
 class RealSpeclibDataset:
@@ -740,47 +753,6 @@ class _RealCheckpoint(L.Callback):
             self._save("latest.ckpt", trainer, pl_module, values, int(trainer.global_step))
 
 
-def _build_examples(
-    real: RealLabels, encoder: MSContextEncoder, dataset_id: int, instrument: str
-) -> list[RealExample]:
-    """Turn ``RealLabels`` (parallel columns) into per-example records, resolving each run's
-    acquisition factors ONCE (few runs, many examples) and reusing them across its examples.
-    Every example shares the same ``dataset_id`` (RT is keyed per dataset, not per raw_file) and
-    the same ``instrument`` — a pool-level constant threaded from config, not per-run metadata
-    (PROSPECT carries no instrument column)."""
-
-    def acq(name: str, key: str, default):
-        return real.acquisition.get(name, {}).get(key, default)
-
-    names = set(real.source_ids)
-    inst_id = encoder.instrument_id(instrument)
-    det_of = {n: encoder.detector_id(acq(n, "mass_analyzer", "")) for n in names}
-    frag_of = {n: encoder.fragmentation_id(acq(n, "fragmentation", "")) for n in names}
-    energy_of = {n: float(acq(n, "collision_energy", float("nan"))) for n in names}
-
-    return [
-        RealExample(
-            precursor=p,
-            label=lab,
-            raw_rt=float(rrt),
-            instrument_id=inst_id,
-            detector_id=det_of[s],
-            fragmentation_id=frag_of[s],
-            energy=energy_of[s],
-            dataset_id=dataset_id,
-        )
-        for p, lab, rrt, s in zip(real.precursors, real.labels, real.raw_rt, real.source_ids)
-    ]
-
-
-def _dedupe_val(examples: list[RealExample], dataset_name: str | None) -> list[RealExample]:
-    """Keep one best-quality example per (dataset, modified_sequence, charge) so abundant
-    peptides don't dominate the val metric. Train keeps every observation."""
-    keys = [precursor_key(e.precursor, dataset_name) for e in examples]
-    quality = [ms2_intensity(e.label) for e in examples]
-    return [examples[i] for i in best_per_key(quality, keys)]
-
-
 def establish_rt_norm(model: StudentModel, stats: list[tuple[int, float, float]]) -> bool:
     """Set the global RT affine from combined ``(n, sum, sumsq)`` iRT statistics.
 
@@ -814,8 +786,8 @@ def establish_rt_norm(model: StudentModel, stats: list[tuple[int, float, float]]
 
 def fit_realspeclib_datasets(
     model: StudentModel,
-    train_ds: RealSpeclibDataset,
-    val_ds: RealSpeclibDataset | None,
+    train_ds: BatchSource,
+    val_ds: BatchSource | None,
     *,
     runbook: ChromRunbook,
     dataset_index: dict[str, int],
@@ -845,10 +817,9 @@ def fit_realspeclib_datasets(
 ) -> RealSpeclibModule:
     """Fit on datasets the caller already built.
 
-    Split out of :func:`fit_realspeclib` so the prepared path can pass a
-    ``PreparedStreamingDataset`` for both train and validation. Both only have to expose
-    ``batches(batch_size, shuffle, generator)``. Normalisation is NOT touched here:
-    the caller establishes the RT affine before training (see :func:`establish_rt_norm`).
+    Takes any :class:`BatchSource`, which is how the prepared path passes a
+    ``PreparedStreamingDataset`` for both train and validation. Normalisation is NOT touched
+    here: the caller establishes the RT affine before training (see :func:`establish_rt_norm`).
 
     Global RNG seeding is the CALLER's responsibility (e.g. via ``L.seed_everything``) — this
     function does not call it. ``seed`` here only threads into ``BatchIterable`` to fix the
@@ -961,98 +932,3 @@ def fit_realspeclib_datasets(
         )
         trainer.validate(module, val_loader, verbose=False)
     return module
-
-
-def fit_realspeclib(
-    model: StudentModel,
-    real: RealLabels,
-    *,
-    context_dim: int | None = None,
-    epochs: int = 20,
-    batch_size: int = 128,
-    lr: float = 1e-3,
-    weight_decay: float = 1e-5,
-    loss_weights: tuple[float, float, float] = (1.0, 1.0, 1.0),
-    grad_clip: float = 1.0,
-    seed: int = 0,
-    accelerator: str = "auto",
-    dataset_name: str | None = None,
-    instrument: str = "Lumos",
-    encoder: MSContextEncoder | None = None,
-    runbook: ChromRunbook | None = None,
-    freeze_backbone: bool = False,
-    mod_align_weight: float = 1.0,
-    **trainer_kwargs,
-) -> RealSpeclibModule:
-    """Train on real spectra with per-run context. ``ms_context`` comes from the acquisition
-    factors via a :class:`MSContextEncoder`; ``chrom_context`` from a per-dataset
-    :class:`ChromRunbook` (row 0 = iRT/neutral). Pass an existing ``encoder``/``runbook`` to
-    continue a curriculum (share them with the warmup); their ``context_dim`` must match the
-    model's. Set ``freeze_backbone`` to adapt to a run by fitting only the context (PEFT).
-    ``dataset_name`` is both the val dedup key's dataset label and the runbook row key (one
-    dataset -> one row for now; RT is keyed per dataset, not per raw_file — coarser but good
-    enough to start). ``instrument`` is a pool-level constant (default "Lumos" for PROSPECT,
-    which has no per-run instrument metadata) applied to every example, on equal footing with
-    detector/fragmentation. Returns the module (``.model``/``.encoder``/``.runbook`` trained;
-    ``.dataset_index`` maps dataset name -> chrom_context row)."""
-    L.seed_everything(seed, verbose=False)
-    cdim = context_dim or model.cfg.context_dim
-    if cdim <= 0:
-        raise ValueError(f"context_dim must be positive to condition on acquisition, got {cdim}")
-    if encoder is not None and encoder.context_dim != cdim:
-        raise ValueError(f"encoder context_dim {encoder.context_dim} != model's {cdim}")
-    if runbook is not None and runbook.context_dim != cdim:
-        raise ValueError(f"runbook context_dim {runbook.context_dim} != model's {cdim}")
-    encoder = encoder or MSContextEncoder(context_dim=cdim)
-
-    # One dataset -> one runbook row (row 0 is reserved for iRT/neutral).
-    key = dataset_name or "default"
-    dataset_index = {key: 1}
-    runbook = runbook or ChromRunbook(n_datasets=len(dataset_index), context_dim=cdim)
-
-    examples = _build_examples(real, encoder, dataset_index[key], instrument)
-    train = [e for e in examples if e.precursor.split != "val"]
-    val = [e for e in examples if e.precursor.split == "val"]
-
-    # RT/CCS scale is ONE global affine, established once at cold start and never re-set when
-    # a dataset is added — per-dataset RT variation is the ChromRunbook's job, not the norm's.
-    # So establish it here only on a cold start (real-only, no pretrain); in a pretrain->real
-    # curriculum, inherit the frame the pretrain stage set rather than recalibrating the
-    # head mid-stream.
-    #
-    # CCS is never touched here at all: PROSPECT carries no CCS, so this regime has nothing
-    # to estimate from, and writing an identity norm would overwrite the pretrain
-    # calibration, leaving a trained head whose predictions denormalize to raw standardized
-    # values.
-    if not bool(model.norm_established):
-        labeled = np.array([e.label.rt for e in train], dtype=np.float64)
-        labeled = labeled[np.isfinite(labeled)]
-        if not labeled.size:
-            raise ValueError(
-                "no iRT labels to establish the RT affine from; every training example in this "
-                "source reports its own retention time only"
-            )
-        model.set_norm(rt_mean=float(labeled.mean()), rt_std=float(labeled.std() or 1.0))
-
-    train_ds = RealSpeclibDataset(train)
-    val_ds = RealSpeclibDataset(_dedupe_val(val, dataset_name)) if val else None
-
-    return fit_realspeclib_datasets(
-        model,
-        train_ds,
-        val_ds,
-        runbook=runbook,
-        dataset_index=dataset_index,
-        encoder=encoder,
-        epochs=epochs,
-        batch_size=batch_size,
-        lr=lr,
-        weight_decay=weight_decay,
-        loss_weights=loss_weights,
-        grad_clip=grad_clip,
-        seed=seed,
-        accelerator=accelerator,
-        freeze_backbone=freeze_backbone,
-        mod_align_weight=mod_align_weight,
-        **trainer_kwargs,
-    )

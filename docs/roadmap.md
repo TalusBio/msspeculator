@@ -64,6 +64,13 @@ inference is the Rust path via `export-rust`.
   rows Python's grid carries, not a disagreement about the objective.
 - The RT losses mask per row, so a source carrying only one of the two retention labels is
   supervised on what it has instead of being dropped from the corpus.
+- The prepared catalog is complete and finalized: 5,174 shards, 21,003,479 rows, 41 datasets.
+- One real-data entry point (`fit_realspeclib_datasets`, over any `BatchSource`) and one RT
+  normalization (`establish_rt_norm`). The in-memory `RealLabels` fit path that carried a second
+  copy of both was reachable only from its own tests and is gone.
+- The vendored UNIMOD tables regenerate byte-identically from upstream: 40 nuclides and 1,560
+  modifications, verified 2026-08-20. `unimod.tsv`'s mass column stays a test fixture — mass is
+  computed from the composition and asserted against it on every row.
 - Real-data training decays `lr` on the same plateau signal early stopping watches, cutting the
   rate before the run is allowed to end. A horizon-based schedule does not apply to this stage:
   it ends wherever early stopping lands, and the first full local run stopped at epoch 8 of a
@@ -73,37 +80,31 @@ inference is the Rust path via `export-rust`.
 
 ## Next work
 
-1. **Complete and validate the full prepared catalog.** Run the global shard ranges, verify
-   restart/skip behavior, finalize the manifest, and record row counts and dataset coverage.
-2. **Train on the full non-test corpus.** Use the prepared manifest and run the five-preset sweep
+1. **Train on the full non-test corpus.** Use the prepared manifest and run the five-preset sweep
    (`flash`, `small-2h`, `small`, `base-4h`, `base`), retaining per-dataset metrics and comparing
    the useful candidates on the real search fixture.
-3. **Make library generation reproducible.** Write a manifest beside each generated library
+2. **Make library generation reproducible.** Write a manifest beside each generated library
    containing model identity, FASTA digest, digestion/modification settings, acquisition context,
    adapter version, and precursor/transition counts.
-4. **Characterize mobility calibration.** Recheck the CCS-to-1/K0 residual on the larger model
+3. **Characterize mobility calibration.** Recheck the CCS-to-1/K0 residual on the larger model
    and data run before deciding whether calibration belongs in training or export.
-5. **Close checkpoint/data-contract debt.** Remove obsolete test-only real-data decode paths and
-   consolidate the duplicated RT-normalization implementations.
-6. **Evaluate representation augmentation.** Compare the 1%-of-peptides chemistry-preserving
+4. **Evaluate representation augmentation.** Compare the 1%-of-peptides chemistry-preserving
    substitution run against an unaugmented control before changing its rate or policy.
-7. **Regenerate vendored UNIMOD assets reproducibly.** Refresh the generation logic from the
-   upstream source and verify the checked-in result.
-8. **Validate prepared-data curation across the full corpus.** The `v2` preparation path now
+5. **Validate prepared-data curation across the full corpus.** The `v2` preparation path now
    estimates one robust peak width per raw file, centers it on each peptidoform apex across all
    charge/acquisition modes, requires four in-window PSMs, and retains the best two PSMs per
    charge/acquisition context. Compare its per-source retention and spectral-consistency reports
    with the unfiltered `v1` assets before making `v2` the training default. Replicate-consensus
    targets remain deferred.
-9. **Use richer teacher supervision for modification pretraining.** Inventory what the parent
+6. **Use richer teacher supervision for modification pretraining.** Inventory what the parent
    model exposes for modified peptides, then deliberately sample supported modification/site
    combinations instead of relying mostly on incidental variable modifications. Measure
    modified-peptide spectral agreement separately by modification class and retain an
    unmodified control so improved PTM behavior cannot hide a base-peptide regression.
-10. **Train on a corpus that includes a spectral library.** The reader, the per-row RT masking,
-    and the named acquisition row are all in place; what is missing is the decision of whether a
-    library enters as a prepared source or as extra shards, and threading `setup_id` through the
-    batch so its row trains alongside the factor terms rather than only being fitted afterwards.
+7. **Train on a corpus that includes a spectral library.** The reader, the per-row RT masking,
+   and the named acquisition row are all in place; what is missing is the decision of whether a
+   library enters as a prepared source or as extra shards, and threading `setup_id` through the
+   batch so its row trains alongside the factor terms rather than only being fitted afterwards.
 
 ## Parked
 
