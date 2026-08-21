@@ -56,6 +56,113 @@ pub fn apply_activation_override(artifact: &mut Artifact, activation: Option<&st
     Ok(())
 }
 
+/// Which serialization the library is written in.
+///
+/// Chosen from the output path rather than a flag of its own. The path already decides
+/// compression (`.gz`), and a format flag that can disagree with the extension is a defect
+/// waiting for a caller: `library.mzspeclib.txt` holding DIA-NN TSV is worse than no option.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LibraryFormat {
+    DiannTsv,
+    MzSpecLib,
+}
+
+impl LibraryFormat {
+    pub fn for_output(out: &str) -> Self {
+        let stem = out.strip_suffix(".gz").unwrap_or(out);
+        if stem.ends_with(".mzspeclib.txt") || stem.ends_with(".mzspeclib") {
+            Self::MzSpecLib
+        } else {
+            Self::DiannTsv
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::DiannTsv => "diann-tsv",
+            Self::MzSpecLib => "mzspeclib-text",
+        }
+    }
+}
+
+/// One kept transition, borrowed from the prediction it came out of.
+pub struct Peak<'a> {
+    pub mz: f64,
+    pub intensity: f64,
+    pub ion: &'a str,
+    pub ordinal: i64,
+    pub charge: i64,
+}
+
+/// One validated precursor, ready for any serialization.
+///
+/// Every field is already checked to be physical and the transition list is already capped, so a
+/// sink's only job is spelling: no sink can disagree with another about what the library contains.
+pub struct SpectrumRow<'a> {
+    pub stripped: &'a str,
+    pub protein_group: &'a str,
+    pub diann_sequence: &'a str,
+    /// ProForma spelling of the same peptidoform, e.g. `PEPC[UNIMOD:4]IDER`.
+    pub proforma: &'a str,
+    pub charge: i64,
+    pub precursor_mz: f64,
+    /// Monoisotopic mass of the neutral peptidoform, which is what a library states about an
+    /// analyte; the m/z above is the charged species this entry was predicted for.
+    pub neutral_mass: f64,
+    pub rt: f32,
+    pub mobility: f64,
+    pub peaks: Vec<Peak<'a>>,
+}
+
+/// A library serialization: one header, then one entry per precursor, in prediction order.
+pub trait LibrarySink {
+    /// `config` is the resolved configuration from [`resolve_config`], for formats that can carry
+    /// their own provenance. A format with nowhere to put it ignores the argument.
+    fn header(&mut self, config: &serde_json::Value) -> Result<()>;
+    fn spectrum(&mut self, row: &SpectrumRow<'_>) -> Result<()>;
+    /// Flush the stream. Called once, after the last spectrum: a buffered library that is never
+    /// flushed is a truncated library.
+    fn finish(&mut self) -> Result<()>;
+}
+
+struct DiannSink<W: Write> {
+    writer: W,
+}
+
+impl<W: Write> LibrarySink for DiannSink<W> {
+    fn header(&mut self, _config: &serde_json::Value) -> Result<()> {
+        writeln!(self.writer, "ModifiedPeptide\tStrippedPeptide\tPrecursorMz\tPrecursorCharge\tTr_recalibrated\tIonMobility\tProteinID\tDecoy\tFragmentMz\tFragmentType\tFragmentNumber\tFragmentCharge\tFragmentLossType\tRelativeIntensity")?;
+        Ok(())
+    }
+
+    fn spectrum(&mut self, row: &SpectrumRow<'_>) -> Result<()> {
+        for peak in &row.peaks {
+            writeln!(
+                self.writer,
+                "{}\t{}\t{:.8}\t{}\t{:.6}\t{:.8}\t{}\t0\t{:.8}\t{}\t{}\t{}\tnoloss\t{:.8}",
+                row.diann_sequence,
+                row.stripped,
+                row.precursor_mz,
+                row.charge,
+                row.rt,
+                row.mobility,
+                row.protein_group,
+                peak.mz,
+                peak.ion,
+                peak.ordinal,
+                peak.charge,
+                peak.intensity,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn finish(&mut self) -> Result<()> {
+        self.writer.flush()?;
+        Ok(())
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct LibraryStats {
     pub proteins: usize,
@@ -285,15 +392,13 @@ struct PredictedPeptide {
     predictions: Vec<Prediction>,
 }
 
-fn write_prediction<W: Write>(
-    writer: &mut W,
-    stats: &mut LibraryStats,
-    stripped: &str,
-    protein_group: &str,
-    diann_sequence: &str,
-    prediction: Prediction,
+/// Validate one prediction and cap its transition list.
+fn spectrum_row<'a>(
+    item: &'a PredictedPeptide,
+    prediction: &'a Prediction,
     max_fragments: Option<usize>,
-) -> Result<()> {
+) -> Result<SpectrumRow<'a>> {
+    let diann_sequence = item.diann_sequence.as_str();
     let charge = prediction.charge;
     if !prediction.precursor_mz.is_finite()
         || !prediction.rt.is_finite()
@@ -310,7 +415,6 @@ fn write_prediction<W: Write>(
             prediction.ccs
         );
     }
-    stats.precursors += 1;
     let mobility = ccs_to_bruker_mobility(prediction.ccs as f64, charge, prediction.precursor_mz);
     if !mobility.is_finite() || mobility <= 0.0 {
         bail!(
@@ -341,6 +445,7 @@ fn write_prediction<W: Write>(
             }
         }
     }
+    let mut peaks = Vec::new();
     #[allow(clippy::needless_range_loop)] // `i` indexes four parallel fragment columns, not one
     for i in 0..prediction.fragments.mz.len() {
         let fragment_mz = prediction.fragments.mz[i];
@@ -363,25 +468,26 @@ fn write_prediction<W: Write>(
         if !keep[i] {
             continue;
         }
-        writeln!(
-            writer,
-            "{}\t{}\t{:.8}\t{}\t{:.6}\t{:.8}\t{}\t0\t{:.8}\t{}\t{}\t{}\tnoloss\t{:.8}",
-            diann_sequence,
-            stripped,
-            prediction.precursor_mz,
-            charge,
-            prediction.rt,
-            mobility,
-            protein_group,
-            fragment_mz,
-            prediction.fragments.ion[i],
-            prediction.fragments.ord[i],
-            prediction.fragments.z[i],
+        peaks.push(Peak {
+            mz: fragment_mz,
             intensity,
-        )?;
-        stats.fragments += 1;
+            ion: prediction.fragments.ion[i].as_str(),
+            ordinal: prediction.fragments.ord[i],
+            charge: prediction.fragments.z[i],
+        });
     }
-    Ok(())
+    Ok(SpectrumRow {
+        stripped: item.stripped.as_str(),
+        protein_group: item.protein_group.as_str(),
+        diann_sequence,
+        proforma: prediction.peptide.as_str(),
+        charge,
+        precursor_mz: prediction.precursor_mz,
+        neutral_mass: (prediction.precursor_mz - pepdistill_core::chem::PROTON) * charge as f64,
+        rt: prediction.rt,
+        mobility,
+        peaks,
+    })
 }
 
 fn predict_batch(
@@ -421,29 +527,24 @@ fn predict_batch(
         .collect())
 }
 
-fn write_predicted_batch<W: Write>(
-    writer: &mut W,
+fn write_predicted_batch(
+    sink: &mut dyn LibrarySink,
     stats: &mut LibraryStats,
-    batch: Vec<PredictedPeptide>,
+    batch: &[PredictedPeptide],
     max_fragments: Option<usize>,
 ) -> Result<()> {
     for item in batch {
-        for prediction in item.predictions {
-            write_prediction(
-                writer,
-                stats,
-                &item.stripped,
-                &item.protein_group,
-                &item.diann_sequence,
-                prediction,
-                max_fragments,
-            )?;
+        for prediction in &item.predictions {
+            let row = spectrum_row(item, prediction, max_fragments)?;
+            stats.precursors += 1;
+            stats.fragments += row.peaks.len();
+            sink.spectrum(&row)?;
         }
     }
     Ok(())
 }
 
-pub fn write_diann_tsv(opts: &LibraryOptions<'_>) -> Result<LibraryStats> {
+pub fn write_library(opts: &LibraryOptions<'_>) -> Result<LibraryStats> {
     if !(0.0..=1.0).contains(&opts.min_intensity) {
         bail!(
             "min_intensity must be in [0, 1], got {}",
@@ -526,6 +627,14 @@ pub fn write_diann_tsv(opts: &LibraryOptions<'_>) -> Result<LibraryStats> {
     // Copied out of `opts` before the threads start: the writer closure is `move`, so borrowing
     // `opts` there would outlive it.
     let max_fragments = opts.max_fragments;
+    let format = LibraryFormat::for_output(opts.out);
+    let out_path = opts.out.to_string();
+    let normalized_retention = opts.chrom_context.is_none();
+    // Resolved before the first spectrum because an mzSpecLib header carries it, and a header is
+    // the first thing on the stream. The sidecar reuses the same value, so the copy bundled in
+    // the library and the copy beside it are the same copy.
+    let config = resolve_config(opts, format)?;
+    let header_config = config.clone();
     let writer_file =
         File::create(opts.out).with_context(|| format!("creating library {}", opts.out))?;
     // A `.gz` suffix compresses in the writer thread rather than in a second pass, so the
@@ -533,7 +642,7 @@ pub fn write_diann_tsv(opts: &LibraryOptions<'_>) -> Result<LibraryStats> {
     // gigabytes and the scratch volume is not.
     let compress = opts.out.ends_with(".gz");
     let writer_handle = thread::spawn(move || -> Result<LibraryStats> {
-        let sink: Box<dyn Write> = if compress {
+        let stream: Box<dyn Write> = if compress {
             Box::new(flate2::write::GzEncoder::new(
                 writer_file,
                 flate2::Compression::default(),
@@ -541,13 +650,21 @@ pub fn write_diann_tsv(opts: &LibraryOptions<'_>) -> Result<LibraryStats> {
         } else {
             Box::new(writer_file)
         };
-        let mut writer = BufWriter::new(sink);
-        writeln!(writer, "ModifiedPeptide\tStrippedPeptide\tPrecursorMz\tPrecursorCharge\tTr_recalibrated\tIonMobility\tProteinID\tDecoy\tFragmentMz\tFragmentType\tFragmentNumber\tFragmentCharge\tFragmentLossType\tRelativeIntensity")?;
+        let writer = BufWriter::new(stream);
+        let mut sink: Box<dyn LibrarySink> = match format {
+            LibraryFormat::DiannTsv => Box::new(DiannSink { writer }),
+            LibraryFormat::MzSpecLib => Box::new(crate::mzspeclib::MzSpecLibSink::new(
+                writer,
+                &out_path,
+                normalized_retention,
+            )),
+        };
+        sink.header(&header_config)?;
         let mut stats = stats;
         for result in result_rx {
-            write_predicted_batch(&mut writer, &mut stats, result?, max_fragments)?;
+            write_predicted_batch(sink.as_mut(), &mut stats, &result?, max_fragments)?;
         }
-        writer.flush()?;
+        sink.finish()?;
         Ok(stats)
     });
 
@@ -619,7 +736,7 @@ pub fn write_diann_tsv(opts: &LibraryOptions<'_>) -> Result<LibraryStats> {
         .join()
         .map_err(|_| anyhow::anyhow!("library writer panicked"))??;
     if let Some(path) = opts.config_out {
-        write_config(path, opts, &stats)?;
+        write_config(path, &config, &stats)?;
     }
     Ok(stats)
 }
@@ -645,12 +762,14 @@ fn file_digest(path: &str) -> Result<String> {
     Ok(out.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
-/// Write the fully resolved configuration beside the library.
+/// Resolve everything that determined the library's bytes.
 ///
-/// Everything that determined the bytes: the digests of the two inputs, every knob as resolved
-/// (not as typed -- defaults are recorded explicitly), and the counts that came out. A library
-/// whose provenance lives only in a shell history is one nobody can regenerate or trust.
-fn write_config(path: &str, opts: &LibraryOptions<'_>, stats: &LibraryStats) -> Result<()> {
+/// The digests of the two inputs and every knob as resolved, not as typed: defaults are recorded
+/// explicitly. Counts are not here -- they are only known once the library is written -- so
+/// [`write_config`] appends them. A library whose provenance lives only in a shell history is one
+/// nobody can regenerate or trust, which is why this value is both embedded (mzSpecLib) and
+/// written beside the library (sidecar) rather than reassembled per format.
+fn resolve_config(opts: &LibraryOptions<'_>, format: LibraryFormat) -> Result<serde_json::Value> {
     let ms_context = match opts.ms_context {
         Some(pepdistill_core::MsContext::Named(name)) => serde_json::json!({"setup": name}),
         Some(pepdistill_core::MsContext::Factors {
@@ -666,7 +785,7 @@ fn write_config(path: &str, opts: &LibraryOptions<'_>, stats: &LibraryStats) -> 
         }),
         None => serde_json::Value::Null,
     };
-    let config = serde_json::json!({
+    Ok(serde_json::json!({
         "generator": {
             "tool": "pepdistill-cli library",
             "version": env!("CARGO_PKG_VERSION"),
@@ -700,13 +819,22 @@ fn write_config(path: &str, opts: &LibraryOptions<'_>, stats: &LibraryStats) -> 
         },
         "output": {
             "path": opts.out,
+            "format": format.name(),
             "compressed": opts.out.ends_with(".gz"),
-            "proteins": stats.proteins,
-            "peptides": stats.peptides,
-            "precursors": stats.precursors,
-            "fragments": stats.fragments,
         },
-    });
+    }))
+}
+
+/// Write the resolved configuration, plus the counts that came out, beside the library.
+fn write_config(path: &str, config: &serde_json::Value, stats: &LibraryStats) -> Result<()> {
+    let mut config = config.clone();
+    let output = config["output"]
+        .as_object_mut()
+        .expect("resolve_config writes an object under `output`");
+    output.insert("proteins".into(), stats.proteins.into());
+    output.insert("peptides".into(), stats.peptides.into());
+    output.insert("precursors".into(), stats.precursors.into());
+    output.insert("fragments".into(), stats.fragments.into());
     std::fs::write(path, serde_json::to_string_pretty(&config)? + "\n")
         .with_context(|| format!("writing {path}"))
 }
@@ -759,6 +887,24 @@ mod tests {
         let fixed = parse_modification_rule("C[UNIMOD:4]").unwrap();
         let variable = parse_modification_rule("C[UNIMOD:2057]").unwrap();
         assert!(target_overlap(&fixed.target, &variable.target));
+    }
+
+    #[test]
+    fn output_suffix_picks_the_format_through_compression() {
+        for path in ["lib.mzspeclib.txt", "lib.mzspeclib.txt.gz", "lib.mzspeclib"] {
+            assert_eq!(
+                LibraryFormat::for_output(path),
+                LibraryFormat::MzSpecLib,
+                "{path}"
+            );
+        }
+        for path in ["lib.tsv", "lib.tsv.gz", "lib", "mzspeclib.tsv"] {
+            assert_eq!(
+                LibraryFormat::for_output(path),
+                LibraryFormat::DiannTsv,
+                "{path}"
+            );
+        }
     }
 
     #[test]

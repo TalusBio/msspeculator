@@ -372,7 +372,7 @@ launchpad run tools/launchpad_prepared_train.py --stage .launchpad/full-run-stag
 
 ## 4. Generate a library and search it
 
-Export once, then generate DIA-NN TSV directly in Rust. CCS is retained in prediction results;
+Export once, then generate the library directly in Rust. CCS is retained in prediction results;
 the DIA-NN adapter reports ion mobility as Bruker 1/K0.
 
 ```bash
@@ -382,6 +382,34 @@ cargo run -q --release -p pepdistill-cli -- \
   --ms-context "Lumos::FTMS::HCD::30"
 timsseek --raw-inputs sample.d --speclib-uri library.tsv --output-uri search-results
 ```
+
+#### Output format
+
+The `--out` suffix picks the format; there is no flag that could disagree with it.
+
+| suffix | format |
+| --- | --- |
+| `.mzspeclib.txt`, `.mzspeclib` | mzSpecLib text (HUPO-PSI) |
+| anything else | DIA-NN TSV |
+
+A trailing `.gz` compresses either one, in the writer thread, so the uncompressed form never
+exists on disk. Prefer `library.mzspeclib.txt.gz` for anything published: mzSpecLib carries the
+whole resolved configuration in its header -- the model and FASTA blake2b digests, every digestion
+and modification setting, the acquisition context -- so the library and its provenance cannot be
+separated by a copy. The `config.json` sidecar still holds the same content for the TSV, which
+carries none of it.
+
+Written by hand rather than through `mzannotate`: that crate re-derives every mass from a
+`rustyms` peptidoform, so a modification our chemistry accepts and its ontology does not would
+abort a whole-proteome run. Conformance is checked instead by the reference Python implementation:
+
+```bash
+uv run --with mzspeclib mzspeclib validate library.mzspeclib.txt   # expect no violations
+uv run --with mzspeclib pytest tests/test_rust_parity.py -k mzspeclib
+```
+
+`mzspeclib` is deliberately not a dev dependency: that group is installed by every `uv run`,
+including preparation workers, so the tests skip without it.
 
 ### Predict one peptide
 
@@ -444,6 +472,7 @@ Notes:
 - There is no fixed carbamidomethyl rule, because CysPAT *is* the alkylating agent. The CLI
   refuses a fixed rule overlapping a variable one, so this is enforced rather than assumed.
 - `<name>.tsv.gz.config.json` records the resolved settings and blake2b digests of both inputs.
+  An mzSpecLib output carries the same record inside the file, and writes the sidecar as well.
 
 ### Fit an acquisition context to a published library
 

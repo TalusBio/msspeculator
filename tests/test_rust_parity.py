@@ -7,6 +7,7 @@ max-abs-diff on ms2/rt/ccs/mz is tiny and print the deltas. Skipped without a Ru
 
 import csv
 import functools
+import gzip
 import json
 import shutil
 import subprocess
@@ -657,3 +658,110 @@ def test_a_fitted_context_can_be_saved_and_then_addressed_by_name(artifact, tmp_
     # The setup already in the artifact has to survive the write.
     assert enc.setups[NAMED_SETUP] == 1
     assert _rust(_binary(), out, ["--ms-context", NAMED_SETUP])["fragments"]["rel"]
+
+
+def _mzspeclib_library(artifact_path, directory, out_name):
+    """Generate a four-precursor mzSpecLib library and return its path."""
+    directory.mkdir(parents=True, exist_ok=True)
+    fasta = directory / "tiny.fasta"
+    fasta.write_text(">protein_one description\nPEPTIDEM\n")
+    out = directory / out_name
+    r = subprocess.run(
+        [
+            _binary(),
+            "library",
+            "--model",
+            str(artifact_path),
+            "--fasta",
+            str(fasta),
+            "--out",
+            str(out),
+            "--min-length",
+            "8",
+            "--max-length",
+            "8",
+            "--min-charge",
+            "2",
+            "--max-charge",
+            "3",
+            "--max-fragments",
+            "4",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert r.returncode == 0, r.stderr
+    return out
+
+
+def test_mzspeclib_output_is_readable_by_the_reference_implementation(artifact, tmp_path):
+    """The point of the format is that someone else's parser can read it, so let one.
+
+    Skipped unless the reference implementation is installed; it is deliberately not a dev
+    dependency, because that group reaches every `uv run` including preparation workers. Run it
+    with `uv run --with mzspeclib pytest tests/test_rust_parity.py -k mzspeclib`.
+    """
+    mzspeclib = pytest.importorskip("mzspeclib", reason="pip install mzspeclib to check validity")
+
+    out = _mzspeclib_library(artifact["path"], tmp_path, "library.mzspeclib.txt")
+    library = mzspeclib.SpectrumLibrary(filename=str(out))
+    spectra = list(library.read())
+    # PEPTIDEM and its oxidized form, at charges 2 and 3.
+    assert len(spectra) == 4
+    assert {spectrum.name for spectrum in spectra} == {
+        "PEPTIDEM/2",
+        "PEPTIDEM/3",
+        "PEPTIDEM[UNIMOD:35]/2",
+        "PEPTIDEM[UNIMOD:35]/3",
+    }
+    for spectrum in spectra:
+        analyte = spectrum.get_analyte(1)
+        assert analyte.get_attribute("MS:1000888|stripped peptide sequence") == "PEPTIDEM"
+        assert analyte.get_attribute("MS:1000885|protein accession") == "protein_one"
+        assert 0 < len(spectrum.peak_list) <= 4
+        for mz, intensity, annotations, *_ in spectrum.peak_list:
+            assert mz > 0 and 0 < intensity <= 1
+            assert annotations, "every predicted peak carries its mzPAF annotation"
+
+    # The provenance the sidecar carries is *in* the file, which is the whole reason for this
+    # format: pairs are grouped, so a name and its value share a group id.
+    named = {
+        attribute.group_id: attribute.value
+        for attribute in library.attributes
+        if attribute.key.endswith("other attribute name")
+    }
+    values = {
+        named[attribute.group_id]: attribute.value
+        for attribute in library.attributes
+        if attribute.key.endswith("other attribute value") and attribute.group_id in named
+    }
+    assert values["pepdistill:inputs.model"] == str(artifact["path"])
+    assert len(values["pepdistill:inputs.model_blake2b_256"]) == 64
+    assert str(values["pepdistill:fragments.max_fragments"]) == "4"
+    assert values["pepdistill:digestion.enzyme"] == "trypsin"
+    assert values["pepdistill:output.format"] == "mzspeclib-text"
+
+
+def test_mzspeclib_output_violates_no_rule_at_any_level(artifact, tmp_path):
+    """Parsing is not conformance: run the reference validator and require a clean log.
+
+    Every level, not just MUST -- a SHOULD violation is a reader having to guess at something the
+    format has a term for, which is the situation this export exists to end.
+    """
+    pytest.importorskip("mzspeclib", reason="pip install mzspeclib to check validity")
+    from mzspeclib import SpectrumLibrary
+    from mzspeclib.validate import validator
+
+    out = _mzspeclib_library(artifact["path"], tmp_path, "library.mzspeclib.txt")
+    chain = validator.load_default_validator()
+    chain.validate_library(SpectrumLibrary(filename=str(out)))
+    assert [error.message for error in chain.error_log] == []
+
+
+def test_mzspeclib_gzip_is_the_same_library_compressed(artifact, tmp_path):
+    """`.gz` runs through the same writer thread, so the two can differ only in compression."""
+    plain = _mzspeclib_library(artifact["path"], tmp_path / "plain", "library.mzspeclib.txt")
+    zipped = _mzspeclib_library(artifact["path"], tmp_path / "zipped", "library.mzspeclib.txt.gz")
+    # From the first spectrum on: the headers record their own paths, which differ by construction.
+    body = lambda text: text.split("<Spectrum=1>", 1)[1]  # noqa: E731
+    assert body(gzip.decompress(zipped.read_bytes()).decode()) == body(plain.read_text())

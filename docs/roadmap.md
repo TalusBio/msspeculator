@@ -1,6 +1,6 @@
 # Roadmap
 
-Updated 2026-08-20. The product milestone is a reproducible path from FASTA and prepared
+Updated 2026-08-21. The product milestone is a reproducible path from FASTA and prepared
 experimental data to a Rust-generated spectral library that produces useful search results.
 Validation is reported per dataset; a pooled score is not an acceptance criterion. Production
 inference is the Rust path via `export-rust`.
@@ -77,31 +77,37 @@ inference is the Rust path via `export-rust`.
   nominal 60. Off by default; the local full-run config cuts by half after 3 flat checks.
 - The full preparation config selects all non-test `prospect`, `tmt`, `multi_ptm`, and `tmt_ptm`
   archives. The separately labelled `test_ptm` record is excluded from training.
+- Library generation is reproducible and self-describing. One resolved configuration -- blake2b
+  digests of the model and the FASTA, every digestion/modification/context/fragment setting as
+  resolved, and the resulting counts -- is written beside the library as `config.json` and, for
+  mzSpecLib output, into the library header itself, so a published library cannot be separated
+  from its provenance by a copy. The format follows the `--out` suffix (`.mzspeclib.txt[.gz]`
+  against everything else) rather than a flag that could contradict it. The mzSpecLib writer is
+  ours, not `mzannotate`'s, because that crate re-derives masses from a `rustyms` peptidoform and
+  would abort a run over a modification it cannot parse; the reference Python implementation reads
+  the output back and reports no violations at any rule level.
 
 ## Next work
 
 1. **Train on the full non-test corpus.** Use the prepared manifest and run the five-preset sweep
    (`flash`, `small-2h`, `small`, `base-4h`, `base`), retaining per-dataset metrics and comparing
    the useful candidates on the real search fixture.
-2. **Make library generation reproducible.** Write a manifest beside each generated library
-   containing model identity, FASTA digest, digestion/modification settings, acquisition context,
-   adapter version, and precursor/transition counts.
-3. **Characterize mobility calibration.** Recheck the CCS-to-1/K0 residual on the larger model
+2. **Characterize mobility calibration.** Recheck the CCS-to-1/K0 residual on the larger model
    and data run before deciding whether calibration belongs in training or export.
-4. **Evaluate representation augmentation.** Compare the 1%-of-peptides chemistry-preserving
+3. **Evaluate representation augmentation.** Compare the 1%-of-peptides chemistry-preserving
    substitution run against an unaugmented control before changing its rate or policy.
-5. **Validate prepared-data curation across the full corpus.** The `v2` preparation path now
+4. **Validate prepared-data curation across the full corpus.** The `v2` preparation path now
    estimates one robust peak width per raw file, centers it on each peptidoform apex across all
    charge/acquisition modes, requires four in-window PSMs, and retains the best two PSMs per
    charge/acquisition context. Compare its per-source retention and spectral-consistency reports
    with the unfiltered `v1` assets before making `v2` the training default. Replicate-consensus
    targets remain deferred.
-6. **Use richer teacher supervision for modification pretraining.** Inventory what the parent
+5. **Use richer teacher supervision for modification pretraining.** Inventory what the parent
    model exposes for modified peptides, then deliberately sample supported modification/site
    combinations instead of relying mostly on incidental variable modifications. Measure
    modified-peptide spectral agreement separately by modification class and retain an
    unmodified control so improved PTM behavior cannot hide a base-peptide regression.
-7. **Train on a corpus that includes a spectral library.** The reader, the per-row RT masking,
+6. **Train on a corpus that includes a spectral library.** The reader, the per-row RT masking,
    and the named acquisition row are all in place; what is missing is the decision of whether a
    library enters as a prepared source or as extra shards, and threading `setup_id` through the
    batch so its row trains alongside the factor terms rather than only being fitted afterwards.

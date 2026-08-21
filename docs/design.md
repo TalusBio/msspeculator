@@ -14,7 +14,7 @@ FASTA ──digest/enumerate──> AlphaPeptDeep labels ──online pretrain�
                                                                   ├──> checkpoint
 Zenodo ──prepare shards──> immutable Parquet + manifest ──train───┘
                                                                        │
-                                   export-rust ──> safetensors ──> DIA-NN TSV ──> search
+                       export-rust ──> safetensors ──> DIA-NN TSV / mzSpecLib ──> search
 ```
 
 `pepdistill run` controls the `pretrain`, `train`, `export`, and `bench` stages from one TOML
@@ -63,8 +63,13 @@ like residue masses, are exported from the Rust chemistry authority.
 
 The Python predictor writes long-format Parquet. The production Rust path loads a self-contained,
 versioned `.safetensors` artifact, digests FASTA, batches equal-length precursors, and uses a
-bounded worker pool feeding one writer thread. FASTA output is a streaming DIA-NN TSV; precursor
-CCS is converted to ion mobility in 1/K0. Output row order is intentionally unspecified.
+bounded worker pool feeding one writer thread. FASTA output streams as either a DIA-NN TSV or an
+mzSpecLib text library, selected by the `--out` suffix and optionally gzipped in that same writer
+thread; precursor CCS is converted to ion mobility in 1/K0. Output row order is intentionally
+unspecified. Every precursor is validated and capped once, before any format sees it, so the two
+serializations cannot disagree about what the library contains -- only about how it is spelled.
+mzSpecLib additionally carries the resolved generation configuration in its header, which is the
+same record the `config.json` sidecar holds.
 
 The DIA-NN adapter has been exercised end to end with `timsseek` against a Bruker timsTOF run.
 Single-peptide JSON prediction remains available for parity checks and inspection.
@@ -79,7 +84,7 @@ pepdistill/models/     student architectures, presets, context encoders, checkpo
 pepdistill/distill/    pretrain/train loops, validation, early stopping, pipeline configuration
 pepdistill/predict/    reference and vectorized Python library generation
 rust/core/             shared chemistry, encoding, artifact reader, and student inference
-rust/cli/              standalone safetensors-to-DIA-NN/JSON inference
+rust/cli/              standalone safetensors-to-DIA-NN/mzSpecLib/JSON inference
 ```
 
 ## Deliberately deferred

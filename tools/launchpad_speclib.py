@@ -1,13 +1,14 @@
-"""Launchpad entrypoint for DIA-NN spectral-library generation.
+"""Launchpad entrypoint for spectral-library generation.
 
 Drives a **staged** `pepdistill-cli` binary; it does not build one. The launchpad container
 pre-installs nothing -- no Rust toolchain, no `aws`, no `curl` -- so the binary is cross-compiled
 once locally (`cross build --release --target x86_64-unknown-linux-musl`) and staged alongside the
 model and the FASTA. musl means a static binary that does not care what the image's glibc is.
 
-One library, one object. `--max-fragments 15` and gzip output put a whole human tryptic
-CysPAT/Ox/Phospho library at ~10 GB, so it fits the worker volume and there is nothing to shard:
-the CLI compresses in its writer thread, so the uncompressed form never exists on disk.
+One library, one object, mzSpecLib by default so the published object carries its own provenance.
+`--max-fragments 15` and gzip output put a whole human tryptic CysPAT/Ox/Phospho library at ~10 GB,
+so it fits the worker volume and there is nothing to shard: the CLI compresses in its writer
+thread, so the uncompressed form never exists on disk.
 
     launchpad run tools/launchpad_speclib.py --stage "$STAGE" \
       --env PEPDISTILL_SPECLIB_OUT=s3://bucket/pepdistill-speclib/human-cyspat-v1
@@ -122,6 +123,11 @@ def main() -> None:
         default="Lumos::FTMS::HCD::30",
         help="acquisition factors, or the name of a fitted setup",
     )
+    parser.add_argument(
+        "--diann-tsv",
+        action="store_true",
+        help="publish DIA-NN TSV instead of mzSpecLib, for a consumer that reads only the TSV",
+    )
     args = parser.parse_args()
 
     if not args.out_prefix:
@@ -139,7 +145,9 @@ def main() -> None:
     model = staged(args.model, work / "model.safetensors")
     fasta = staged(args.fasta, work / "proteome.fasta")
 
-    local = work / f"{args.name}.tsv.gz"
+    # mzSpecLib, gzipped: this script publishes libraries other people consume, and mzSpecLib is
+    # the format that carries its own provenance. `--diann-tsv` for a consumer that needs the TSV.
+    local = work / (f"{args.name}.tsv.gz" if args.diann_tsv else f"{args.name}.mzspeclib.txt.gz")
     command = [
         str(binary),
         "library",
@@ -174,10 +182,12 @@ def main() -> None:
     subprocess.run(command, check=True)
 
     prefix = args.out_prefix.rstrip("/")
-    s3_upload(local, f"{prefix}/{args.name}.tsv.gz")
+    s3_upload(local, f"{prefix}/{local.name}")
     # The CLI writes `<out>.config.json` beside the library: resolved settings plus blake2b
-    # digests of the model and FASTA, which is what makes a published library reproducible.
-    s3_upload(Path(f"{local}.config.json"), f"{prefix}/{args.name}.tsv.gz.config.json")
+    # digests of the model and FASTA, which is what makes a published library reproducible. An
+    # mzSpecLib library carries the same record inside itself; the sidecar stays for the TSV and
+    # for anyone reading the prefix without opening a multi-gigabyte file.
+    s3_upload(Path(f"{local}.config.json"), f"{prefix}/{local.name}.config.json")
     print(f"published {local.stat().st_size / 1e9:.2f} GB to {prefix}/", flush=True)
 
 

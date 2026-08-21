@@ -9,6 +9,7 @@ use serde_json::json;
 
 mod diagnostics;
 mod library;
+mod mzspeclib;
 
 #[derive(Parser)]
 #[command(
@@ -180,7 +181,8 @@ struct LibraryArgs {
     /// FASTA to digest.
     #[arg(long)]
     fasta: String,
-    /// DIA-NN TSV output path.
+    /// Output path. The suffix picks the format: `.mzspeclib.txt` writes mzSpecLib, which carries
+    /// its own provenance, and anything else writes DIA-NN TSV. A trailing `.gz` compresses either.
     #[arg(long)]
     out: String,
     #[arg(long, default_value_t = 2)]
@@ -408,7 +410,7 @@ fn run_library(args: LibraryArgs) -> Result<()> {
         Some(path) => Some(path.to_string()),
         None => Some(format!("{}.config.json", args.out)),
     };
-    let stats = library::write_diann_tsv(&library::LibraryOptions {
+    let stats = library::write_library(&library::LibraryOptions {
         model: &args.artifact.model,
         fasta: &args.fasta,
         out: &args.out,
