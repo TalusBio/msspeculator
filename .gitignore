@@ -29,3 +29,4 @@ WANDB_SECRET
 
 # Launchpad cloud-job staging bundle (generated locally)
 .launchpad/
+speclib-stage/

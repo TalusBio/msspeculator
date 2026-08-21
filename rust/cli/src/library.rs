@@ -35,6 +35,11 @@ pub struct LibraryOptions<'a> {
     pub max_variable_mods: usize,
     /// Keep only the peptides of partition `index` of `count`, or every peptide when `None`.
     pub partition: Option<(usize, usize)>,
+    /// Emit at most this many of the strongest fragments per precursor, or all of them when
+    /// `None`. Applied after `min_intensity`, so both bound the transition list independently.
+    pub max_fragments: Option<usize>,
+    /// Where to write the resolved-configuration sidecar, or `None` to skip it.
+    pub config_out: Option<&'a str>,
 }
 
 /// Whether `peptide` belongs to partition `index` of `count`.
@@ -304,6 +309,7 @@ fn write_prediction<W: Write>(
     protein_group: &str,
     diann_sequence: &str,
     prediction: Prediction,
+    max_fragments: Option<usize>,
 ) -> Result<()> {
     let charge = prediction.charge;
     if !prediction.precursor_mz.is_finite()
@@ -331,6 +337,28 @@ fn write_prediction<W: Write>(
             mobility
         );
     }
+    // Rank by intensity and keep the strongest `max_fragments`. Validation still runs over every
+    // fragment below, not just the kept ones: a non-physical m/z that happens to rank 16th is a
+    // model or chemistry fault either way, and letting the cap hide it would make the error
+    // depend on how many transitions the caller asked for.
+    let mut keep = vec![true; prediction.fragments.mz.len()];
+    if let Some(limit) = max_fragments {
+        if keep.len() > limit {
+            let mut order: Vec<usize> = (0..keep.len()).collect();
+            order.sort_by(|a, b| {
+                prediction.fragments.rel[*b]
+                    .partial_cmp(&prediction.fragments.rel[*a])
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    // Ties broken by index so a regenerated shard keeps the same peaks.
+                    .then(a.cmp(b))
+            });
+            keep = vec![false; keep.len()];
+            for index in &order[..limit] {
+                keep[*index] = true;
+            }
+        }
+    }
+    #[allow(clippy::needless_range_loop)] // `i` indexes four parallel fragment columns, not one
     for i in 0..prediction.fragments.mz.len() {
         let fragment_mz = prediction.fragments.mz[i];
         let intensity = prediction.fragments.rel[i];
@@ -347,6 +375,10 @@ fn write_prediction<W: Write>(
                 fragment_mz,
                 intensity
             );
+        }
+        // Validated above, but outside the strongest `max_fragments`.
+        if !keep[i] {
+            continue;
         }
         writeln!(
             writer,
@@ -410,6 +442,7 @@ fn write_predicted_batch<W: Write>(
     writer: &mut W,
     stats: &mut LibraryStats,
     batch: Vec<PredictedPeptide>,
+    max_fragments: Option<usize>,
 ) -> Result<()> {
     for item in batch {
         for prediction in item.predictions {
@@ -420,6 +453,7 @@ fn write_predicted_batch<W: Write>(
                 &item.protein_group,
                 &item.diann_sequence,
                 prediction,
+                max_fragments,
             )?;
         }
     }
@@ -521,14 +555,29 @@ pub fn write_diann_tsv(opts: &LibraryOptions<'_>) -> Result<LibraryStats> {
         mpsc::sync_channel::<Result<Vec<PredictedPeptide>>>(queue_capacity);
     let artifact = Arc::new(artifact);
 
+    // Copied out of `opts` before the threads start: the writer closure is `move`, so borrowing
+    // `opts` there would outlive it.
+    let max_fragments = opts.max_fragments;
     let writer_file =
         File::create(opts.out).with_context(|| format!("creating library {}", opts.out))?;
+    // A `.gz` suffix compresses in the writer thread rather than in a second pass, so the
+    // uncompressed library never exists on disk -- which is the whole point when a shard is
+    // gigabytes and the scratch volume is not.
+    let compress = opts.out.ends_with(".gz");
     let writer_handle = thread::spawn(move || -> Result<LibraryStats> {
-        let mut writer = BufWriter::new(writer_file);
+        let sink: Box<dyn Write> = if compress {
+            Box::new(flate2::write::GzEncoder::new(
+                writer_file,
+                flate2::Compression::default(),
+            ))
+        } else {
+            Box::new(writer_file)
+        };
+        let mut writer = BufWriter::new(sink);
         writeln!(writer, "ModifiedPeptide\tStrippedPeptide\tPrecursorMz\tPrecursorCharge\tTr_recalibrated\tIonMobility\tProteinID\tDecoy\tFragmentMz\tFragmentType\tFragmentNumber\tFragmentCharge\tFragmentLossType\tRelativeIntensity")?;
         let mut stats = stats;
         for result in result_rx {
-            write_predicted_batch(&mut writer, &mut stats, result?)?;
+            write_predicted_batch(&mut writer, &mut stats, result?, max_fragments)?;
         }
         writer.flush()?;
         Ok(stats)
@@ -598,9 +647,105 @@ pub fn write_diann_tsv(opts: &LibraryOptions<'_>) -> Result<LibraryStats> {
             .map_err(|_| anyhow::anyhow!("inference worker panicked"))?;
     }
     drop(result_tx);
-    writer_handle
+    let stats = writer_handle
         .join()
-        .map_err(|_| anyhow::anyhow!("library writer panicked"))?
+        .map_err(|_| anyhow::anyhow!("library writer panicked"))??;
+    if let Some(path) = opts.config_out {
+        write_config(path, opts, &stats)?;
+    }
+    Ok(stats)
+}
+
+/// blake2b-256 of a file's bytes, hex, streamed so a multi-GB input is not held in memory.
+///
+/// Identity rather than integrity: two libraries generated from the same digests and the same
+/// settings are the same library, which is what makes a published one reproducible.
+fn file_digest(path: &str) -> Result<String> {
+    use blake2::digest::{Update, VariableOutput};
+    let mut file = File::open(path).with_context(|| format!("hashing {path}"))?;
+    let mut hasher = blake2::Blake2bVar::new(32).expect("32 is a valid blake2b output length");
+    let mut buffer = vec![0u8; 1 << 20];
+    loop {
+        let read = std::io::Read::read(&mut file, &mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    let mut out = [0u8; 32];
+    hasher.finalize_variable(&mut out).expect("32-byte output");
+    Ok(out.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+/// Write the fully resolved configuration beside the library.
+///
+/// Everything that determined the bytes: the digests of the two inputs, every knob as resolved
+/// (not as typed -- defaults are recorded explicitly), and the counts that came out. A library
+/// whose provenance lives only in a shell history is one nobody can regenerate or trust.
+fn write_config(path: &str, opts: &LibraryOptions<'_>, stats: &LibraryStats) -> Result<()> {
+    let ms_context = match opts.ms_context {
+        Some(pepdistill_core::MsContext::Named(name)) => serde_json::json!({"setup": name}),
+        Some(pepdistill_core::MsContext::Factors {
+            instrument,
+            detector,
+            fragmentation,
+            energy,
+        }) => serde_json::json!({
+            "instrument": instrument,
+            "detector": detector,
+            "fragmentation": fragmentation,
+            "energy": energy,
+        }),
+        None => serde_json::Value::Null,
+    };
+    let config = serde_json::json!({
+        "generator": {
+            "tool": "pepdistill-cli library",
+            "version": env!("CARGO_PKG_VERSION"),
+        },
+        "inputs": {
+            "model": opts.model,
+            "model_blake2b_256": file_digest(opts.model)?,
+            "fasta": opts.fasta,
+            "fasta_blake2b_256": file_digest(opts.fasta)?,
+        },
+        "digestion": {
+            "enzyme": "trypsin",
+            "missed_cleavages": opts.missed_cleavages,
+            "min_length": opts.min_length,
+            "max_length": opts.max_length,
+            "min_charge": opts.min_charge,
+            "max_charge": opts.max_charge,
+        },
+        "modifications": {
+            "fixed": opts.fixed_mods,
+            "variable": opts.variable_mods,
+            "max_variable_mods": opts.max_variable_mods,
+        },
+        "context": {
+            "ms": ms_context,
+            "chrom": opts.chrom_context,
+        },
+        "fragments": {
+            "min_intensity": opts.min_intensity,
+            "max_fragments": opts.max_fragments,
+        },
+        "shard": opts.partition.map(|(index, count)| serde_json::json!({
+            "index": index,
+            "count": count,
+            "salt": "pepdistill-speclib",
+        })),
+        "output": {
+            "path": opts.out,
+            "compressed": opts.out.ends_with(".gz"),
+            "proteins": stats.proteins,
+            "peptides": stats.peptides,
+            "precursors": stats.precursors,
+            "fragments": stats.fragments,
+        },
+    });
+    std::fs::write(path, serde_json::to_string_pretty(&config)? + "\n")
+        .with_context(|| format!("writing {path}"))
 }
 
 #[cfg(test)]

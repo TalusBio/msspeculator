@@ -1,25 +1,24 @@
 """Launchpad entrypoint for sharded DIA-NN spectral-library generation.
 
-A whole-proteome library with variable modifications is far larger than a worker's disk: human
-tryptic 7-30 with variable CysPAT/Ox/Phospho projects to ~28.5M precursors and ~140 GB at one
-placement per peptide, against a 32 GB scratch volume shared by every array child on the host.
+Drives a **staged** `pepdistill-cli` binary; it does not build one. The launchpad container
+pre-installs nothing, so a Rust toolchain cannot be assumed, and cross-compiling once locally
+(`cross build --release --target x86_64-unknown-linux-musl`) is faster and reproducible besides.
+musl means a static binary that does not care what the image's glibc is.
 
-So the unit of work is a *logical shard*, not a job. Each child walks its own strided subset of
-`--shards` shards and, for each one, generates it, gzips it, uploads it, and deletes the local
-copy before starting the next. Peak disk is therefore one shard regardless of how large the
-library is or how many children share a host -- raise `--shards` to lower it.
+Work is measured in *logical shards* rather than jobs. Each shard is generated straight to
+`.tsv.gz`, uploaded, and deleted before the next begins, so peak disk is one shard however large
+the library is. With `--max-fragments 15` a whole human tryptic library at two variable
+placements is ~13 GB gzipped, so sharding is now about restartability more than about disk.
 
-Shards are disjoint by peptide (`pepdistill-cli library --partition`), so the finished library is
-the concatenation of its shards with the repeated header rows dropped. Sharding the FASTA instead
-would emit a peptide shared by two proteins in both of their shards.
+Shards are disjoint by peptide (`library --partition`), so the library is the concatenation of its
+shards with the repeated header rows dropped. Sharding the FASTA instead would emit a peptide
+shared by two proteins in both of their shards.
 
-A shard whose object already exists is skipped, which makes the job restartable: cloud jobs here
-vanish from `launchpad list` rather than reaching a terminal state, so completion is judged by the
-artifacts, and a partial run is resumed by launching the same command again.
+A shard whose object already exists is skipped, which makes the job restartable: jobs here vanish
+from `launchpad list` rather than reaching a terminal state, so completion is judged from the
+artifacts, and a partial run resumes by relaunching the same command.
 
-    launchpad run tools/launchpad_speclib.py --stage "$STAGE_URI" --array-size 40 \
-      --env PEPDISTILL_SPECLIB_ARRAY_SIZE=40 \
-      --env PEPDISTILL_SPECLIB_MODEL=s3://bucket/pepdistill-training/.../model.safetensors \
+    launchpad run tools/launchpad_speclib.py --stage speclib-stage --vcpus 16 --memory 32000 \
       --env PEPDISTILL_SPECLIB_OUT=s3://bucket/pepdistill-speclib/human-cyspat-v1
 """
 
@@ -28,23 +27,20 @@ artifacts, and a partial run is resumed by launching the same command again.
 # dependencies = []
 #
 # [tool.launchpad]
-# vcpus = 8
-# memory = 30000
+# vcpus = 16
+# memory = 32000
 # job_name = "pepdistill-speclib"
 # ///
 
 from __future__ import annotations
 
 import argparse
-import gzip
-import json
 import os
-import shutil
 import subprocess
 import sys
 from pathlib import Path
 
-#: Human reviewed canonical proteome. The `stream` endpoint is slow and resets on large queries,
+#: Reviewed canonical human proteome. The `stream` endpoint is slow and resets on large queries,
 #: so this is retried rather than assumed to succeed on the first call.
 UNIPROT_STREAM = (
     "https://rest.uniprot.org/uniprotkb/stream?format=fasta"
@@ -52,24 +48,27 @@ UNIPROT_STREAM = (
 )
 
 
-def run(command: list[str], **kwargs) -> subprocess.CompletedProcess:
+def run(command: list[str]) -> None:
     print("+ " + " ".join(command), flush=True)
-    return subprocess.run(command, check=True, **kwargs)
+    subprocess.run(command, check=True)
 
 
 def fetch(source: str, target: Path) -> Path:
     """Resolve `source` to a local file: an S3 URI, a `uniprot:UP...` proteome, or a path."""
     if target.exists() and target.stat().st_size > 0:
         return target
+    if not source.startswith(("s3://", "uniprot:")):
+        path = Path(source)
+        if not path.is_file():
+            raise SystemExit(f"not a file, an s3:// URI, or a uniprot: reference: {source}")
+        return path
     target.parent.mkdir(parents=True, exist_ok=True)
     partial = target.with_suffix(target.suffix + ".part")
     if source.startswith("s3://"):
         run(["aws", "s3", "cp", source, str(partial)])
-    elif source.startswith("uniprot:"):
-        url = UNIPROT_STREAM.format(accession=source.removeprefix("uniprot:"))
+    else:
         # curl rather than urllib: this transfer resets often enough that the retry matters, and
-        # reproducing --retry-all-errors by hand would be the same code with more places to be
-        # wrong.
+        # hand-rolling --retry-all-errors would be the same logic with more places to be wrong.
         run(
             [
                 "curl",
@@ -83,14 +82,9 @@ def fetch(source: str, target: Path) -> Path:
                 "3600",
                 "-o",
                 str(partial),
-                url,
+                UNIPROT_STREAM.format(accession=source.removeprefix("uniprot:")),
             ]
         )
-    else:
-        path = Path(source)
-        if not path.is_file():
-            raise SystemExit(f"not a file, an s3:// URI, or a uniprot: reference: {source}")
-        return path
     if partial.stat().st_size == 0:
         partial.unlink()
         raise SystemExit(f"{source} resolved to an empty file")
@@ -98,49 +92,11 @@ def fetch(source: str, target: Path) -> Path:
     return target
 
 
-def build_cli() -> Path:
-    """Build the release `pepdistill-cli`, the production inference path.
-
-    Built on the worker because the local machine is a different platform. A missing toolchain is
-    an error rather than a fall back to the torch predictor: that path writes parquet, not the
-    DIA-NN TSV this job exists to produce, so quietly substituting it would hand back the wrong
-    artifact after an hour of compute.
-    """
-    if shutil.which("cargo") is None:
-        raise SystemExit(
-            "cargo is not on PATH; this job builds pepdistill-cli from the staged rust/ tree. "
-            "Install a Rust toolchain in the worker image, or pre-build the binary for "
-            "linux/x86_64 and stage it."
-        )
-    run(
-        [
-            "cargo",
-            "build",
-            "--release",
-            "--manifest-path",
-            "rust/Cargo.toml",
-            "-p",
-            "pepdistill-cli",
-        ]
-    )
-    binary = Path("rust/target/release/pepdistill-cli")
-    if not binary.is_file():
-        raise SystemExit(f"cargo reported success but {binary} is missing")
-    return binary
-
-
 def s3_exists(uri: str) -> bool:
+    bucket, key = uri.removeprefix("s3://").split("/", 1)
     return (
         subprocess.run(
-            [
-                "aws",
-                "s3api",
-                "head-object",
-                "--bucket",
-                uri.split("/", 3)[2],
-                "--key",
-                uri.split("/", 3)[3],
-            ],
+            ["aws", "s3api", "head-object", "--bucket", bucket, "--key", key],
             capture_output=True,
         ).returncode
         == 0
@@ -148,10 +104,11 @@ def s3_exists(uri: str) -> bool:
 
 
 def shard_indices(total: int) -> list[int]:
-    """The logical shards this array child owns.
+    """The logical shards this invocation owns.
 
-    Strided rather than contiguous so an uneven shard cost spreads across children instead of
-    landing on one; `PEPDISTILL_SPECLIB_SHARD` overrides for retrying a single shard by hand.
+    A single job owns all of them. `AWS_BATCH_JOB_ARRAY_INDEX` splits them across an array when
+    one is used, strided so uneven shard cost spreads instead of landing on one child, and
+    `PEPDISTILL_SPECLIB_SHARD` narrows to a single shard for a smoke test or a manual retry.
     """
     single = os.environ.get("PEPDISTILL_SPECLIB_SHARD")
     if single is not None:
@@ -170,9 +127,14 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     env = os.environ.get
     parser.add_argument(
+        "--binary",
+        default=env("PEPDISTILL_SPECLIB_BINARY", "./pepdistill-cli"),
+        help="staged linux pepdistill-cli",
+    )
+    parser.add_argument(
         "--model",
-        default=env("PEPDISTILL_SPECLIB_MODEL"),
-        help="exported .safetensors artifact (s3:// or local)",
+        default=env("PEPDISTILL_SPECLIB_MODEL", "./model.safetensors"),
+        help="exported .safetensors artifact (staged path or s3://)",
     )
     parser.add_argument(
         "--out-prefix",
@@ -180,18 +142,19 @@ def main() -> None:
         help="s3:// prefix the shards are written under",
     )
     parser.add_argument("--fasta", default=env("PEPDISTILL_SPECLIB_FASTA", "uniprot:UP000005640"))
-    parser.add_argument(
-        "--shards",
-        type=int,
-        default=int(env("PEPDISTILL_SPECLIB_SHARDS", "800")),
-        help="logical shards; peak worker disk is one shard, so raise to lower it",
-    )
+    parser.add_argument("--shards", type=int, default=int(env("PEPDISTILL_SPECLIB_SHARDS", "200")))
     parser.add_argument("--missed-cleavages", type=int, default=2)
     parser.add_argument("--min-length", type=int, default=7)
     parser.add_argument("--max-length", type=int, default=30)
     parser.add_argument("--min-charge", type=int, default=2)
     parser.add_argument("--max-charge", type=int, default=4)
     parser.add_argument("--min-intensity", type=float, default=0.01)
+    parser.add_argument(
+        "--max-fragments",
+        type=int,
+        default=15,
+        help="strongest N transitions per precursor; 15 is the DIA convention",
+    )
     # CysPAT is the alkylating agent here, not an incidental PTM, so there is no fixed
     # carbamidomethyl rule: a thiol is CysPAT-labelled or bare. The CLI refuses a fixed rule that
     # overlaps a variable one, so leaving the default in place would fail the job outright.
@@ -214,10 +177,8 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    if not args.model or not args.out_prefix:
-        raise SystemExit("--model and --out-prefix are required (or set their env vars)")
-    if not Path("pyproject.toml").exists():
-        raise SystemExit("stage is incomplete; run tools/prepare_launchpad_full_run.py first")
+    if not args.out_prefix:
+        raise SystemExit("--out-prefix is required (or set PEPDISTILL_SPECLIB_OUT)")
     variable_mods = args.variable_mod or [
         "C[UNIMOD:2057]",  # 6C-CysPAT
         "M[UNIMOD:35]",  # Oxidation
@@ -226,12 +187,13 @@ def main() -> None:
 
     work = Path("speclib-work")
     work.mkdir(exist_ok=True)
+    binary = fetch(args.binary, work / "pepdistill-cli")
+    binary.chmod(0o755)
     model = fetch(args.model, work / "model.safetensors")
     fasta = fetch(args.fasta, work / "proteome.fasta")
-    binary = build_cli()
     prefix = args.out_prefix.rstrip("/")
     mine = shard_indices(args.shards)
-    print(f"this child owns {len(mine)} of {args.shards} shards: {mine[:6]}...", flush=True)
+    print(f"{len(mine)} of {args.shards} shards to generate", flush=True)
 
     for shard in mine:
         name = f"shard-{shard:05d}-of-{args.shards:05d}"
@@ -239,8 +201,12 @@ def main() -> None:
         if s3_exists(destination):
             print(f"{name}: already published, skipping", flush=True)
             continue
-        raw = work / f"{name}.tsv"
-        result = run(
+        # Straight to .gz: the CLI compresses in its writer thread, so the uncompressed library
+        # never exists on disk. It also writes `<out>.config.json` -- the resolved settings plus
+        # input digests -- which is what makes a published shard reproducible.
+        local = work / f"{name}.tsv.gz"
+        config = Path(f"{local}.config.json")
+        run(
             [
                 str(binary),
                 "library",
@@ -249,12 +215,14 @@ def main() -> None:
                 "--fasta",
                 str(fasta),
                 "--out",
-                str(raw),
+                str(local),
                 "--partition",
                 f"{shard}/{args.shards}",
                 "--no-fixed-mods",
                 "--max-variable-mods",
                 str(args.max_variable_mods),
+                "--max-fragments",
+                str(args.max_fragments),
                 "--missed-cleavages",
                 str(args.missed_cleavages),
                 "--min-length",
@@ -270,54 +238,16 @@ def main() -> None:
                 "--ms-context",
                 args.ms_context,
                 *[flag for mod in variable_mods for flag in ("--variable-mod", mod)],
-            ],
-            capture_output=True,
-            text=True,
+            ]
         )
-        print(result.stderr.strip(), flush=True)
+        run(["aws", "s3", "cp", str(local), destination])
+        run(["aws", "s3", "cp", str(config), f"{destination}.config.json"])
+        size = local.stat().st_size
+        local.unlink()
+        config.unlink()
+        print(f"{name}: published {size / 1e6:.1f} MB", flush=True)
 
-        compressed = raw.with_suffix(".tsv.gz")
-        with raw.open("rb") as source, gzip.open(compressed, "wb", compresslevel=6) as sink:
-            shutil.copyfileobj(source, sink, length=8 * 1024 * 1024)
-        rows = sum(1 for _ in gzip.open(compressed, "rt")) - 1  # the header is not a transition
-        raw_bytes = raw.stat().st_size
-        raw.unlink()  # before the upload, so peak disk is one shard rather than one and a half
-
-        run(["aws", "s3", "cp", str(compressed), destination])
-        # A sidecar per shard, because a cloud job here disappears from `list` instead of
-        # reporting success: these are how a merge decides the library is complete.
-        report = work / f"{name}.json"
-        report.write_text(
-            json.dumps(
-                {
-                    "shard": shard,
-                    "shards": args.shards,
-                    "transitions": rows,
-                    "bytes_raw": raw_bytes,
-                    "bytes_gzip": compressed.stat().st_size,
-                    "settings": {
-                        "fasta": args.fasta,
-                        "model": args.model,
-                        "missed_cleavages": args.missed_cleavages,
-                        "length": [args.min_length, args.max_length],
-                        "charge": [args.min_charge, args.max_charge],
-                        "variable_mods": variable_mods,
-                        "max_variable_mods": args.max_variable_mods,
-                        "fixed_mods": [],
-                        "min_intensity": args.min_intensity,
-                        "ms_context": args.ms_context,
-                    },
-                },
-                indent=2,
-                sort_keys=True,
-            )
-        )
-        run(["aws", "s3", "cp", str(report), f"{prefix}/{name}.json"])
-        compressed.unlink()
-        report.unlink()
-        print(f"{name}: {rows:,} transitions published", flush=True)
-
-    print(f"child finished {len(mine)} shard(s)", flush=True)
+    print(f"finished {len(mine)} shard(s)", flush=True)
 
 
 if __name__ == "__main__":

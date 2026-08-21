@@ -237,6 +237,14 @@ struct LibraryArgs {
     /// splitting the FASTA instead would emit a peptide shared by two proteins in both shards.
     #[arg(long, value_name = "INDEX/COUNT")]
     partition: Option<String>,
+    /// Keep at most this many of the strongest fragments per precursor. Applied after
+    /// `--min-intensity`, so a precursor with fewer surviving peaks keeps all of them.
+    #[arg(long, value_name = "N")]
+    max_fragments: Option<usize>,
+    /// Where to write the resolved-configuration sidecar. Defaults to `<out>.config.json`; pass
+    /// an empty string to skip it.
+    #[arg(long, value_name = "PATH")]
+    config_out: Option<String>,
 }
 
 #[derive(clap::Args)]
@@ -420,6 +428,13 @@ fn run_library(args: LibraryArgs) -> Result<()> {
     } else {
         &args.variable_mod
     };
+    // Written by default: a library whose settings live only in a shell history cannot be
+    // regenerated. `--config-out ""` is the explicit opt out.
+    let config_out = match args.config_out.as_deref() {
+        Some("") => None,
+        Some(path) => Some(path.to_string()),
+        None => Some(format!("{}.config.json", args.out)),
+    };
     let stats = library::write_diann_tsv(&library::LibraryOptions {
         model: &args.artifact.model,
         fasta: &args.fasta,
@@ -437,6 +452,8 @@ fn run_library(args: LibraryArgs) -> Result<()> {
         variable_mods,
         max_variable_mods: args.max_variable_mods,
         partition: parse_partition(args.partition.as_deref())?,
+        max_fragments: args.max_fragments,
+        config_out: config_out.as_deref(),
     })?;
     eprintln!(
         "{} proteins -> {} peptides -> {} precursors -> {} fragments -> {}",
