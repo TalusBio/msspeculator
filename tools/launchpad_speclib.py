@@ -141,7 +141,15 @@ def main() -> None:
         default=env("PEPDISTILL_SPECLIB_OUT"),
         help="s3:// prefix the shards are written under",
     )
-    parser.add_argument("--fasta", default=env("PEPDISTILL_SPECLIB_FASTA", "uniprot:UP000005640"))
+    # Defaults to the staged object rather than a `uniprot:` fetch: a stream that resets mid-body
+    # still returns 200, so a download can leave a truncated proteome whose digest looks valid in
+    # config.json while the library is silently short. A staged FASTA is also the same file on a
+    # re-run, which a UniProt release is not.
+    parser.add_argument(
+        "--fasta",
+        default=env("PEPDISTILL_SPECLIB_FASTA", "./proteome.fasta"),
+        help="staged FASTA path, an s3:// object, or uniprot:UP... to fetch at run time",
+    )
     parser.add_argument("--shards", type=int, default=int(env("PEPDISTILL_SPECLIB_SHARDS", "200")))
     parser.add_argument("--missed-cleavages", type=int, default=2)
     parser.add_argument("--min-length", type=int, default=7)
