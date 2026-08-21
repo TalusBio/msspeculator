@@ -409,6 +409,49 @@ Notes:
   below). The `::` separator is what tells the two apart, so a partial factor list is an error
   rather than a name nobody fitted.
 
+### Generate a whole-proteome library in the cloud
+
+A whole-proteome library with variable modifications does not fit on one machine. Human tryptic
+7-30 with variable CysPAT/Ox/Phospho measures 32.1 fragments per precursor at 150 bytes a row, so
+28.5M precursors is ~140 GB at one placement per peptide and ~2.4x that at two. The worker scratch
+volume is 32 GB, shared by every array child on the host.
+
+`tools/launchpad_speclib.py` therefore makes the unit of work a *logical shard*: each array child
+generates one shard at a time, gzips it, uploads it, and deletes it before starting the next, so
+peak disk is one shard however large the library is. Raise `--shards` to lower it.
+
+```bash
+.venv/bin/python tools/prepare_launchpad_full_run.py
+aws s3 sync .launchpad/full-run-stage "$STAGE_URI"
+launchpad run tools/launchpad_speclib.py --stage "$STAGE_URI" --array-size 40 \
+  --env PEPDISTILL_SPECLIB_ARRAY_SIZE=40 \
+  --env PEPDISTILL_SPECLIB_MODEL="$S3_MODEL/model.safetensors" \
+  --env PEPDISTILL_SPECLIB_OUT="s3://bucket/pepdistill-speclib/human-cyspat-v1"
+```
+
+Shards are disjoint **by peptide** (`library --partition INDEX/COUNT`), so the library is the
+concatenation of its shards with the repeated header rows dropped:
+
+```bash
+aws s3 cp "$OUT/shard-00000-of-00800.tsv.gz" - | gunzip | head -1 > library.tsv
+aws s3 ls "$OUT/" | awk '{print $4}' | grep '\.tsv\.gz$' | while read -r name; do
+  aws s3 cp "$OUT/$name" - | gunzip | tail -n +2 >> library.tsv
+done
+```
+
+Partitioning by peptide rather than by FASTA slice is what makes that concatenation correct: a
+tryptic peptide shared by two proteins would land in both of their slices and appear twice.
+
+Notes:
+- Keep the array at 40 or below, for the same per-host disk reason as the ETL.
+- A shard whose object already exists is skipped, so a partial run resumes by relaunching the same
+  command. Judge completion by the `shard-*.json` sidecars, not by `launchpad list` — jobs here
+  vanish from it rather than reaching a terminal state.
+- `--max-variable-mods` defaults to **2**, not the CLI's 1: at 1 a peptide with two cysteines can
+  never be fully CysPAT-labelled, which does not match a real digest.
+- There is no fixed carbamidomethyl rule, because CysPAT *is* the alkylating agent. The CLI
+  refuses a fixed rule overlapping a variable one, so this is enforced rather than assumed.
+
 ### Fit an acquisition context to a published library
 
 A library reports no instrument and no collision energy, and a timsTOF ramps energy with ion

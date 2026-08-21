@@ -33,6 +33,23 @@ pub struct LibraryOptions<'a> {
     pub fixed_mods: &'a [String],
     pub variable_mods: &'a [String],
     pub max_variable_mods: usize,
+    /// Keep only the peptides of partition `index` of `count`, or every peptide when `None`.
+    pub partition: Option<(usize, usize)>,
+}
+
+/// Whether `peptide` belongs to partition `index` of `count`.
+///
+/// Keyed on the peptide rather than on the input protein, because a tryptic peptide shared by two
+/// proteins would otherwise land in both shards and a concatenated library would carry it twice.
+/// Partitioning after the digest keeps the shards disjoint, so merging is concatenation.
+///
+/// The same `blake2b`-over-sequence rule the corpus split uses, for the same reason: it depends on
+/// the peptide alone, so a shard can be regenerated on its own and lands identically.
+fn in_partition(peptide: &str, index: usize, count: usize) -> bool {
+    // `unit_hash` is in [0, 1), so scaling by `count` and truncating lands in 0..count-1.
+    let bucket =
+        (pepdistill_core::split::unit_hash(peptide, "pepdistill-speclib") * count as f64) as usize;
+    bucket == index
 }
 
 /// Apply a runtime activation override used for controlled inference benchmarks.
@@ -453,7 +470,7 @@ pub fn write_diann_tsv(opts: &LibraryOptions<'_>) -> Result<LibraryStats> {
         }
     }
     let records = parse_fasta(Path::new(opts.fasta))?;
-    let peptides = peptide_proteins(
+    let mut peptides = peptide_proteins(
         &records,
         opts.missed_cleavages,
         opts.min_length,
@@ -461,6 +478,20 @@ pub fn write_diann_tsv(opts: &LibraryOptions<'_>) -> Result<LibraryStats> {
     );
     if peptides.is_empty() {
         bail!("FASTA digest produced no peptides");
+    }
+    if let Some((index, count)) = opts.partition {
+        if count == 0 || index >= count {
+            bail!("invalid partition {index}/{count}");
+        }
+        let before = peptides.len();
+        peptides.retain(|peptide, _| in_partition(peptide, index, count));
+        if peptides.is_empty() {
+            bail!("partition {index}/{count} selected none of {before} peptides");
+        }
+        println!(
+            "partition {index}/{count}: {} of {before} peptides",
+            peptides.len()
+        );
     }
 
     let mut artifact = Artifact::load(opts.model)?;
@@ -626,5 +657,40 @@ mod tests {
     fn ccs_conversion_matches_alphabase_formula() {
         let mobility = ccs_to_bruker_mobility(400.0, 2, 500.0);
         assert!((mobility - 0.985056867).abs() < 1e-8, "{mobility}");
+    }
+}
+
+#[cfg(test)]
+mod partition_tests {
+    use super::in_partition;
+
+    /// Every peptide lands in exactly one shard. This is what makes a merged library a plain
+    /// concatenation: a peptide in two shards would be a duplicate precursor, and one in none
+    /// would be missing entirely, and neither is visible by looking at a single shard.
+    #[test]
+    fn partitions_tile_the_peptide_set_exactly() {
+        let peptides: Vec<String> = (0..2000)
+            .map(|i| format!("PEPT{}IDEK", "AGVLS".repeat(i % 5 + 1)))
+            .collect();
+        for count in [1usize, 3, 40, 400] {
+            for peptide in &peptides {
+                let hits = (0..count)
+                    .filter(|i| in_partition(peptide, *i, count))
+                    .count();
+                assert_eq!(hits, 1, "{peptide} landed in {hits} of {count} shards");
+            }
+        }
+    }
+
+    /// A shard is defined by the peptide alone, so regenerating shard 7 of 40 tomorrow selects
+    /// the same peptides — the property that lets a failed array child be retried on its own.
+    #[test]
+    fn a_shard_depends_only_on_the_peptide() {
+        assert_eq!(
+            in_partition("PEPTIDEK", 3, 40),
+            in_partition("PEPTIDEK", 3, 40)
+        );
+        let selected: Vec<bool> = (0..40).map(|i| in_partition("SAMPLERK", i, 40)).collect();
+        assert_eq!(selected.iter().filter(|x| **x).count(), 1);
     }
 }

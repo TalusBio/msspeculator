@@ -79,6 +79,28 @@ struct ArtifactArgs {
     activation: Option<String>,
 }
 
+/// Parse `--partition INDEX/COUNT`, or `None` for a whole library.
+fn parse_partition(value: Option<&str>) -> Result<Option<(usize, usize)>> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let (index, count) = value
+        .split_once('/')
+        .ok_or_else(|| anyhow::anyhow!("--partition takes INDEX/COUNT, got {value:?}"))?;
+    let index: usize = index
+        .trim()
+        .parse()
+        .map_err(|_| anyhow::anyhow!("partition index {index:?} is not a number"))?;
+    let count: usize = count
+        .trim()
+        .parse()
+        .map_err(|_| anyhow::anyhow!("partition count {count:?} is not a number"))?;
+    if count == 0 || index >= count {
+        anyhow::bail!("--partition {value:?}: index must be below a nonzero count");
+    }
+    Ok(Some((index, count)))
+}
+
 /// A parsed `--ms-context`, keeping the text the user wrote so the report echoes their words
 /// rather than a re-rendering of them.
 #[derive(Clone)]
@@ -210,6 +232,11 @@ struct LibraryArgs {
     /// Drop fragments below this base-peak-relative intensity.
     #[arg(long, default_value_t = 0.01)]
     min_intensity: f64,
+    /// Generate only shard INDEX of COUNT, as `INDEX/COUNT`. Peptides are assigned by a hash of
+    /// the peptide itself, so shards are disjoint and a whole library is their concatenation --
+    /// splitting the FASTA instead would emit a peptide shared by two proteins in both shards.
+    #[arg(long, value_name = "INDEX/COUNT")]
+    partition: Option<String>,
 }
 
 #[derive(clap::Args)]
@@ -409,6 +436,7 @@ fn run_library(args: LibraryArgs) -> Result<()> {
         fixed_mods,
         variable_mods,
         max_variable_mods: args.max_variable_mods,
+        partition: parse_partition(args.partition.as_deref())?,
     })?;
     eprintln!(
         "{} proteins -> {} peptides -> {} precursors -> {} fragments -> {}",
