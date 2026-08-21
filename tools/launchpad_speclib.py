@@ -24,7 +24,7 @@ artifacts, and a partial run resumes by relaunching the same command.
 
 # /// script
 # requires-python = ">=3.11"
-# dependencies = []
+# dependencies = ["boto3"]
 #
 # [tool.launchpad]
 # vcpus = 16
@@ -40,12 +40,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-#: Reviewed canonical human proteome. The `stream` endpoint is slow and resets on large queries,
-#: so this is retried rather than assumed to succeed on the first call.
-UNIPROT_STREAM = (
-    "https://rest.uniprot.org/uniprotkb/stream?format=fasta"
-    "&query=%28proteome%3A{accession}%29+AND+%28reviewed%3Atrue%29"
-)
+#: Lazily constructed so `--help` works without credentials.
+_S3 = None
 
 
 def run(command: list[str]) -> None:
@@ -54,37 +50,18 @@ def run(command: list[str]) -> None:
 
 
 def fetch(source: str, target: Path) -> Path:
-    """Resolve `source` to a local file: an S3 URI, a `uniprot:UP...` proteome, or a path."""
-    if target.exists() and target.stat().st_size > 0:
-        return target
-    if not source.startswith(("s3://", "uniprot:")):
+    """Resolve `source` to a local file: a staged path, or an S3 object to download."""
+    if not source.startswith("s3://"):
         path = Path(source)
         if not path.is_file():
-            raise SystemExit(f"not a file, an s3:// URI, or a uniprot: reference: {source}")
+            raise SystemExit(f"not a staged file or an s3:// URI: {source}")
         return path
+    if target.exists() and target.stat().st_size > 0:
+        return target
     target.parent.mkdir(parents=True, exist_ok=True)
     partial = target.with_suffix(target.suffix + ".part")
-    if source.startswith("s3://"):
-        run(["aws", "s3", "cp", source, str(partial)])
-    else:
-        # curl rather than urllib: this transfer resets often enough that the retry matters, and
-        # hand-rolling --retry-all-errors would be the same logic with more places to be wrong.
-        run(
-            [
-                "curl",
-                "-sSL",
-                "--retry",
-                "8",
-                "--retry-all-errors",
-                "--retry-delay",
-                "5",
-                "--max-time",
-                "3600",
-                "-o",
-                str(partial),
-                UNIPROT_STREAM.format(accession=source.removeprefix("uniprot:")),
-            ]
-        )
+    bucket, key = split_uri(source)
+    s3().download_file(bucket, key, str(partial))
     if partial.stat().st_size == 0:
         partial.unlink()
         raise SystemExit(f"{source} resolved to an empty file")
@@ -92,15 +69,42 @@ def fetch(source: str, target: Path) -> Path:
     return target
 
 
-def s3_exists(uri: str) -> bool:
+def s3() -> "boto3.client":  # noqa: F821 - resolved by the PEP 723 dependency
+    global _S3
+    if _S3 is None:
+        import boto3
+
+        _S3 = boto3.client("s3")
+    return _S3
+
+
+def split_uri(uri: str) -> tuple[str, str]:
     bucket, key = uri.removeprefix("s3://").split("/", 1)
-    return (
-        subprocess.run(
-            ["aws", "s3api", "head-object", "--bucket", bucket, "--key", key],
-            capture_output=True,
-        ).returncode
-        == 0
-    )
+    return bucket, key
+
+
+def s3_exists(uri: str) -> bool:
+    """Whether the object is already published.
+
+    boto3 rather than the `aws` CLI: the launchpad container pre-installs nothing, so the CLI is
+    absent, while a PEP 723 dependency is installed by uv before the script runs.
+    """
+    from botocore.exceptions import ClientError
+
+    bucket, key = split_uri(uri)
+    try:
+        s3().head_object(Bucket=bucket, Key=key)
+    except ClientError as error:
+        if error.response["Error"]["Code"] in ("404", "NoSuchKey", "NotFound"):
+            return False
+        raise
+    return True
+
+
+def s3_upload(path: Path, uri: str) -> None:
+    bucket, key = split_uri(uri)
+    print(f"+ upload {path} -> {uri}", flush=True)
+    s3().upload_file(str(path), bucket, key)
 
 
 def shard_indices(total: int) -> list[int]:
@@ -141,14 +145,12 @@ def main() -> None:
         default=env("PEPDISTILL_SPECLIB_OUT"),
         help="s3:// prefix the shards are written under",
     )
-    # Defaults to the staged object rather than a `uniprot:` fetch: a stream that resets mid-body
-    # still returns 200, so a download can leave a truncated proteome whose digest looks valid in
-    # config.json while the library is silently short. A staged FASTA is also the same file on a
-    # re-run, which a UniProt release is not.
+    # A staged FASTA, not a release stream: the same bytes on a re-run, and no chance of a
+    # truncated download whose digest still looks valid in config.json.
     parser.add_argument(
         "--fasta",
         default=env("PEPDISTILL_SPECLIB_FASTA", "./proteome.fasta"),
-        help="staged FASTA path, an s3:// object, or uniprot:UP... to fetch at run time",
+        help="staged FASTA path, or an s3:// object",
     )
     parser.add_argument("--shards", type=int, default=int(env("PEPDISTILL_SPECLIB_SHARDS", "200")))
     parser.add_argument("--missed-cleavages", type=int, default=2)
@@ -248,8 +250,8 @@ def main() -> None:
                 *[flag for mod in variable_mods for flag in ("--variable-mod", mod)],
             ]
         )
-        run(["aws", "s3", "cp", str(local), destination])
-        run(["aws", "s3", "cp", str(config), f"{destination}.config.json"])
+        s3_upload(local, destination)
+        s3_upload(config, f"{destination}.config.json")
         size = local.stat().st_size
         local.unlink()
         config.unlink()
