@@ -106,13 +106,6 @@ inference is the Rust path via `export-rust`.
    library enters as a prepared source or as extra shards, and threading `setup_id` through the
    batch so its row trains alongside the factor terms rather than only being fitted afterwards.
 
-8. **Digest once per library, not once per shard.** `library --partition` filters after the
-   digest, so a sharded run re-parses the FASTA and re-digests every peptide for each shard and
-   discards the rest. Measured on the human CysPAT library at 200 shards: ~35s of digest against
-   ~5s of prediction per shard, so 2h20m of wall clock where ~30m was work. Fewer shards is the
-   cheap mitigation (each pays the same digest but predicts more); the fix is to digest once and
-   loop the partitions in process, or to accept a peptide list as input.
-
 ## Parked
 
 - A portable export format (ONNX or otherwise), until a concrete consumer requires one. The ONNX
