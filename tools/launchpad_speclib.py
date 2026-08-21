@@ -197,10 +197,12 @@ def main() -> None:
 
     work = Path("speclib-work")
     work.mkdir(exist_ok=True)
-    binary = fetch(args.binary, work / "pepdistill-cli")
+    # Absolute: `Path("./pepdistill-cli")` stringifies to a bare name, and subprocess resolves a
+    # name with no directory component through PATH rather than the working directory.
+    binary = fetch(args.binary, work / "pepdistill-cli").resolve()
     binary.chmod(0o755)
-    model = fetch(args.model, work / "model.safetensors")
-    fasta = fetch(args.fasta, work / "proteome.fasta")
+    model = fetch(args.model, work / "model.safetensors").resolve()
+    fasta = fetch(args.fasta, work / "proteome.fasta").resolve()
     prefix = args.out_prefix.rstrip("/")
     mine = shard_indices(args.shards)
     print(f"{len(mine)} of {args.shards} shards to generate", flush=True)
