@@ -142,6 +142,7 @@ validation_interval_minutes = 60.0 # wall-clock cadence; checked after the cross
 early_stop_patience = 10         # flat validation checks before stopping; 0 disables
 lr_decay_patience = 3            # flat checks before halving `lr`; must be below the above
 lr_decay_factor = 0.5
+lr_decay_min = 1e-6              # floor; without one the rate halves toward zero on a plateau
 
 [diagnostics]                    # fixed longitudinal panel; optional
 enabled = true
@@ -181,7 +182,10 @@ render_initial = true
   counter does not reset, so `early_stop_patience` still bounds the run: at 3 and 10 there is
   room for three cuts inside the same leash. The config refuses a decay patience at or above the
   stopping patience, which would stop the run before the rate ever moved. `lr-AdamW` in W&B
-  shows the steps.
+  shows the steps. Set `lr_decay_min`: because the trigger is a plateau rather than a schedule,
+  an unfloored rate keeps halving every few checks and the run spends whole epochs at a rate that
+  changes nothing. Measured on the first decayed run — four cuts in 22 epochs took 3e-4 to
+  9.4e-6, still improving, with nothing to stop the fifth.
 - **Checkpoint evidence**: `latest.ckpt`, `best.ckpt`, and the final `model.ckpt` record the
   global step plus the per-dataset spectral angles and mean used by validation/early stopping
   under the checkpoint's `training` metadata. Inference loaders ignore this optional metadata.

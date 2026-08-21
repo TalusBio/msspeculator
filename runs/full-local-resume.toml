@@ -63,4 +63,8 @@ early_stop_min_delta = 0.001
 # 10-check leash still bounds the run with room for three cuts inside it.
 lr_decay_patience = 3
 lr_decay_factor = 0.5
+# A floor, because the decay fires on a plateau rather than on a schedule: without one the rate
+# halves every few checks toward zero and the run keeps spending epochs at a rate that changes
+# nothing. A thirtieth of the cold-start 3e-4; below this, early stopping should be what ends it.
+lr_decay_min = 1e-6
 validation_interval_minutes = 60.0
