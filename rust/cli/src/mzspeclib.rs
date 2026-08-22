@@ -138,6 +138,26 @@ impl<W: Write> LibrarySink for MzSpecLibSink<W> {
                 "[{group}]MS:1003276|other attribute value={value}"
             )?;
         }
+        // A set named `all` is applied to every entry of its kind without the entry referencing
+        // it, so anything constant across the library belongs here and nowhere else. At 60M
+        // spectra these four lines are gigabytes of repetition.
+        //
+        // What this library is: nothing was measured, and nothing was aggregated from replicates.
+        // Both terms take the same value, which is what the reference DIA-NN converter writes.
+        writeln!(self.writer, "<AttributeSet Spectrum=all>")?;
+        writeln!(self.writer, "MS:1000511|ms level=2")?;
+        writeln!(
+            self.writer,
+            "MS:1003072|spectrum origin type=MS:1003074|predicted spectrum"
+        )?;
+        writeln!(
+            self.writer,
+            "MS:1003065|spectrum aggregation type=MS:1003074|predicted spectrum"
+        )?;
+        // No `<AttributeSet Interpretation=all>`: the reference reader crashes on one, because
+        // `_new_interpretation` applies sets with an `owner_id` its attribute manager does not
+        // accept. Entries carry no interpretation at all instead -- with exactly one analyte per
+        // spectrum there is nothing for one to disambiguate, and the validator agrees.
         Ok(())
     }
 
@@ -155,27 +175,22 @@ impl<W: Write> LibrarySink for MzSpecLibSink<W> {
             "MS:1000744|selected ion m/z={:.8}",
             row.precursor_mz
         )?;
-        writeln!(self.writer, "MS:1000511|ms level=2")?;
-        // What this library is: nothing was measured, and nothing was aggregated from replicates.
-        // Both terms take the same value, which is what the reference DIA-NN converter writes.
-        writeln!(
-            self.writer,
-            "MS:1003072|spectrum origin type=MS:1003074|predicted spectrum"
-        )?;
-        writeln!(
-            self.writer,
-            "MS:1003065|spectrum aggregation type=MS:1003074|predicted spectrum"
-        )?;
-        // Retention needs a unit, and the unit is a second attribute in the same group. iRT is
-        // dimensionless, but every library that publishes it declares minutes, and a reader that
-        // rescales an iRT by 60 is a reader that would have done so to the DIA-NN column too.
-        let retention_term = if self.normalized_retention {
-            "MS:1000896|normalized retention time"
+        // `ms level`, origin type and aggregation type are in the header's `Spectrum=all` set.
+        //
+        // Retention needs a unit, and the unit is a second attribute in the same group. An iRT is
+        // an index against a normalization standard rather than a duration, so `minute` overstates
+        // it -- but the vocabulary constrains `MS:1000896` to second or minute, and both
+        // `UO:0000186|dimensionless unit` and omitting the unit are MUST violations. There is no
+        // value-bearing unitless retention term to switch to (`MS:1002005` names a calibration
+        // standard, `MS:4000149` is a formula). So the choice is this or no CV retention term at
+        // all, and dropping it would hide the RT from every standard reader.
+        let (retention_term, unit) = if self.normalized_retention {
+            ("MS:1000896|normalized retention time", "UO:0000031|minute")
         } else {
-            "MS:1000894|retention time"
+            ("MS:1000894|retention time", "UO:0000031|minute")
         };
         writeln!(self.writer, "[1]{retention_term}={:.6}", row.rt)?;
-        writeln!(self.writer, "[1]UO:0000000|unit=UO:0000031|minute")?;
+        writeln!(self.writer, "[1]UO:0000000|unit={unit}")?;
         writeln!(
             self.writer,
             "MS:1002815|inverse reduced ion mobility={:.8}",
@@ -214,8 +229,6 @@ impl<W: Write> LibrarySink for MzSpecLibSink<W> {
         for accession in row.protein_group.split(';') {
             writeln!(self.writer, "MS:1000885|protein accession={accession}")?;
         }
-        writeln!(self.writer, "<Interpretation=1>")?;
-        writeln!(self.writer, "MS:1003163|analyte mixture members=1")?;
         writeln!(self.writer, "<Peaks>")?;
         // Peak lists are m/z ordered here; our fragments come out in (position, ion type) order.
         // Ties broken by original index so a regenerated library is byte-identical.
@@ -321,8 +334,41 @@ mod tests {
 
     #[test]
     fn retention_term_distinguishes_irt_from_a_dataset_gradient() {
-        assert!(rendered(true).contains("[1]MS:1000896|normalized retention time=31.500000"));
-        assert!(rendered(false).contains("[1]MS:1000894|retention time=31.500000"));
+        // Both carry `minute` because the vocabulary constrains these terms to second or minute;
+        // what differs is which quantity is being reported.
+        assert!(rendered(true).contains(
+            "[1]MS:1000896|normalized retention time=31.500000\n\
+             [1]UO:0000000|unit=UO:0000031|minute\n"
+        ));
+        assert!(rendered(false).contains(
+            "[1]MS:1000894|retention time=31.500000\n\
+             [1]UO:0000000|unit=UO:0000031|minute\n"
+        ));
+    }
+
+    #[test]
+    fn library_constants_live_in_an_all_set_rather_than_in_every_entry() {
+        let text = rendered(true);
+        assert!(text.contains(
+            "<AttributeSet Spectrum=all>\n\
+             MS:1000511|ms level=2\n\
+             MS:1003072|spectrum origin type=MS:1003074|predicted spectrum\n\
+             MS:1003065|spectrum aggregation type=MS:1003074|predicted spectrum\n"
+        ));
+        // Each constant is stated once, in the set, and never repeated in the entry. No
+        // interpretation is written at all, and no `Interpretation=all` set: one crashes the
+        // reference reader, and with a single analyte there is nothing to disambiguate.
+        assert!(!text.contains("AttributeSet Interpretation"));
+        let entry = text.split("<Spectrum=1>").nth(1).unwrap();
+        for absent in [
+            "ms level",
+            "spectrum origin type",
+            "spectrum aggregation type",
+            "<Interpretation=",
+            "analyte mixture members",
+        ] {
+            assert!(!entry.contains(absent), "{absent} written per spectrum");
+        }
     }
 
     #[test]
