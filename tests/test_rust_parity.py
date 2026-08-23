@@ -796,7 +796,7 @@ def test_mzspeclib_reports_both_retention_quantities_under_a_chrom_context(artif
         if attribute.key.endswith("other attribute value") and attribute.group_id in named
     }
     assert values["pepdistill:retention.normalized.kind"] == "dimensionless index, minutes-like"
-    assert values["pepdistill:retention.normalized.landmark_fit.reference"] == "biognosys-irt"
+    assert "TFAHTESHISK = 0" in values["pepdistill:retention.normalized.scale"]
     assert values["pepdistill:retention.raw.chrom_context"] == "dsA"
 
     chain = validator.load_default_validator()
@@ -804,22 +804,25 @@ def test_mzspeclib_reports_both_retention_quantities_under_a_chrom_context(artif
     assert [error.message for error in chain.error_log] == []
 
 
-def test_retention_scale_claim_is_measured_not_asserted(artifact, tmp_path):
-    """The landmark fit has to *refuse* a model whose index is on no known scale.
+def test_retention_scale_claim_is_checked_not_asserted(artifact, tmp_path):
+    """The anchor check has to *refuse* a model that is not on the corpus index.
 
-    This fixture is randomly initialised, so its retention head cannot be an affine image of the
-    landmark iRT scale. A gate that passed here would pass anything, and every library we publish
-    would carry a scale claim worth nothing.
+    This fixture is randomly initialised, so its retention head cannot put `TFAHTESHISK` at 0 and
+    `SILDYVSLVEK` at 100. A check that passed here would pass anything, and every library we
+    publish would carry a scale claim worth nothing.
     """
     out = _mzspeclib_library(artifact["path"], tmp_path, "library.mzspeclib.txt")
-    config = json.loads(Path(f"{out}.config.json").read_text())
-    fit = config["retention"]["normalized"]
+    normalized = json.loads(Path(f"{out}.config.json").read_text())["retention"]["normalized"]
 
-    assert fit["scale_verified"] is False
-    assert fit["landmark_fit"]["n"] == 79
-    assert fit["landmark_fit"]["r2"] < 0.98
-    # The mapping is still published, so the failure is inspectable rather than silent.
-    assert fit["to_reference"].startswith("reference_irt = (value - ")
+    assert normalized["anchor_check"]["on_scale"] is False
+    assert normalized["anchor_check"]["max_abs_error"] > 2.0
+    # The scale is described by the convention that defines it, and both anchors are named with
+    # what they predicted, so a failure says which one moved.
+    assert "TFAHTESHISK = 0" in normalized["scale"]
+    assert [a["peptide"] for a in normalized["anchor_check"]["anchors"]] == [
+        "TFAHTESHISK",
+        "SILDYVSLVEK",
+    ]
 
 
 def test_mzspeclib_gzip_is_the_same_library_compressed(artifact, tmp_path):

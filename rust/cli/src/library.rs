@@ -797,26 +797,28 @@ fn resolve_config(
     // says so in plain text rather than leaving a reader to infer it from a unit that cannot be
     // right.
     //
-    // Which index is a property of the corpus the model trained on, so it is measured rather than
-    // asserted: the landmark set is predicted here and fitted against its published values. A
-    // model on another scale reports `scale_verified: false` and its own fit instead of
-    // inheriting a claim that happens to be true of ours.
-    let fit = pepdistill_core::landmarks::landmark_fit(artifact)?;
+    // Which index is a property of the corpus the model trained on, so the scale is stated as the
+    // convention that defines it and then checked: predicting the two anchors says whether this
+    // artifact is on that scale. An artifact from another corpus reports `on_scale: false` and its
+    // own numbers rather than inheriting a claim that happens to be true of ours.
+    let anchors = pepdistill_core::landmarks::check_retention_scale(artifact)?;
     let normalized_retention = serde_json::json!({
         "term": "MS:1000896|normalized retention time",
         "kind": "dimensionless index, minutes-like",
-        "scale_verified": fit.is_consistent(),
-        "landmark_fit": {
-            "reference": "biognosys-irt",
-            "landmarks": "68 PROCAL + 11 Biognosys (ms2ml landmarks)",
-            "n": fit.n,
-            "slope": fit.slope,
-            "intercept": fit.intercept,
-            "r2": fit.r2,
-            "resid_sd": fit.resid_sd,
-            "max_abs_resid": fit.max_abs_resid,
+        "scale": pepdistill_core::landmarks::SCALE_DESCRIPTION,
+        "anchor_check": {
+            "on_scale": anchors.on_scale(),
+            "max_abs_error": anchors.max_abs_error,
+            "anchors": anchors
+                .anchors
+                .iter()
+                .map(|(peptide, expected, predicted)| serde_json::json!({
+                    "peptide": peptide,
+                    "expected": expected,
+                    "predicted": predicted,
+                }))
+                .collect::<Vec<_>>(),
         },
-        "to_reference": fit.to_reference_expression(),
     });
     let raw_retention = match opts.chrom_context {
         Some(name) => serde_json::json!({

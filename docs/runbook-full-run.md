@@ -410,30 +410,37 @@ that head, measured at +2.9% on a 1.37M-precursor digest.
 Both carry `UO:0000031|minute`, which is wrong for the index and unavoidable: the vocabulary
 constrains `MS:1000896` to second or minute, and `UO:0000186|dimensionless unit` or no unit at all
 are both MUST violations. There is no value-bearing unitless retention term to use instead. The
-index is also negative for ~3% of precursors, since the corpus iRT extends below zero. So the
-header states what the number is rather than leaving a reader to trust the unit — and it *measures*
-which scale rather than asserting it. Every run predicts 79 landmark peptides (68 PROCAL, 11
-Biognosys, values on the Biognosys iRT scale) and regresses the model's index against them:
+index is also negative for ~3% of precursors, since the corpus index extends below zero. So the
+header states what the number is rather than leaving a reader to trust the unit.
+
+The index is not a published table. It is a linear interpolation between two PROCAL standards
+pinned to 0 and 100, which is visible in the source data: `TFAHTESHISK` carries exactly 0 and
+`SILDYVSLVEK` exactly 100 across thousands of PSMs. That makes the scale definable rather than
+merely nameable, and makes "is this artifact on it?" a one-line check — every run predicts the two
+anchors:
 
 ```
-pepdistill:retention.normalized.kind                  = dimensionless index, minutes-like
-pepdistill:retention.normalized.scale_verified        = true
-pepdistill:retention.normalized.landmark_fit.slope    = 0.7885239615909205
-pepdistill:retention.normalized.landmark_fit.r2       = 0.9932193227565927
-pepdistill:retention.normalized.to_reference          = reference_irt = (value - 22.677160) / 0.788524
-pepdistill:retention.raw.chrom_context                = <dataset>   # only when one was named
+pepdistill:retention.normalized.kind                     = dimensionless index, minutes-like
+pepdistill:retention.normalized.scale                    = linear interpolation anchored at
+                                                           TFAHTESHISK = 0 and SILDYVSLVEK = 100
+                                                           (PROCAL standards, PROSPECT convention)
+pepdistill:retention.normalized.anchor_check.on_scale    = true
+pepdistill:retention.normalized.anchor_check.max_abs_error = 0.107
+pepdistill:retention.raw.chrom_context                   = <dataset>   # only when one was named
 ```
 
-`scale_verified` is the fit passing (n >= 20, r² >= 0.98, positive slope), not a hardcoded claim, so
-a model trained on another corpus reports `false` and its own numbers instead of inheriting ours.
-`to_reference` converts a library value back to the reference scale. The current trained model fits
-at slope 0.789, r² 0.993, residual sd 2.32 — the scatter is the model's own iRT error, not scale
-disagreement. 43 of the 79 landmarks do appear in the training source, but the 36 that do not fit
-*better* (r² 0.996, slope 0.783), so the relation is not memorised.
+The current trained model puts them at 0.106 and 100.107, so `max_abs_error` is 0.107 against a
+2.0-unit tolerance; an artifact from another corpus reports `on_scale: false` and its own numbers
+rather than inheriting a claim that is only true of ours. Both anchors are heavily represented in
+training, so passing is partly memorisation — this establishes which output space the model is in,
+not how well it generalises.
 
-The threshold is on the fit rather than the residuals on purpose: a model with several index units
-of error still sits on the line, while a model on a different scale departs from it systematically
-however precise it is.
+Not measured, deliberately: a linear fit against some other vendor's iRT scale. R-squared is
+invariant under any affine map of the predictions, so it cannot tell this index apart from ten
+thousand times this index, and a reference table in another space can only establish that the two
+are affine-related — never that ours is what it claims. Nor is anything reprojected: search engines
+fit their own alignment between library and observed RT, so any affine transform of this column is
+absorbed downstream and converting would change no search result.
 
 Written by hand rather than through `mzannotate`: that crate re-derives every mass from a
 `rustyms` peptidoform, so a modification our chemistry accepts and its ontology does not would
