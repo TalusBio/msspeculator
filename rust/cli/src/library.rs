@@ -109,7 +109,12 @@ pub struct SpectrumRow<'a> {
     /// Monoisotopic mass of the neutral peptidoform, which is what a library states about an
     /// analyte; the m/z above is the charged species this entry was predicted for.
     pub neutral_mass: f64,
+    /// Retention as the requested context reports it: a dataset's gradient time in minutes with
+    /// `--chrom-context`, otherwise the context-free index.
     pub rt: f32,
+    /// The context-free index, present only when `rt` is a gradient time instead. Its presence is
+    /// what tells a sink which quantity it holds, so there is no second flag to disagree with.
+    pub irt: Option<f32>,
     pub mobility: f64,
     pub peaks: Vec<Peak<'a>>,
 }
@@ -485,6 +490,7 @@ fn spectrum_row<'a>(
         precursor_mz: prediction.precursor_mz,
         neutral_mass: (prediction.precursor_mz - pepdistill_core::chem::PROTON) * charge as f64,
         rt: prediction.rt,
+        irt: prediction.irt,
         mobility,
         peaks,
     })
@@ -629,7 +635,6 @@ pub fn write_library(opts: &LibraryOptions<'_>) -> Result<LibraryStats> {
     let max_fragments = opts.max_fragments;
     let format = LibraryFormat::for_output(opts.out);
     let out_path = opts.out.to_string();
-    let normalized_retention = opts.chrom_context.is_none();
     // Resolved before the first spectrum because an mzSpecLib header carries it, and a header is
     // the first thing on the stream. The sidecar reuses the same value, so the copy bundled in
     // the library and the copy beside it are the same copy.
@@ -653,11 +658,9 @@ pub fn write_library(opts: &LibraryOptions<'_>) -> Result<LibraryStats> {
         let writer = BufWriter::new(stream);
         let mut sink: Box<dyn LibrarySink> = match format {
             LibraryFormat::DiannTsv => Box::new(DiannSink { writer }),
-            LibraryFormat::MzSpecLib => Box::new(crate::mzspeclib::MzSpecLibSink::new(
-                writer,
-                &out_path,
-                normalized_retention,
-            )),
+            LibraryFormat::MzSpecLib => {
+                Box::new(crate::mzspeclib::MzSpecLibSink::new(writer, &out_path))
+            }
         };
         sink.header(&header_config)?;
         let mut stats = stats;
@@ -785,6 +788,21 @@ fn resolve_config(opts: &LibraryOptions<'_>, format: LibraryFormat) -> Result<se
         }),
         None => serde_json::Value::Null,
     };
+    // What the retention numbers in this library actually are. The normalized value is an index
+    // on the standard the training corpus indexes with, not a duration, even though the
+    // vocabulary makes us declare it in minutes -- so the file says so in plain text rather than
+    // leaving a reader to infer it from a unit that cannot be right.
+    //
+    // PROCAL is the standard the PROSPECT corpus this project trains on uses. A model trained on
+    // another corpus would need this to travel in the artifact rather than be stated here.
+    let raw_retention = match opts.chrom_context {
+        Some(name) => serde_json::json!({
+            "term": "MS:1000894|retention time",
+            "unit": "minute",
+            "chrom_context": name,
+        }),
+        None => serde_json::Value::Null,
+    };
     Ok(serde_json::json!({
         "generator": {
             "tool": "pepdistill-cli library",
@@ -812,6 +830,14 @@ fn resolve_config(opts: &LibraryOptions<'_>, format: LibraryFormat) -> Result<se
         "context": {
             "ms": ms_context,
             "chrom": opts.chrom_context,
+        },
+        "retention": {
+            "normalized": {
+                "term": "MS:1000896|normalized retention time",
+                "kind": "dimensionless index, minutes-like",
+                "standard": "PROCAL",
+            },
+            "raw": raw_retention,
         },
         "fragments": {
             "min_intensity": opts.min_intensity,

@@ -36,7 +36,13 @@ pub struct Prediction {
     pub peptide: String,
     pub charge: i64,
     pub precursor_mz: f64,
+    /// Retention as the requested context reports it: a dataset's own gradient time in minutes
+    /// when a chromatography context was named, otherwise the context-free index.
     pub rt: f32,
+    /// The context-free index, carried only when `rt` is *not* it -- that is, when a
+    /// chromatography context was applied. A consumer then has both the duration and the index
+    /// without having to run the model twice or know which one `rt` holds.
+    pub irt: Option<f32>,
     pub ccs: f32,
     pub fragments: Fragments,
 }
@@ -101,6 +107,11 @@ impl PreparedContext {
             chrom_shift,
             chrom_affine,
         })
+    }
+
+    /// Whether retention will come out as a dataset's gradient time rather than as the index.
+    fn shifts_retention(&self) -> bool {
+        self.chrom_shift.is_some() || self.chrom_affine.is_some()
     }
 }
 
@@ -170,6 +181,14 @@ pub fn predict_peptide_charges_prepared(
     let predictor = Predictor::new(art);
     let encoded = predictor.encode(pep)?;
     let rt = predictor.predict_rt(&encoded, context.chrom_shift.as_ref(), context.chrom_affine)?;
+    // The chromatography context enters through the head's own input, not as an affine on its
+    // output, so the index cannot be recovered from `rt` -- it takes a second pass. The RT head
+    // is one small projection on an already-encoded peptide, unlike the per-position MS2 head.
+    let irt = if context.shifts_retention() {
+        Some(predictor.predict_rt(&encoded, None, None)?)
+    } else {
+        None
+    };
     let mz = chem::fragment_mz_matrix(&rm); // [L-1, n_ion]
     let frag_pos = pep.sequence.len() - 1;
     let modified_sequence = pep.modified_sequence();
@@ -185,6 +204,7 @@ pub fn predict_peptide_charges_prepared(
             charge,
             ms2,
             rt,
+            irt,
             ccs,
             min_intensity,
         ));
@@ -225,6 +245,12 @@ pub fn predict_peptide_batch_charges_prepared(
     let encoded = predictor.encode_batch(peptides)?;
     let rt =
         predictor.predict_rt_batch(&encoded, context.chrom_shift.as_ref(), context.chrom_affine)?;
+    // See the single-peptide path: one extra pass through the RT head, shared across the batch.
+    let irt = if context.shifts_retention() {
+        Some(predictor.predict_rt_batch(&encoded, None, None)?)
+    } else {
+        None
+    };
     let charge_outputs =
         predictor.predict_batch_charges(&encoded, charges, context.ms_shift.as_ref())?;
     let frag_pos = seq_len - 1;
@@ -240,6 +266,7 @@ pub fn predict_peptide_batch_charges_prepared(
                 charge,
                 ms2.clone(),
                 rt[peptide_i],
+                irt.as_ref().map(|irt| irt[peptide_i]),
                 *ccs,
                 min_intensity,
             ));
@@ -258,6 +285,7 @@ fn assemble_prediction(
     charge: i64,
     ms2: ndarray::Array2<f32>,
     rt: f32,
+    irt: Option<f32>,
     ccs: f32,
     min_intensity: f64,
 ) -> Prediction {
@@ -292,6 +320,7 @@ fn assemble_prediction(
         charge,
         precursor_mz: chem::precursor_mz(residue_masses, charge),
         rt,
+        irt,
         ccs,
         fragments: f,
     }

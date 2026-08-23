@@ -660,7 +660,7 @@ def test_a_fitted_context_can_be_saved_and_then_addressed_by_name(artifact, tmp_
     assert _rust(_binary(), out, ["--ms-context", NAMED_SETUP])["fragments"]["rel"]
 
 
-def _mzspeclib_library(artifact_path, directory, out_name):
+def _mzspeclib_library(artifact_path, directory, out_name, extra=()):
     """Generate a four-precursor mzSpecLib library and return its path."""
     directory.mkdir(parents=True, exist_ok=True)
     fasta = directory / "tiny.fasta"
@@ -676,6 +676,7 @@ def _mzspeclib_library(artifact_path, directory, out_name):
             str(fasta),
             "--out",
             str(out),
+            *extra,
             "--min-length",
             "8",
             "--max-length",
@@ -753,6 +754,51 @@ def test_mzspeclib_output_violates_no_rule_at_any_level(artifact, tmp_path):
     from mzspeclib.validate import validator
 
     out = _mzspeclib_library(artifact["path"], tmp_path, "library.mzspeclib.txt")
+    chain = validator.load_default_validator()
+    chain.validate_library(SpectrumLibrary(filename=str(out)))
+    assert [error.message for error in chain.error_log] == []
+
+
+def test_mzspeclib_reports_both_retention_quantities_under_a_chrom_context(artifact, tmp_path):
+    """A named dataset makes `rt` a gradient time, so the index has to be reported separately.
+
+    The two are not interconvertible -- the context enters the RT head's input, not its output --
+    so a library that reported only one would have thrown the other away.
+    """
+    pytest.importorskip("mzspeclib", reason="pip install mzspeclib to check validity")
+    from mzspeclib import SpectrumLibrary
+    from mzspeclib.validate import validator
+
+    out = _mzspeclib_library(
+        artifact["path"], tmp_path, "library.mzspeclib.txt", extra=("--chrom-context", "dsA")
+    )
+    text = out.read_text()
+    assert "MS:1000894|retention time=" in text
+    assert "MS:1000896|normalized retention time=" in text
+
+    library = SpectrumLibrary(filename=str(out))
+    for spectrum in library.read():
+        raw = spectrum.get_attribute("MS:1000894|retention time")
+        index = spectrum.get_attribute("MS:1000896|normalized retention time")
+        assert raw is not None and index is not None
+        # A shifted head does not reproduce the context-free value, or the context did nothing.
+        assert raw != index
+
+    # The header states which of the two is an index, and on what standard.
+    named = {
+        attribute.group_id: attribute.value
+        for attribute in library.attributes
+        if attribute.key.endswith("other attribute name")
+    }
+    values = {
+        named[attribute.group_id]: attribute.value
+        for attribute in library.attributes
+        if attribute.key.endswith("other attribute value") and attribute.group_id in named
+    }
+    assert values["pepdistill:retention.normalized.kind"] == "dimensionless index, minutes-like"
+    assert values["pepdistill:retention.normalized.standard"] == "PROCAL"
+    assert values["pepdistill:retention.raw.chrom_context"] == "dsA"
+
     chain = validator.load_default_validator()
     chain.validate_library(SpectrumLibrary(filename=str(out)))
     assert [error.message for error in chain.error_log] == []

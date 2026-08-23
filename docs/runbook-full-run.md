@@ -399,6 +399,29 @@ and modification setting, the acquisition context -- so the library and its prov
 separated by a copy. The `config.json` sidecar still holds the same content for the TSV, which
 carries none of it.
 
+#### Retention in mzSpecLib
+
+Without `--chrom-context` there is one retention number, the context-free index, written as
+`MS:1000896|normalized retention time`. With one, there are two — that dataset's gradient time as
+`MS:1000894|retention time` and the index alongside it — because the chromatography context enters
+the RT head's *input*, so neither value can be derived from the other. Costs one extra pass through
+that head, measured at +2.9% on a 1.37M-precursor digest.
+
+Both carry `UO:0000031|minute`, which is wrong for the index and unavoidable: the vocabulary
+constrains `MS:1000896` to second or minute, and `UO:0000186|dimensionless unit` or no unit at all
+are both MUST violations. There is no value-bearing unitless retention term to use instead. The
+index is also negative for ~3% of precursors, since the corpus iRT extends below zero. So the
+header states what the number is rather than leaving a reader to trust the unit:
+
+```
+pepdistill:retention.normalized.kind     = dimensionless index, minutes-like
+pepdistill:retention.normalized.standard = PROCAL
+pepdistill:retention.raw.chrom_context   = <dataset>      # only when one was named
+```
+
+`PROCAL` is the standard the PROSPECT corpus indexes with. A model trained on another corpus would
+need that to travel in the artifact instead of being stated by the CLI.
+
 Written by hand rather than through `mzannotate`: that crate re-derives every mass from a
 `rustyms` peptidoform, so a modification our chemistry accepts and its ontology does not would
 abort a whole-proteome run. Conformance is checked instead by the reference Python implementation:

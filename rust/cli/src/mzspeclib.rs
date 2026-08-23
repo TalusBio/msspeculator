@@ -32,14 +32,11 @@ const VERSION_KEY: &str = "generator.version";
 pub struct MzSpecLibSink<W: Write> {
     writer: W,
     name: String,
-    /// True when retention is predicted iRT (no `--chrom-context`) rather than a dataset's own
-    /// gradient time. The two are different quantities and get different terms.
-    normalized_retention: bool,
     spectra: u64,
 }
 
 impl<W: Write> MzSpecLibSink<W> {
-    pub fn new(writer: W, out_path: &str, normalized_retention: bool) -> Self {
+    pub fn new(writer: W, out_path: &str) -> Self {
         // `library.mzspeclib.txt.gz` -> `library`: the name a reader shows, with our suffixes and
         // the directory stripped off.
         let name = Path::new(out_path)
@@ -56,7 +53,6 @@ impl<W: Write> MzSpecLibSink<W> {
             } else {
                 name
             },
-            normalized_retention,
             spectra: 0,
         }
     }
@@ -177,20 +173,36 @@ impl<W: Write> LibrarySink for MzSpecLibSink<W> {
         )?;
         // `ms level`, origin type and aggregation type are in the header's `Spectrum=all` set.
         //
-        // Retention needs a unit, and the unit is a second attribute in the same group. An iRT is
-        // an index against a normalization standard rather than a duration, so `minute` overstates
-        // it -- but the vocabulary constrains `MS:1000896` to second or minute, and both
-        // `UO:0000186|dimensionless unit` and omitting the unit are MUST violations. There is no
-        // value-bearing unitless retention term to switch to (`MS:1002005` names a calibration
-        // standard, `MS:4000149` is a formula). So the choice is this or no CV retention term at
-        // all, and dropping it would hide the RT from every standard reader.
-        let (retention_term, unit) = if self.normalized_retention {
-            ("MS:1000896|normalized retention time", "UO:0000031|minute")
-        } else {
-            ("MS:1000894|retention time", "UO:0000031|minute")
-        };
-        writeln!(self.writer, "[1]{retention_term}={:.6}", row.rt)?;
-        writeln!(self.writer, "[1]UO:0000000|unit={unit}")?;
+        // Retention needs a unit, and the unit is a second attribute in the same group. An index
+        // is not a duration, so `minute` overstates it -- but the vocabulary constrains
+        // `MS:1000896` to second or minute, and both `UO:0000186|dimensionless unit` and omitting
+        // the unit are MUST violations. There is no value-bearing unitless retention term to
+        // switch to (`MS:1002005` names a calibration standard, `MS:4000149` is a formula), so the
+        // alternative is no CV retention term at all, which hides the RT from every reader. The
+        // header says what the index really is; `pepdistill:retention.normalized.kind` spells it.
+        //
+        // With a chromatography context both quantities exist and both are reported, in separate
+        // groups: the gradient time under the term whose unit claim is simply true, and the index
+        // under the normalized term. A reader wanting a duration then has a real one.
+        match row.irt {
+            Some(irt) => {
+                writeln!(self.writer, "[1]MS:1000894|retention time={:.6}", row.rt)?;
+                writeln!(self.writer, "[1]UO:0000000|unit=UO:0000031|minute")?;
+                writeln!(
+                    self.writer,
+                    "[2]MS:1000896|normalized retention time={irt:.6}"
+                )?;
+                writeln!(self.writer, "[2]UO:0000000|unit=UO:0000031|minute")?;
+            }
+            None => {
+                writeln!(
+                    self.writer,
+                    "[1]MS:1000896|normalized retention time={:.6}",
+                    row.rt
+                )?;
+                writeln!(self.writer, "[1]UO:0000000|unit=UO:0000031|minute")?;
+            }
+        }
         writeln!(
             self.writer,
             "MS:1002815|inverse reduced ion mobility={:.8}",
@@ -265,6 +277,10 @@ mod tests {
     use super::*;
     use crate::library::{Peak, SpectrumRow};
 
+    fn row_with_irt(irt: Option<f32>) -> SpectrumRow<'static> {
+        SpectrumRow { irt, ..row() }
+    }
+
     fn row() -> SpectrumRow<'static> {
         SpectrumRow {
             stripped: "PEPTIDEK",
@@ -275,6 +291,7 @@ mod tests {
             precursor_mz: 456.75,
             neutral_mass: 911.48544707,
             rt: 31.5,
+            irt: None,
             mobility: 0.98,
             peaks: vec![
                 Peak {
@@ -295,22 +312,22 @@ mod tests {
         }
     }
 
-    fn rendered(normalized_retention: bool) -> String {
-        let mut sink =
-            MzSpecLibSink::new(Vec::new(), "out/lib.mzspeclib.txt.gz", normalized_retention);
+    /// `irt` present means a chromatography context was applied, so `rt` is a gradient time.
+    fn rendered(irt: Option<f32>) -> String {
+        let mut sink = MzSpecLibSink::new(Vec::new(), "out/lib.mzspeclib.txt.gz");
         sink.header(&serde_json::json!({
             "inputs": {"model": "m.safetensors", "fasta": null},
             "fragments": {"max_fragments": 15},
             "modifications": {"variable": ["M[UNIMOD:35]"]},
         }))
         .unwrap();
-        sink.spectrum(&row()).unwrap();
+        sink.spectrum(&row_with_irt(irt)).unwrap();
         String::from_utf8(sink.writer).unwrap()
     }
 
     #[test]
     fn header_carries_the_resolved_configuration() {
-        let text = rendered(true);
+        let text = rendered(None);
         assert!(text.starts_with("<mzSpecLib>\nMS:1003186|library format version=1.0\n"));
         assert!(text.contains("MS:1003188|library name=lib\n"));
         assert!(text.contains("MS:1003275|other attribute name=pepdistill:inputs.model"));
@@ -323,7 +340,7 @@ mod tests {
 
     #[test]
     fn peaks_are_mz_ordered_and_annotated_as_mzpaf() {
-        let text = rendered(true);
+        let text = rendered(None);
         let peaks = text.split("<Peaks>\n").nth(1).unwrap();
         let lines: Vec<&str> = peaks.lines().filter(|line| !line.is_empty()).collect();
         assert_eq!(
@@ -333,22 +350,33 @@ mod tests {
     }
 
     #[test]
-    fn retention_term_distinguishes_irt_from_a_dataset_gradient() {
-        // Both carry `minute` because the vocabulary constrains these terms to second or minute;
-        // what differs is which quantity is being reported.
-        assert!(rendered(true).contains(
+    fn an_index_only_entry_reports_only_the_normalized_term() {
+        // `minute` because the vocabulary constrains this term to second or minute; the header
+        // records that the number is an index. There is no gradient time to report here.
+        let text = rendered(None);
+        assert!(text.contains(
             "[1]MS:1000896|normalized retention time=31.500000\n\
              [1]UO:0000000|unit=UO:0000031|minute\n"
         ));
-        assert!(rendered(false).contains(
+        assert!(!text.contains("MS:1000894|retention time"));
+    }
+
+    #[test]
+    fn a_chromatography_context_reports_the_gradient_time_and_the_index() {
+        // Two quantities, two groups: the duration under the term whose unit claim is true, the
+        // index under the normalized term. A reader wanting minutes has real ones.
+        let text = rendered(Some(37.75));
+        assert!(text.contains(
             "[1]MS:1000894|retention time=31.500000\n\
-             [1]UO:0000000|unit=UO:0000031|minute\n"
+             [1]UO:0000000|unit=UO:0000031|minute\n\
+             [2]MS:1000896|normalized retention time=37.750000\n\
+             [2]UO:0000000|unit=UO:0000031|minute\n"
         ));
     }
 
     #[test]
     fn library_constants_live_in_an_all_set_rather_than_in_every_entry() {
-        let text = rendered(true);
+        let text = rendered(None);
         assert!(text.contains(
             "<AttributeSet Spectrum=all>\n\
              MS:1000511|ms level=2\n\
@@ -373,7 +401,7 @@ mod tests {
 
     #[test]
     fn protein_group_members_are_separate_attributes() {
-        let text = rendered(true);
+        let text = rendered(None);
         assert!(text.contains("MS:1000885|protein accession=P1\nMS:1000885|protein accession=P2\n"));
     }
 }

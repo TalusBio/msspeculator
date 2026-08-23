@@ -350,6 +350,9 @@ fn to_json(
         "charge": prediction.charge,
         "precursor_mz": prediction.precursor_mz,
         "rt": prediction.rt,
+        // Only present with a chromatography context, where `rt` is that dataset's gradient time
+        // and this is the context-free index the same peptide sits at.
+        "irt": prediction.irt,
         "ccs": prediction.ccs,
         "ms_context": ms_context,
         "chrom_context": chrom_context,
