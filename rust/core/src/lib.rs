@@ -9,6 +9,7 @@ pub mod bucket;
 pub mod chem;
 pub mod composition;
 pub mod fit;
+pub mod landmarks;
 pub mod model;
 pub mod peptide;
 pub mod proforma;

@@ -638,7 +638,7 @@ pub fn write_library(opts: &LibraryOptions<'_>) -> Result<LibraryStats> {
     // Resolved before the first spectrum because an mzSpecLib header carries it, and a header is
     // the first thing on the stream. The sidecar reuses the same value, so the copy bundled in
     // the library and the copy beside it are the same copy.
-    let config = resolve_config(opts, format)?;
+    let config = resolve_config(opts, format, &artifact)?;
     let header_config = config.clone();
     let writer_file =
         File::create(opts.out).with_context(|| format!("creating library {}", opts.out))?;
@@ -772,7 +772,11 @@ fn file_digest(path: &str) -> Result<String> {
 /// [`write_config`] appends them. A library whose provenance lives only in a shell history is one
 /// nobody can regenerate or trust, which is why this value is both embedded (mzSpecLib) and
 /// written beside the library (sidecar) rather than reassembled per format.
-fn resolve_config(opts: &LibraryOptions<'_>, format: LibraryFormat) -> Result<serde_json::Value> {
+fn resolve_config(
+    opts: &LibraryOptions<'_>,
+    format: LibraryFormat,
+    artifact: &Artifact,
+) -> Result<serde_json::Value> {
     let ms_context = match opts.ms_context {
         Some(pepdistill_core::MsContext::Named(name)) => serde_json::json!({"setup": name}),
         Some(pepdistill_core::MsContext::Factors {
@@ -788,13 +792,32 @@ fn resolve_config(opts: &LibraryOptions<'_>, format: LibraryFormat) -> Result<se
         }),
         None => serde_json::Value::Null,
     };
-    // What the retention numbers in this library actually are. The normalized value is an index
-    // on the standard the training corpus indexes with, not a duration, even though the
-    // vocabulary makes us declare it in minutes -- so the file says so in plain text rather than
-    // leaving a reader to infer it from a unit that cannot be right.
+    // What the retention numbers in this library actually are. The normalized value is an index,
+    // not a duration, even though the vocabulary makes us declare it in minutes -- so the file
+    // says so in plain text rather than leaving a reader to infer it from a unit that cannot be
+    // right.
     //
-    // PROCAL is the standard the PROSPECT corpus this project trains on uses. A model trained on
-    // another corpus would need this to travel in the artifact rather than be stated here.
+    // Which index is a property of the corpus the model trained on, so it is measured rather than
+    // asserted: the landmark set is predicted here and fitted against its published values. A
+    // model on another scale reports `scale_verified: false` and its own fit instead of
+    // inheriting a claim that happens to be true of ours.
+    let fit = pepdistill_core::landmarks::landmark_fit(artifact)?;
+    let normalized_retention = serde_json::json!({
+        "term": "MS:1000896|normalized retention time",
+        "kind": "dimensionless index, minutes-like",
+        "scale_verified": fit.is_consistent(),
+        "landmark_fit": {
+            "reference": "biognosys-irt",
+            "landmarks": "68 PROCAL + 11 Biognosys (ms2ml landmarks)",
+            "n": fit.n,
+            "slope": fit.slope,
+            "intercept": fit.intercept,
+            "r2": fit.r2,
+            "resid_sd": fit.resid_sd,
+            "max_abs_resid": fit.max_abs_resid,
+        },
+        "to_reference": fit.to_reference_expression(),
+    });
     let raw_retention = match opts.chrom_context {
         Some(name) => serde_json::json!({
             "term": "MS:1000894|retention time",
@@ -832,11 +855,7 @@ fn resolve_config(opts: &LibraryOptions<'_>, format: LibraryFormat) -> Result<se
             "chrom": opts.chrom_context,
         },
         "retention": {
-            "normalized": {
-                "term": "MS:1000896|normalized retention time",
-                "kind": "dimensionless index, minutes-like",
-                "standard": "PROCAL",
-            },
+            "normalized": normalized_retention,
             "raw": raw_retention,
         },
         "fragments": {

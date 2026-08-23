@@ -411,16 +411,29 @@ Both carry `UO:0000031|minute`, which is wrong for the index and unavoidable: th
 constrains `MS:1000896` to second or minute, and `UO:0000186|dimensionless unit` or no unit at all
 are both MUST violations. There is no value-bearing unitless retention term to use instead. The
 index is also negative for ~3% of precursors, since the corpus iRT extends below zero. So the
-header states what the number is rather than leaving a reader to trust the unit:
+header states what the number is rather than leaving a reader to trust the unit — and it *measures*
+which scale rather than asserting it. Every run predicts 79 landmark peptides (68 PROCAL, 11
+Biognosys, values on the Biognosys iRT scale) and regresses the model's index against them:
 
 ```
-pepdistill:retention.normalized.kind     = dimensionless index, minutes-like
-pepdistill:retention.normalized.standard = PROCAL
-pepdistill:retention.raw.chrom_context   = <dataset>      # only when one was named
+pepdistill:retention.normalized.kind                  = dimensionless index, minutes-like
+pepdistill:retention.normalized.scale_verified        = true
+pepdistill:retention.normalized.landmark_fit.slope    = 0.7885239615909205
+pepdistill:retention.normalized.landmark_fit.r2       = 0.9932193227565927
+pepdistill:retention.normalized.to_reference          = reference_irt = (value - 22.677160) / 0.788524
+pepdistill:retention.raw.chrom_context                = <dataset>   # only when one was named
 ```
 
-`PROCAL` is the standard the PROSPECT corpus indexes with. A model trained on another corpus would
-need that to travel in the artifact instead of being stated by the CLI.
+`scale_verified` is the fit passing (n >= 20, r² >= 0.98, positive slope), not a hardcoded claim, so
+a model trained on another corpus reports `false` and its own numbers instead of inheriting ours.
+`to_reference` converts a library value back to the reference scale. The current trained model fits
+at slope 0.789, r² 0.993, residual sd 2.32 — the scatter is the model's own iRT error, not scale
+disagreement. 43 of the 79 landmarks do appear in the training source, but the 36 that do not fit
+*better* (r² 0.996, slope 0.783), so the relation is not memorised.
+
+The threshold is on the fit rather than the residuals on purpose: a model with several index units
+of error still sits on the line, while a model on a different scale departs from it systematically
+however precise it is.
 
 Written by hand rather than through `mzannotate`: that crate re-derives every mass from a
 `rustyms` peptidoform, so a modification our chemistry accepts and its ontology does not would

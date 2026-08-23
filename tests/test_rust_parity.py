@@ -796,12 +796,30 @@ def test_mzspeclib_reports_both_retention_quantities_under_a_chrom_context(artif
         if attribute.key.endswith("other attribute value") and attribute.group_id in named
     }
     assert values["pepdistill:retention.normalized.kind"] == "dimensionless index, minutes-like"
-    assert values["pepdistill:retention.normalized.standard"] == "PROCAL"
+    assert values["pepdistill:retention.normalized.landmark_fit.reference"] == "biognosys-irt"
     assert values["pepdistill:retention.raw.chrom_context"] == "dsA"
 
     chain = validator.load_default_validator()
     chain.validate_library(SpectrumLibrary(filename=str(out)))
     assert [error.message for error in chain.error_log] == []
+
+
+def test_retention_scale_claim_is_measured_not_asserted(artifact, tmp_path):
+    """The landmark fit has to *refuse* a model whose index is on no known scale.
+
+    This fixture is randomly initialised, so its retention head cannot be an affine image of the
+    landmark iRT scale. A gate that passed here would pass anything, and every library we publish
+    would carry a scale claim worth nothing.
+    """
+    out = _mzspeclib_library(artifact["path"], tmp_path, "library.mzspeclib.txt")
+    config = json.loads(Path(f"{out}.config.json").read_text())
+    fit = config["retention"]["normalized"]
+
+    assert fit["scale_verified"] is False
+    assert fit["landmark_fit"]["n"] == 79
+    assert fit["landmark_fit"]["r2"] < 0.98
+    # The mapping is still published, so the failure is inspectable rather than silent.
+    assert fit["to_reference"].startswith("reference_irt = (value - ")
 
 
 def test_mzspeclib_gzip_is_the_same_library_compressed(artifact, tmp_path):
