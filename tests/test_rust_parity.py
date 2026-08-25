@@ -804,6 +804,32 @@ def test_mzspeclib_reports_both_retention_quantities_under_a_chrom_context(artif
     assert [error.message for error in chain.error_log] == []
 
 
+def test_the_binary_predicts_with_no_model_argument():
+    """A fresh build has to be able to predict, which is the point of bundling the weights.
+
+    Also pins the default: were it to fall back to a path, this would fail with a missing file
+    rather than silently predicting from something unexpected.
+    """
+    r = subprocess.run(
+        [_binary(), "predict", "--peptide", PEPTIDE, "--charge", str(CHARGE)],
+        capture_output=True,
+        text=True,
+    )
+    assert r.returncode == 0, r.stderr
+    prediction = json.loads(r.stdout)
+    assert prediction["fragments"]["mz"], "bundled model produced no fragments"
+    assert prediction["rt"] == pytest.approx(41.0, abs=40.0), "implausible retention index"
+
+    unknown = subprocess.run(
+        [_binary(), "predict", "--model", "builtin:nope", "--peptide", PEPTIDE, "--charge", "2"],
+        capture_output=True,
+        text=True,
+    )
+    assert unknown.returncode != 0
+    # The error names what this build actually carries, so the fix is readable from it.
+    assert "small-v0" in unknown.stderr
+
+
 def test_retention_scale_claim_is_checked_not_asserted(artifact, tmp_path):
     """The anchor check has to *refuse* a model that is not on the corpus index.
 

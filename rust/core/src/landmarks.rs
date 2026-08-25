@@ -94,6 +94,25 @@ mod tests {
     }
 
     #[test]
+    fn the_bundled_model_is_on_the_corpus_scale() {
+        // The positive case, which nothing could cover before weights were bundled: a randomly
+        // initialised artifact can only ever demonstrate the check *failing*.
+        let loaded = crate::builtin::load_model("builtin:small-v0").unwrap();
+        let check = check_retention_scale(&loaded.artifact).unwrap();
+        assert!(
+            check.on_scale(),
+            "bundled model is off its own scale by {}",
+            check.max_abs_error
+        );
+        for (sequence, expected, predicted) in &check.anchors {
+            assert!(
+                (predicted - expected).abs() < 1.0,
+                "{sequence} predicted {predicted}, defined as {expected}"
+            );
+        }
+    }
+
+    #[test]
     fn an_offset_beyond_tolerance_is_off_scale() {
         let on = AnchorCheck {
             anchors: vec![("A", 0.0, 0.11), ("B", 100.0, 100.11)],

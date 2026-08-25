@@ -372,16 +372,38 @@ launchpad run tools/launchpad_prepared_train.py --stage .launchpad/full-run-stag
 
 ## 4. Generate a library and search it
 
-Export once, then generate the library directly in Rust. CCS is retained in prediction results;
-the DIA-NN adapter reports ion mobility as Bruker 1/K0.
+The binary carries weights, so a fresh clone predicts with nothing staged:
+
+```bash
+cargo run -q --release -p pepdistill-cli -- \
+  library --fasta proteome.fasta --out library.tsv --ms-context "Lumos::FTMS::HCD::30"
+timsseek --raw-inputs sample.d --speclib-uri library.tsv --output-uri search-results
+```
+
+`--model` defaults to `builtin:small-v0`, the `small` preset at 0.8054 mean per-dataset spectral
+agreement. The `v0` is deliberate: the preset sweep that picks a production model has not run, so
+this is a working default rather than a blessed release. `--model builtin:NAME` selects another
+bundled artifact and an unknown name lists what the build carries; anything without the
+`builtin:` prefix is read as a path, so your own export still works:
 
 ```bash
 pepdistill export-rust --model runs/full/model.ckpt -o runs/full/model.safetensors
 cargo run -q --release -p pepdistill-cli -- \
-  library --model runs/full/model.safetensors --fasta proteome.fasta --out library.tsv \
-  --ms-context "Lumos::FTMS::HCD::30"
-timsseek --raw-inputs sample.d --speclib-uri library.tsv --output-uri search-results
+  library --model runs/full/model.safetensors --fasta proteome.fasta --out library.tsv
 ```
+
+Weights are vendored at `rust/core/data/weights/` and embedded with `include_bytes!`, the same way
+`unimod.tsv` is. A build-time download was the alternative and it defeats the point: no offline
+build, a fetch dependency inside `cross`'s container, and — while this repo is private — a GitHub
+token for every clean clone. Once the repo is public, switching to a release asset is one line here
+plus a `build.rs`. Anything too large for version control belongs in a *runtime* fetch instead,
+which leaves clean-clone builds intact.
+
+Either way the identity is the digest, not the path: a library's provenance records
+`model: builtin:small-v0` with its blake2b, and a test asserts the vendored bytes still hash to the
+value recorded beside them, so weights cannot be swapped silently under a name.
+
+CCS is retained in prediction results; the DIA-NN adapter reports ion mobility as Bruker 1/K0.
 
 #### Output format
 

@@ -3,7 +3,8 @@
 Drives a **staged** `pepdistill-cli` binary; it does not build one. The launchpad container
 pre-installs nothing -- no Rust toolchain, no `aws`, no `curl` -- so the binary is cross-compiled
 once locally (`cross build --release --target x86_64-unknown-linux-musl`) and staged alongside the
-model and the FASTA. musl means a static binary that does not care what the image's glibc is.
+FASTA. musl means a static binary that does not care what the image's glibc is, and the binary
+carries its own weights, so only the FASTA has to be staged with it.
 
 One library, one object, mzSpecLib by default so the published object carries its own provenance.
 `--max-fragments 15` and gzip output put a whole human tryptic CysPAT/Ox/Phospho library at ~10 GB,
@@ -83,7 +84,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     env = os.environ.get
     parser.add_argument("--binary", default=env("PEPDISTILL_SPECLIB_BINARY", "./pepdistill-cli"))
-    parser.add_argument("--model", default=env("PEPDISTILL_SPECLIB_MODEL", "./model.safetensors"))
+    # The binary carries its weights, so there is nothing to stage unless a different model is
+    # wanted. A `builtin:` spec is passed through untouched; anything else is staged or downloaded.
+    parser.add_argument("--model", default=env("PEPDISTILL_SPECLIB_MODEL", "builtin:small-v0"))
     parser.add_argument("--fasta", default=env("PEPDISTILL_SPECLIB_FASTA", "./proteome.fasta"))
     parser.add_argument(
         "--out-prefix",
@@ -142,7 +145,11 @@ def main() -> None:
     work.mkdir(exist_ok=True)
     binary = staged(args.binary, work / "pepdistill-cli")
     binary.chmod(0o755)
-    model = staged(args.model, work / "model.safetensors")
+    model = (
+        args.model
+        if args.model.startswith("builtin:")
+        else str(staged(args.model, work / "model.safetensors"))
+    )
     fasta = staged(args.fasta, work / "proteome.fasta")
 
     # mzSpecLib, gzipped: this script publishes libraries other people consume, and mzSpecLib is

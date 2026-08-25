@@ -603,7 +603,8 @@ pub fn write_library(opts: &LibraryOptions<'_>) -> Result<LibraryStats> {
     if peptides.is_empty() {
         bail!("FASTA digest produced no peptides");
     }
-    let mut artifact = Artifact::load(opts.model)?;
+    let model = pepdistill_core::builtin::load_model(opts.model)?;
+    let mut artifact = model.artifact;
     apply_activation_override(&mut artifact, opts.activation)?;
     let context = PreparedContext::new(&artifact, opts.ms_context, opts.chrom_context)?;
     let charges = (opts.min_charge..=opts.max_charge).collect::<Vec<_>>();
@@ -638,7 +639,7 @@ pub fn write_library(opts: &LibraryOptions<'_>) -> Result<LibraryStats> {
     // Resolved before the first spectrum because an mzSpecLib header carries it, and a header is
     // the first thing on the stream. The sidecar reuses the same value, so the copy bundled in
     // the library and the copy beside it are the same copy.
-    let config = resolve_config(opts, format, &artifact)?;
+    let config = resolve_config(opts, format, &artifact, &model.digest)?;
     let header_config = config.clone();
     let writer_file =
         File::create(opts.out).with_context(|| format!("creating library {}", opts.out))?;
@@ -776,6 +777,7 @@ fn resolve_config(
     opts: &LibraryOptions<'_>,
     format: LibraryFormat,
     artifact: &Artifact,
+    model_digest: &str,
 ) -> Result<serde_json::Value> {
     let ms_context = match opts.ms_context {
         Some(pepdistill_core::MsContext::Named(name)) => serde_json::json!({"setup": name}),
@@ -834,8 +836,11 @@ fn resolve_config(
             "version": env!("CARGO_PKG_VERSION"),
         },
         "inputs": {
+            // The spec as asked for, which for a bundled model is a name rather than a path. A
+            // temp path is not an identity; the digest is, and it is computed from the bytes that
+            // were actually loaded either way.
             "model": opts.model,
-            "model_blake2b_256": file_digest(opts.model)?,
+            "model_blake2b_256": model_digest,
             "fasta": opts.fasta,
             "fasta_blake2b_256": file_digest(opts.fasta)?,
         },

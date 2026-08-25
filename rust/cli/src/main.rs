@@ -4,7 +4,7 @@ use std::str::FromStr;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use pepdistill_core::{fit, predict, speclib, Artifact, MsContext, Prediction};
+use pepdistill_core::{builtin, fit, predict, speclib, MsContext, Prediction};
 use serde_json::json;
 
 mod diagnostics;
@@ -72,8 +72,10 @@ impl FromStr for AddUnimod {
 
 #[derive(clap::Args)]
 struct ArtifactArgs {
-    /// Path to the .safetensors artifact (from `pepdistill export-rust`).
-    #[arg(long)]
+    /// The model: a path to a .safetensors artifact (from `pepdistill export-rust`), or
+    /// `builtin:NAME` for one compiled into this binary. Defaults to the bundled model, so a
+    /// fresh build predicts without staging anything.
+    #[arg(long, default_value = "builtin:small-v0")]
     model: String,
     /// Override the artifact activation for a controlled inference benchmark.
     #[arg(long, value_name = "ACTIVATION")]
@@ -269,7 +271,7 @@ struct FitContextArgs {
 }
 
 fn run_fit_context(args: FitContextArgs) -> Result<()> {
-    let mut artifact = Artifact::load(&args.artifact.model)?;
+    let mut artifact = builtin::load_model(&args.artifact.model)?.artifact;
     library::apply_activation_override(&mut artifact, args.artifact.activation.as_deref())?;
 
     let spec = speclib::LibrarySpec {
@@ -367,7 +369,7 @@ fn to_json(
 }
 
 fn run_predict(args: PredictArgs) -> Result<()> {
-    let mut artifact = Artifact::load(&args.artifact.model)?;
+    let mut artifact = builtin::load_model(&args.artifact.model)?.artifact;
     library::apply_activation_override(&mut artifact, args.artifact.activation.as_deref())?;
     let ms_context = args.context.ms_context();
     let prediction = predict(
@@ -440,7 +442,7 @@ fn run_library(args: LibraryArgs) -> Result<()> {
 }
 
 fn run_doctor(args: DoctorArgs) -> Result<()> {
-    let mut artifact = Artifact::load(&args.artifact.model)?;
+    let mut artifact = builtin::load_model(&args.artifact.model)?.artifact;
     library::apply_activation_override(&mut artifact, args.artifact.activation.as_deref())?;
     let report = diagnostics::run_doctor(&artifact, &args.out)?;
     println!("{}", report.terminal_plot);

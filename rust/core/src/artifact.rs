@@ -122,8 +122,13 @@ impl Artifact {
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
         let buf = std::fs::read(path.as_ref())
             .with_context(|| format!("reading {}", path.as_ref().display()))?;
+        Self::from_bytes(&buf)
+    }
 
-        let (_, header) = SafeTensors::read_metadata(&buf).context("parsing safetensors header")?;
+    /// Read an artifact already in memory, which is how a bundled one arrives: `include_bytes!`
+    /// hands over a `&'static [u8]` that was never a file on the machine doing the reading.
+    pub fn from_bytes(buf: &[u8]) -> Result<Self> {
+        let (_, header) = SafeTensors::read_metadata(buf).context("parsing safetensors header")?;
         let map = header
             .metadata()
             .as_ref()
@@ -152,7 +157,7 @@ impl Artifact {
             ));
         }
 
-        let st = SafeTensors::deserialize(&buf).context("deserializing tensors")?;
+        let st = SafeTensors::deserialize(buf).context("deserializing tensors")?;
         let mut tensors = HashMap::new();
         for name in st.names() {
             let view = st.tensor(name)?;

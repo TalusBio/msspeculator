@@ -6,6 +6,7 @@
 
 pub mod artifact;
 pub mod bucket;
+pub mod builtin;
 pub mod chem;
 pub mod composition;
 pub mod fit;

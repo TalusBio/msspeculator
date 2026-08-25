@@ -62,7 +62,8 @@ like residue masses, are exported from the Rust chemistry authority.
 ## Inference and output
 
 The Python predictor writes long-format Parquet. The production Rust path loads a self-contained,
-versioned `.safetensors` artifact, digests FASTA, batches equal-length precursors, and uses a
+versioned `.safetensors` artifact -- from a path, or from the one vendored into the binary, so a
+clean clone builds a tool that predicts -- digests FASTA, batches equal-length precursors, and uses a
 bounded worker pool feeding one writer thread. FASTA output streams as either a DIA-NN TSV or an
 mzSpecLib text library, selected by the `--out` suffix and optionally gzipped in that same writer
 thread; precursor CCS is converted to ion mobility in 1/K0. Output row order is intentionally
