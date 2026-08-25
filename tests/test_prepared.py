@@ -637,3 +637,42 @@ def test_without_a_local_cache_shards_are_read_from_their_source_every_time(tmp_
     shutil.rmtree(out)
     with pytest.raises(FileNotFoundError):
         list(dataset.iter_examples(epoch=0, shuffle=False))
+
+
+def test_vendored_manifests_state_their_own_provenance():
+    """Each manifest has to say where it came from and what regenerates it.
+
+    JSON takes no comments, so `_source` / `_generator` keys are the in-band equivalent of the
+    `#` headers on the vendored TSVs. They are written by the builders rather than hand-added, so
+    a refresh cannot quietly drop them -- which is what had happened: the builders emitted a
+    one-line note while the checked-in files carried a richer one, because neither builder wrote
+    to the path its loader reads.
+    """
+    from pepdistill.data.prospect_catalog import load_catalog, load_shard_index
+
+    for name, manifest in (("catalog", load_catalog()), ("shards", load_shard_index())):
+        assert "pepdistill.data.prospect_catalog:build_" in manifest["_generator"], name
+        assert manifest["_source"], name
+        assert manifest["records"], name
+
+
+def test_a_rebuilt_manifest_lands_where_its_loader_reads(tmp_path: Path):
+    """The bug this guards: the catalog was written `.gz` but read plain, the shard index the
+    reverse, so running either builder left the file being loaded untouched and its provenance
+    free to drift.
+
+    Writing to a temp directory and reading back through the same asset definition is what makes
+    the two halves impossible to separate; asserting on the vendored files alone would pass even
+    if the writer put its output somewhere else entirely.
+    """
+    from pepdistill.data import prospect_catalog as pc
+
+    for asset in (pc._CATALOG_ASSET, pc._SHARDS_ASSET):
+        payload = {"_source": "test", "_generator": "test", "records": {"r": [1, 2]}}
+        written = pc._write_asset(asset, payload, str(tmp_path))
+        assert written.is_file(), asset
+        # The vendored copy sits at the same name the writer just produced.
+        assert (Path(pc._VENDOR_DIR) / written.name).is_file(), asset
+        # And the suffix the writer chose is the one the loader's rule resolves to.
+        name, gzipped = asset
+        assert written.name == name + (".gz" if gzipped else "")

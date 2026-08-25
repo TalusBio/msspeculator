@@ -68,9 +68,15 @@ inference is the Rust path via `export-rust`.
 - One real-data entry point (`fit_realspeclib_datasets`, over any `BatchSource`) and one RT
   normalization (`establish_rt_norm`). The in-memory `RealLabels` fit path that carried a second
   copy of both was reachable only from its own tests and is gone.
-- The vendored UNIMOD tables regenerate byte-identically from upstream: 40 nuclides and 1,560
-  modifications, verified 2026-08-20. `unimod.tsv`'s mass column stays a test fixture — mass is
-  computed from the composition and asserted against it on every row.
+- Every vendored data file states its own provenance in-band, and the claim is checkable rather
+  than trusted. The UNIMOD tables' headers carry the blake2b of the exact `unimod.xml` they were
+  extracted from, so `gen_unimod.py --expect-digest <hash>` fails if upstream has moved; on
+  2026-08-25 today's upstream reproduced both tables byte-for-byte (40 nuclides, 1,560
+  modifications). A fetch date is deliberately absent — the digest identifies the source exactly
+  and a date would make every regeneration differ. `unimod.tsv`'s mass column stays a test
+  fixture: mass is computed from the composition and asserted against it on every row. The
+  PROSPECT manifests carry `_source`/`_generator` keys written by their builders, and an exported
+  artifact carries its source checkpoint's digest plus that checkpoint's training record.
 - Real-data training decays `lr` on the same plateau signal early stopping watches, cutting the
   rate before the run is allowed to end. A horizon-based schedule does not apply to this stage:
   it ends wherever early stopping lands, and the first full local run stopped at epoch 8 of a

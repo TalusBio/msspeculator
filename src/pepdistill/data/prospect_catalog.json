@@ -1,5 +1,6 @@
 {
- "_note": "PROSPECT file catalog (Zenodo). Regenerate with data/prospect_catalog.py:build_catalog.",
+ "_generator": "pepdistill.data.prospect_catalog:build_catalog",
+ "_source": "Zenodo record metadata API for records 11472525, 11474099, 11477731, 6602020, 8221499",
  "records": {
   "multi_ptm": {
    "doi": "10.5281/zenodo.11472525",

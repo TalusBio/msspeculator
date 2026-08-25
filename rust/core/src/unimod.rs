@@ -135,6 +135,24 @@ mod tests {
         assert!(ELEMENTS_TSV.lines().next().unwrap().starts_with('#'));
         assert!(UNIMOD_TSV.lines().next().unwrap().starts_with('#'));
 
+        // A `#` alone only proves something was skipped. These are the fields that make the
+        // header worth having: where the data came from, which bytes exactly, and what to run to
+        // check that claim. A regeneration that dropped any of them would pass the assertions
+        // above while leaving "extracted from UNIMOD" as something a reader has to take on trust.
+        for (name, table) in [("elements.tsv", ELEMENTS_TSV), ("unimod.tsv", UNIMOD_TSV)] {
+            let header: String = table.lines().take_while(|l| l.starts_with('#')).collect();
+            for field in [
+                "source       https://www.unimod.org/xml/unimod.xml",
+                "source-hash  blake2b-256:",
+                "verify       uv run python tools/gen_unimod.py --expect-digest ",
+                "generator    tools/gen_unimod.py",
+                "columns      ",
+                "license      Design Science License",
+            ] {
+                assert!(header.contains(field), "{name} header is missing {field:?}");
+            }
+        }
+
         let elements_data_lines = ELEMENTS_TSV
             .lines()
             .filter(|l| !l.is_empty() && !l.starts_with('#'))
