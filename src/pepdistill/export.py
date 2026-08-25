@@ -8,12 +8,13 @@ No pickle crosses the language boundary.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
 from safetensors.torch import save_file
 
-from .models.registry import load_checkpoint, load_context
+from .models.registry import _load_checkpoint_blob, load_checkpoint, load_context
 
 # v2: the two-encoder mod representation (comp_enc / mass_enc) replaced the single scaled
 # mod_proj scalar, and the N/C-term tokens became mandatory. A v1 artifact's tensors mean
@@ -28,6 +29,17 @@ _NORM_KEYS = ("rt_mean", "rt_std", "ccs_mean", "ccs_std")
 # re-standardizing mid-curriculum and means nothing at inference, so it is dropped rather
 # than shipped as a tensor the Rust reader would have to know to ignore.
 _TRAINING_ONLY_KEYS = ("norm_established",)
+
+
+def _checkpoint_training_metadata(ckpt_path: str | Path) -> dict | None:
+    """The checkpoint's own training record, or ``None`` if it carries none.
+
+    Written by ``save_checkpoint`` and deliberately not modelled here: whatever the trainer chose
+    to record travels through unaltered, so adding a field there needs no change on this side.
+    """
+    blob = _load_checkpoint_blob(ckpt_path)
+    training = blob.get("training")
+    return training if isinstance(training, dict) else None
 
 
 def export_safetensors(ckpt_path: str | Path, out_path: str | Path) -> Path:
@@ -52,6 +64,24 @@ def export_safetensors(ckpt_path: str | Path, out_path: str | Path) -> Path:
         "has_encoder": False,
         "has_runbook": False,
     }
+
+    # Where these weights came from, carried inside the artifact. The artifact is the thing that
+    # gets redistributed and bundled into a binary, so its provenance has to travel with it rather
+    # than live in a note beside it -- the same reason the vendored UNIMOD tables open with a
+    # provenance header. The checkpoint already records stage, epoch, step and per-dataset
+    # validation; that is copied verbatim, alongside the identity of the file it was read from.
+    #
+    # `Meta` in the Rust reader does not model this key and does not need to: unknown metadata is
+    # preserved through a read/write round trip, so nothing here forces a format version bump.
+    source = Path(ckpt_path)
+    provenance: dict = {"checkpoint": source.name}
+    if source.is_file():
+        digest = hashlib.blake2b(source.read_bytes(), digest_size=32).hexdigest()
+        provenance["checkpoint_blake2b_256"] = digest
+    training = _checkpoint_training_metadata(ckpt_path)
+    if training is not None:
+        provenance["training"] = training
+    meta["provenance"] = provenance
 
     if ctx is not None and ctx.encoder is not None:
         enc = ctx.encoder

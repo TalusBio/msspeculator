@@ -31,7 +31,7 @@ pub const MAX_BUNDLED_BYTES: usize = 4 << 20;
 const BUNDLED: [(&str, &[u8], &str); 1] = [(
     "small-v0",
     include_bytes!("../data/weights/small-v0.safetensors"),
-    "0341788fa113d55fe0d63fa008737b91192faff6bd262f5ca073c4e934b6a072",
+    "8dc9edf567606df1ce2b98530d679ebce139f364021062b72a20d4eaca7162a3",
 )];
 
 /// blake2b-256 of some bytes, hex.

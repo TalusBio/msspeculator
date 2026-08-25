@@ -43,3 +43,46 @@ def test_export_safetensors_roundtrip(tmp_path: Path):
     assert meta["has_encoder"] and meta["has_runbook"]
     assert meta["vocab"]["instruments"] == list(enc.instruments)
     assert meta["dataset_index"] == dataset_index
+
+
+def test_export_carries_the_provenance_of_its_checkpoint(tmp_path: Path):
+    """The artifact is what gets redistributed and bundled, so its origin travels inside it.
+
+    A note in a README drifts from the file it describes; metadata cannot. The Rust reader does not
+    model this key, which is the point -- whatever the trainer recorded passes through unaltered.
+    """
+    model = build_student("small")
+    model.set_norm(31.0, 4.0, 410.0, 25.0)
+    ckpt = tmp_path / "m.ckpt"
+    training = {
+        "stage": "train",
+        "checkpoint_kind": "best",
+        "epoch": 33,
+        "validation": {"metric": "mean_per_dataset_spectral_angle", "values": {"val/a": 0.8}},
+    }
+    save_checkpoint(model, ckpt, training_metadata=training)
+
+    out = tmp_path / "m.safetensors"
+    export_safetensors(ckpt, out)
+    with safe_open(out, framework="pt") as f:
+        provenance = json.loads(f.metadata()["pepdistill"])["provenance"]
+
+    assert provenance["checkpoint"] == "m.ckpt"
+    assert len(provenance["checkpoint_blake2b_256"]) == 64
+    assert provenance["training"] == training
+
+
+def test_export_without_a_training_record_still_names_its_source(tmp_path: Path):
+    """A checkpoint saved without training metadata is exportable; it just says less."""
+    model = build_student("flash")
+    model.set_norm(31.0, 4.0, 410.0, 25.0)
+    ckpt = tmp_path / "bare.ckpt"
+    save_checkpoint(model, ckpt)
+
+    out = tmp_path / "bare.safetensors"
+    export_safetensors(ckpt, out)
+    with safe_open(out, framework="pt") as f:
+        provenance = json.loads(f.metadata()["pepdistill"])["provenance"]
+
+    assert provenance["checkpoint"] == "bare.ckpt"
+    assert "training" not in provenance
