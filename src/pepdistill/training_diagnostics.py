@@ -45,7 +45,7 @@ T = TypeVar("T")
 
 # Modifications plotted in the encoder-embedding panel: the canonical PTMs of PROSPECT plus the
 # two the pretrain digest samples. Every one routes through the composition encoder, which the
-# panel needs in order to draw an atoms/mass pair for it.
+# panel needs to draw an atoms/mass pair for it.
 PANEL_MODIFICATIONS = (
     4,  # Carbamidomethyl
     21,  # Phospho
@@ -85,7 +85,7 @@ def load_reference_distributions(prefix: str) -> dict[str, dict[str, list[int]]]
 
     Returns ``{dataset: {series: counts}}`` for whichever of the two reports exist: the teacher
     yardstick (what distillation alone buys) and the corpus replicate ceiling (what any model can
-    reach at best). Both are optional -- a corpus prepared before they were published, or a local
+    reach at best). Both are optional; a corpus prepared before they were published, or a local
     fixture, simply yields no reference series and the panel falls back to the student alone.
     """
 
@@ -94,7 +94,7 @@ def load_reference_distributions(prefix: str) -> dict[str, dict[str, list[int]]]
     def published(name: str) -> dict[str, Any]:
         # Absence is tolerated but never silent. A corpus can legitimately predate these reports
         # (v1 published neither) and this runs for every training run, so raising would let a
-        # missing diagnostic abort training -- but a panel that quietly loses its reference line
+        # missing diagnostic abort training; but a panel that quietly loses its reference line
         # is indistinguishable from one that was never configured, so the gap is announced.
         # Anything other than absence still raises: a truncated or half-written report (an
         # interrupted `--publish`) is corruption, not a corpus that opted out.
@@ -116,7 +116,7 @@ def load_reference_distributions(prefix: str) -> dict[str, dict[str, list[int]]]
     for dataset, subsets in ceilings.items():
         # The in-window subset, not the retained one. Retention caps a context at two PSMs, so the
         # retained subset's leave-one-out score is agreement between exactly two noisy replicates,
-        # which sits *below* agreement with the truth they both approximate -- a well-fit student
+        # which sits *below* agreement with the truth they both approximate; a well-fit student
         # would legitimately cross a line drawn there and look broken. The in-window subset keeps
         # every replicate of the same peptidoform, so its consensus is closer to the truth and the
         # bound is the one a model can actually be measured against.
@@ -199,7 +199,7 @@ def _context_trajectories(
     is read in.
 
     A combination is drawn even when one of its factors never trained, because the other two
-    still move it across the NCE sweep -- so the label names the untrained factor rather than
+    still move it across the NCE sweep; so the label names the untrained factor rather than
     saying only that one exists. The zero vector is drawn too: every untrained row is exactly
     zero, so it marks where "nothing was learned" sits, and distance from it is what the plot
     is really showing.
@@ -464,7 +464,7 @@ class TrainingDiagnosticRenderer:
                 "acquisition_contexts",
                 context_points,
                 target_dir / "acquisition-contexts.png",
-                f"Combined acquisition-context trajectories — NCE "
+                f"Combined acquisition-context trajectories, NCE "
                 f"{self.nce_range[0]:g}→{self.nce_range[1]:g}",
                 context_connections,
                 fit_on=context_trained,

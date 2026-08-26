@@ -5,7 +5,7 @@
 //! hashes together, so nothing leaks between splits through a modification.
 //!
 //! This is a second implementation of a contract, which is a thing this codebase otherwise avoids
-//! — but the fit runs here and the corpus is prepared there, and both have to agree about which
+//!, but the fit runs here and the corpus is prepared there, and both have to agree about which
 //! peptides a model was allowed to see. It is pinned from Python against golden values; changing
 //! either side without the other silently invalidates every held-out number the project reports.
 
@@ -40,7 +40,7 @@ impl Default for SplitConfig {
 
 /// Map a sequence to a stable float in [0, 1).
 ///
-/// blake2b with an 8-byte digest over `"{salt}:{sequence}"`, read big-endian and divided by 2^64 —
+/// blake2b with an 8-byte digest over `"{salt}:{sequence}"`, read big-endian and divided by 2^64,
 /// each step matching `_unit_hash`, since any difference silently reassigns peptides.
 pub fn unit_hash(sequence: &str, salt: &str) -> f64 {
     let mut hasher = Blake2b::<U8>::new();

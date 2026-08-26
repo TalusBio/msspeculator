@@ -41,7 +41,7 @@ pub struct Prediction {
     /// Retention as the requested context reports it: a dataset's own gradient time in minutes
     /// when a chromatography context was named, otherwise the context-free index.
     pub rt: f32,
-    /// The context-free index, carried only when `rt` is *not* it -- that is, when a
+    /// The context-free index, carried only when `rt` is *not* it; that is, when a
     /// chromatography context was applied. A consumer then has both the duration and the index
     /// without having to run the model twice or know which one `rt` holds.
     pub irt: Option<f32>,
@@ -53,8 +53,8 @@ pub struct Prediction {
 ///
 /// Two ways in, not two spellings of one: `Factors` composes the context out of recorded
 /// metadata through the encoder, which is available only because the source recorded that
-/// metadata. `Named` is for a source that recorded none — a published library reports no
-/// instrument and no collision energy — and points at a row fitted against its spectra.
+/// metadata. `Named` is for a source that recorded none. A published library reports no
+/// instrument or collision energy, so `Named` points at a row fitted against its spectra.
 #[derive(Clone)]
 pub enum MsContext {
     Factors {
@@ -184,7 +184,7 @@ pub fn predict_peptide_charges_prepared(
     let encoded = predictor.encode(pep)?;
     let rt = predictor.predict_rt(&encoded, context.chrom_shift.as_ref(), context.chrom_affine)?;
     // The chromatography context enters through the head's own input, not as an affine on its
-    // output, so the index cannot be recovered from `rt` -- it takes a second pass. The RT head
+    // output, so the index cannot be recovered from `rt`; it takes a second pass. The RT head
     // is one small projection on an already-encoded peptide, unlike the per-position MS2 head.
     let irt = if context.shifts_retention() {
         Some(predictor.predict_rt(&encoded, None, None)?)

@@ -56,7 +56,7 @@ def distill_loss(
     total = None
     parts: dict[str, float] = {}
     for name, (w, fn) in terms.items():
-        if not w:  # unsupervised here — skip so NaN targets can't poison gradients
+        if not w:  # unsupervised here, skip so NaN targets can't poison gradients
             continue
         loss = fn()
         parts[name] = float(loss.detach())
@@ -72,7 +72,7 @@ def labeled_mse(prediction: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
 
     Masked per row rather than per batch because the RT labels are per source: a spectral
     library reports its own run's retention time and no iRT, so requiring both would throw
-    away that row's MS2 as well. Dropping the row is the strictly worse trade -- partial
+    away that row's MS2 as well. Dropping the row is the strictly worse trade; partial
     supervision on three heads beats none on all three.
 
     NaN targets are substituted before the subtraction, not masked after it: ``0 * NaN`` is

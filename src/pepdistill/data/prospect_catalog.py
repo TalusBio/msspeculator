@@ -111,7 +111,7 @@ def build_shard_index(out_dir: str = _VENDOR_DIR, delay_s: float = 2.0) -> dict:
     result: dict = {
         **_provenance(
             "ZIP central directories of the PROSPECT annotation archives, read by range request "
-            "through fsspec -- no archive is downloaded. Entries are "
+            "through fsspec; no archive is downloaded. Entries are "
             "[name, packed_bytes, raw_bytes].",
             "pepdistill.data.prospect_catalog:build_shard_index",
             "Zenodo rate-limits; a throttled response surfaces as FileNotFoundError, so a failure "

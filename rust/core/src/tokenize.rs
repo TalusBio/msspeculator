@@ -1,7 +1,7 @@
-//! Core tokenizer — a pure-Rust port of `pepdistill.data.encode.collate`.
+//! Core tokenizer, a pure-Rust port of `pepdistill.data.encode.collate`.
 //!
 //! Token id is `ord(aa) - AA_OFFSET` (no lookup table). Modifications are exposed as four
-//! channels (`mod_arrays`) — element composition, raw mass, and two boolean presence masks —
+//! channels (`mod_arrays`), element composition, raw mass, and two boolean presence masks,
 //! rather than one scaled scalar, so a later routing layer can send a modification through a
 //! compositional or a mass-only encoder. Chemistry constants stay single-sourced in `chem.rs`.
 
@@ -10,15 +10,15 @@ use ndarray::{Array1, Array2, Array3};
 use crate::composition::N_ELEMENTS;
 use crate::peptide::{Peptide, Site};
 
-// Vocab contract — single home. The pyo3 ext re-exports these.
+// Vocab contract, single home. The pyo3 ext re-exports these.
 pub const AA_OFFSET: i64 = 65; // ord('A')
 pub const PAD_IDX: i64 = 26;
 pub const NTERM_IDX: i64 = 27;
 pub const CTERM_IDX: i64 = 28;
 pub const N_TOKENS: i64 = 29;
 
-/// Column offset of the first residue in the `[N] r1..rL [C]` grid, and — because the MS2 head
-/// adjacent-pools columns `(p, p+1)` — equally the adjacent-pool row of the first inter-residue
+/// Column offset of the first residue in the `[N] r1..rL [C]` grid, and, because the MS2 head
+/// adjacent-pools columns `(p, p+1)`, equally the adjacent-pool row of the first inter-residue
 /// fragment site. Both runtimes slice their MS2 output with it, so it lives here rather than as
 /// a literal `1` at each use: this is precisely the number the torch and Rust paths must agree
 /// on to produce the same fragment table. The pyo3 ext re-exports it as `FRAG_OFFSET`.
@@ -59,7 +59,7 @@ fn site_column(site: &Site, seq_len: usize) -> usize {
 /// comparison would silently mislabel a near-zero delta, and a wrong model input is worse than
 /// a loud failure.
 ///
-/// A site mixing composition-routed and mass-routed modifications is refused up front — see
+/// A site mixing composition-routed and mass-routed modifications is refused up front, see
 /// [`Peptide::validate_mod_specs`] for why there is no correct silent behavior. `mod_has_composition` is
 /// one boolean per column and both runtimes route the whole column on it, so the loser's
 /// channel would simply never reach the model.
@@ -76,7 +76,7 @@ pub fn mod_arrays(peptides: &[Peptide], tok_len: usize) -> anyhow::Result<ModArr
         for (site, spec) in &pep.mods {
             // Validate against this peptide's own length first. `tok_len` is the batch's
             // padded width (driven by the longest peptide), so a short peptide's out-of-range
-            // residue index can still land inside the padded grid — checking only `col >=
+            // residue index can still land inside the padded grid, checking only `col >=
             // tok_len` would silently write the mod into a padding column instead of erroring.
             if let Site::Residue(j) = site {
                 if *j >= n {
@@ -245,7 +245,7 @@ mod tests {
     #[test]
     fn co_sited_named_and_mass_only_is_refused() {
         // `mod_has_composition` is one boolean per column: with a Named spec present the column routes
-        // through comp_enc, and the accumulated mass-only delta never reaches the model — while
+        // through comp_enc, and the accumulated mass-only delta never reaches the model, while
         // it still shifts mono_mass and every fragment m/z. Refuse instead of encoding a
         // molecule the m/z table does not describe.
         let p = Peptide::new(
@@ -303,7 +303,7 @@ mod tests {
 
     #[test]
     fn nterm_named_and_residue_zero_mass_only_stay_legal() {
-        // Different sites, different columns — the refusal is per-site, not per-residue-index,
+        // Different sites use different columns. The refusal is per-site, not per-residue-index,
         // even though `residue_masses` folds an N-term delta onto residue 0.
         let p = Peptide::new(
             "KPEPTIDE".into(),

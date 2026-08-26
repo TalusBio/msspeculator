@@ -1,4 +1,4 @@
-//! Monoisotopic mass and m/z arithmetic — the single source of truth for pepdistill's
+//! Monoisotopic mass and m/z arithmetic. This is the single source of truth for pepdistill's
 //! chemistry constants; `pepdistill.chem` (Python) is now a thin shim over this module.
 //!
 //! Supports the 20 standard amino acids; modification chemistry lives on `ModSpec`, resolved

@@ -67,7 +67,7 @@ def export_safetensors(ckpt_path: str | Path, out_path: str | Path) -> Path:
 
     # Where these weights came from, carried inside the artifact. The artifact is the thing that
     # gets redistributed and bundled into a binary, so its provenance has to travel with it rather
-    # than live in a note beside it -- the same reason the vendored UNIMOD tables open with a
+    # than live in a note beside it; the same reason the vendored UNIMOD tables open with a
     # provenance header. The checkpoint already records stage, epoch, step and per-dataset
     # validation; that is copied verbatim, alongside the identity of the file it was read from.
     #
@@ -95,7 +95,7 @@ def export_safetensors(ckpt_path: str | Path, out_path: str | Path) -> Path:
         }
         # Named acquisition setups: `--ms-context NAME` resolves through this map into the
         # `enc.setup_emb.weight` rows exported above it, the same arrangement `dataset_index`
-        # has with the runbook. Omitted when empty so its absence stays unambiguous -- no
+        # has with the runbook. Omitted when empty so its absence stays unambiguous; no
         # index means no setup was ever named, not one whose names were lost.
         if enc.setups:
             meta["ms_context_index"] = enc.setups

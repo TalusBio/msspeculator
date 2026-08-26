@@ -86,7 +86,7 @@ def test_two_mass_only_mods_on_one_column_sum():
 def test_named_plus_mass_only_on_one_column_is_refused():
     """`mod_has_composition` is one boolean per column, so the column routes wholly through comp_enc or
     wholly through mass_enc. A site holding one of each would drop a channel from the model
-    input while still moving mono_mass and every fragment m/z — refuse instead."""
+    input while still moving mono_mass and every fragment m/z, refuse instead."""
     p = Peptide("PEPCIDER", ((3, "UNIMOD:4"), (3, 15.994915)))
     with pytest.raises(Exception) as e:
         collate([Precursor(p, 2, "t")])

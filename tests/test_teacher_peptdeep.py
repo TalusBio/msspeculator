@@ -16,7 +16,7 @@ def teacher():
 
 
 def test_labels_align_with_input_order(teacher):
-    # Varied lengths so predict_all reorders by nAA — the label list must come back
+    # Varied lengths so predict_all reorders by nAA, the label list must come back
     # in the ORIGINAL order, with rows == length - 1 for each precursor.
     seqs = ["SAMPLERPEPTIDEK", "ACDK", "AAAAAAAAAAAAR", "SAMPLER", "MYPEPTIDEKACDEFGHIK"]
     precs = [Precursor(Peptide(s), 2, "train") for s in seqs]
@@ -82,7 +82,7 @@ def test_peptdeep_predicts_terminal_and_residue_mods_with_exact_masses(teacher):
     """peptdeep accepts the terminal convention end-to-end, and applies both mods for real.
 
     Masses are checked because a dropped or misplaced modification still yields a full,
-    confident spectrum -- the failure mode our teacher wrapper refuses to risk.
+    confident spectrum; the failure mode our teacher wrapper refuses to risk.
     """
     import numpy as np
     import pandas as pd
@@ -164,7 +164,7 @@ def test_alphabase_mod_resolution_covers_our_mixed_vocabulary():
     assert _alphabase_mod(tmt, 8, "UNIMOD:737") == ("TMT6plex@K", 9)
 
     # A residue-suffixed alias found on a TERMINUS must not be filed on residue 1. Our site is
-    # the authority on placement, so the terminal form is required or the mod is refused --
+    # the authority on placement, so the terminal form is required or the mod is refused.
     # `parse_modseq("[UNIMOD:35]METIDEK")` really does yield ("n", "UNIMOD:35"), and filing it
     # at residue 1 returned a confident, plausible, wrong spectrum.
     import pytest as _pytest
@@ -177,7 +177,7 @@ def test_alphabase_mod_resolution_covers_our_mixed_vocabulary():
         _alphabase_mod(nterm_ox, "n", "UNIMOD:35")
 
     # An accession on an unusual-but-real residue now resolves, where a name did not. This used to
-    # raise "refusing to relocate", because our name declared `@C` and the site was a lysine -- but
+    # raise "refusing to relocate", because our name declared `@C` and the site was a lysine; but
     # that check was enforcing our own spelling, not chemistry: carbamidomethyl-lysine exists and
     # alphabase registers it. An accession declares no residue, so there is nothing to contradict,
     # and alphabase's table is the authority on whether the pairing is real.

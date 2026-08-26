@@ -39,7 +39,7 @@ fn parse_site(obj: &Bound<'_, PyAny>) -> PyResult<Site> {
 
 /// Python-side `spec` is `str | float`: one unbracketed ProForma descriptor (`"UNIMOD:35"`,
 /// `"Formula:H2O"`), or a bare mass delta. A string that is no descriptor is refused here rather
-/// than kept as a name — identity is a controlled vocabulary everywhere past ingest.
+/// than kept as a name, identity is a controlled vocabulary everywhere past ingest.
 fn parse_spec(obj: &Bound<'_, PyAny>) -> PyResult<ModSpec> {
     if let Ok(descriptor) = obj.extract::<String>() {
         return proforma::parse_descriptor(&descriptor).map_err(to_pyerr);
@@ -76,7 +76,7 @@ fn mods_to_py(mods: &[(Site, ModSpec)], py: Python<'_>) -> Vec<(PyObject, PyObje
         .collect()
 }
 
-/// `__reduce__` state: (class, (sequence, mods)) — kept as a named alias to satisfy
+/// `__reduce__` state: (class, (sequence, mods)), kept as a named alias to satisfy
 /// clippy's `type_complexity` lint.
 type ReduceState = (PyObject, (String, Vec<(PyObject, PyObject)>));
 
@@ -96,7 +96,7 @@ impl Peptide {
     }
 
     /// Parse a canonical ProForma modified sequence. Refuses anything else, including the
-    /// PROSPECT spelling that omits the N-terminal separator -- use `from_prospect` for that,
+    /// PROSPECT spelling that omits the N-terminal separator; use `from_prospect` for that,
     /// once, at ingest.
     #[staticmethod]
     fn from_string(modified_sequence: &str) -> PyResult<Self> {
@@ -201,7 +201,7 @@ fn ms2_target_shape(length: usize) -> (usize, usize) {
     chem::ms2_target_shape(length)
 }
 
-/// The UNIMOD title for an accession — `"Phospho"` for 21. `None` if the accession is unknown.
+/// The UNIMOD title for an accession, `"Phospho"` for 21. `None` if the accession is unknown.
 ///
 /// The bare title, with no site suffix: a consumer that needs alphabase's `Name@Site` spelling
 /// appends the site it holds, which is the only thing that knows where the modification sits.
@@ -219,7 +219,7 @@ fn mod_delta(descriptor: &str) -> PyResult<f64> {
 }
 
 /// 6-element composition delta for one unbracketed ProForma descriptor, in
-/// `composition::ELEMENTS` order. Raises `ValueError` for a descriptor with no composition —
+/// `composition::ELEMENTS` order. Raises `ValueError` for a descriptor with no composition,
 /// a bare mass delta, or one whose elements fall outside that basis.
 #[pyfunction]
 fn mod_composition(descriptor: &str) -> PyResult<[i8; pepdistill_core::composition::N_ELEMENTS]> {
@@ -319,7 +319,7 @@ fn bucket_arrays<'py>(
     Ok(d)
 }
 
-/// (fragment m/z tensor, precursor m/z vector) — named alias to satisfy clippy's
+/// (fragment m/z tensor, precursor m/z vector), named alias to satisfy clippy's
 /// `type_complexity` lint.
 type FragmentMzResult<'py> = (
     Bound<'py, numpy::PyArray3<f64>>,

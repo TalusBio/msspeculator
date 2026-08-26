@@ -2,14 +2,14 @@
 //!
 //! The index a model reports is not a duration and not a published table: it is a linear
 //! interpolation between two PROCAL standards pinned to 0 and 100. That convention is visible in
-//! the source data -- `TFAHTESHISK` carries exactly 0 and `SILDYVSLVEK` exactly 100 across
-//! thousands of PSMs -- which makes the scale definable rather than merely nameable, and makes
+//! the source data; `TFAHTESHISK` carries exactly 0 and `SILDYVSLVEK` exactly 100 across
+//! thousands of PSMs; which makes the scale definable rather than merely nameable, and makes
 //! "is this artifact on it?" a question with a one-line answer.
 //!
 //! Deliberately not measured here: goodness of a linear fit against some external scale.
 //! R-squared is invariant under any affine map of the predictions, so it cannot distinguish this
 //! index from ten thousand times this index, and a reference table in another vendor's space can
-//! only ever establish that the two are affine-related -- never that ours is what it claims.
+//! only ever establish that the two are affine-related; never that ours is what it claims.
 //! Predicting the anchors answers that directly.
 
 use anyhow::Result;
@@ -27,7 +27,7 @@ pub const SCALE_DESCRIPTION: &str = "linear interpolation anchored at TFAHTESHIS
 
 /// Index units of slack allowed at an anchor.
 ///
-/// Loose against the anchors themselves -- a trained model lands within ~0.1 -- but far tighter
+/// Loose against the anchors themselves; a trained model lands within ~0.1; but far tighter
 /// than the offset an artifact from another corpus would show, which is the case worth catching.
 pub const ANCHOR_TOLERANCE: f64 = 2.0;
 

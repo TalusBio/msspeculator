@@ -1,7 +1,7 @@
 """FASTA digestion, precursor enumeration, deterministic splitting.
 
 Tensor encoding is deliberately *not* re-exported here. ``encode`` imports torch, so re-exporting
-it made importing anything from this package -- ``config``, ``digest``, ``split`` -- pull the whole
+it made importing anything from this package; ``config``, ``digest``, ``split``; pull the whole
 torch stack in with it. That put torch on the preparation ETL's import path, which never touches a
 tensor. Import :mod:`pepdistill.data.encode` directly, as every caller already does.
 """

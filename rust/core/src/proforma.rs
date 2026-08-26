@@ -214,7 +214,7 @@ pub fn parse_peptide(input: &str) -> Result<Peptide> {
 ///
 /// PROSPECT writes an N-terminal modification without the separator that ProForma requires:
 /// `[UNIMOD:737]SEQ` rather than `[UNIMOD:737]-SEQ`. Censused over all 2,067,007 distinct
-/// PROSPECT peptidoforms, that is the *only* departure — 133,890 sequences. Specifically absent:
+/// PROSPECT peptidoforms, that is the *only* departure. This covers 133,890 sequences. Specifically absent:
 /// stacked N-terminal modifications, C-terminal modifications in any spelling, lowercase residues,
 /// and non-UNIMOD descriptors. Two modifications on one residue occur (39,574) and are already
 /// legal ProForma, needing no repair.

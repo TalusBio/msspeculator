@@ -9,8 +9,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-#: Version of the *code* that turns a source into a shard -- the localization rule, the curation
-#: window, the label columns -- as opposed to the knobs a config file can set. It participates in
+#: Version of the *code* that turns a source into a shard; the localization rule, the curation
+#: window, the label columns; as opposed to the knobs a config file can set. It participates in
 #: :attr:`PrepareConfig.fingerprint`, so bumping it marks every published shard stale and the next
 #: ``prepare`` run rebuilds them.
 #:
@@ -18,7 +18,7 @@ from typing import Any
 #: one. Without this, such a change is invisible to the staleness check: the fingerprint covers the
 #: config, so a policy that moved in code leaves a corpus that reports itself complete and current
 #: while holding rows the current code would never emit. Do *not* bump it for a change that cannot
-#: alter shard contents -- a faster expression, an added statistic, a log line -- because every bump
+#: alter shard contents; a faster expression, an added statistic, a log line; because every bump
 #: costs a full re-prep.
 #:
 #: Version 1 is encoded as the absence of the field rather than as ``1``, so it reproduces the

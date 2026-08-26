@@ -58,7 +58,7 @@ def unspecific_window_stream(
 ) -> Iterator[str]:
     """Infinite stream of random protein sub-sequences (immunopeptidome-like, no enzyme).
 
-    Samples a random protein then a random window — never enumerates the (combinatorially
+    Samples a random protein then a random window, never enumerates the (combinatorially
     huge) full substring set, so it stays truly online. Length range defaults to the classic
     HLA class-I window (8-11).
     """
@@ -77,7 +77,7 @@ def unspecific_window_stream(
 def enumerate_tryptic_stream(
     path: str | Path, cfg: DigestConfig, loop: bool = False
 ) -> Iterator[str]:
-    """Lazily yield tryptic peptides in FASTA order — no dedup (dup rate ~2%, not worth a
+    """Lazily yield tryptic peptides in FASTA order, no dedup (dup rate ~2%, not worth a
     proteome-scale seen-set). One pass ~= the whole digest; ``loop`` repeats forever."""
     while True:
         for _h, seq in parse_fasta(path):
@@ -109,14 +109,14 @@ def precursors_from_sequences(
 ) -> list[Precursor]:
     """Precursors for each sequence: fixed mods always, one sampled variable-mod form.
 
-    ``all_charge_states=False`` samples a single charge per sequence — cheap, but a peptide is
+    ``all_charge_states=False`` samples a single charge per sequence, cheap, but a peptide is
     then only ever seen at one charge per pass, and charge is factored out of the trunk so the
     MS2 and CCS heads learn it from the contrast between charges of the SAME peptide. That
     contrast never appears.
 
     ``all_charge_states=True`` emits every charge in ``cfg.charges`` **consecutively**, so a
     peptide's charge states stay adjacent and land in one mini-batch. The sampled variable-mod
-    form is held constant across them, making charge the only varying factor — otherwise the
+    form is held constant across them, making charge the only varying factor, otherwise the
     contrast is confounded by a different mod-form. Costs ``len(cfg.charges)``x the precursors,
     hence that much teacher time, in exchange for exhaustive and deterministic charge coverage.
     """

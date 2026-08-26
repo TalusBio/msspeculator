@@ -38,7 +38,7 @@ OFFSET = 25.0
 
 
 def _make_examples(n: int) -> list[RealExample]:
-    """N examples over one peptide/split, varying only raw_rt -- enough columns for the
+    """N examples over one peptide/split, varying only raw_rt; enough columns for the
     batches()/masking tests, which don't care about realistic labels or acquisition factors."""
     prec = Precursor(Peptide("PEPTIDEK", ()), 2, "train")
     label = FakeTeacher().predict([prec])[0]
@@ -277,7 +277,7 @@ def test_fit_from_prebuilt_datasets_trains_and_reports_metrics(tmp_path, capsys)
     ]
     assert records[-1]["validation_check"] == 1
     assert records[-1]["global_step"] == 2
-    # The per-dataset spectral-angle distribution is retained, not just its mean: a mean cannot be
+    # The per-dataset spectral-angle distribution is retained along with its mean. A mean cannot be
     # drawn against the published teacher yardstick or the corpus replicate ceiling, and all three
     # share this grid so they overlay directly.
     from pepdistill.diagnostics import SA_HISTOGRAM_EDGES
@@ -367,7 +367,7 @@ def test_validation_early_stop_treats_higher_agreement_as_better():
 
 
 def test_every_epoch_gets_a_validation_when_the_interval_never_elapses():
-    """One boundary check per epoch — not one per two epochs, and not none at all.
+    """One boundary check per epoch, not one per two epochs, and not none at all.
 
     A timed `val_check_interval` is the only trigger a prepared streaming run has, so an epoch
     shorter than the interval used to end with nothing validated. The forced check runs on the
@@ -422,7 +422,7 @@ def test_epoch_shorter_than_the_validation_interval_still_checkpoints(tmp_path):
 
     The real pipeline runs with `num_sanity_val_steps=0` and a wall-clock validation interval, so
     a first epoch shorter than that interval reaches its epoch boundary with
-    `last_validation_step` still unset. Recording it as an int crashed there -- losing the whole
+    `last_validation_step` still unset. Recording it as an int crashed there; losing the whole
     epoch, since this callback is what writes `latest.ckpt`. Every other test leaves sanity
     checking on, which sets the attribute as a side effect and hid this.
     """
@@ -464,7 +464,7 @@ def test_epoch_shorter_than_the_validation_interval_still_checkpoints(tmp_path):
     # None records "never validated" rather than claiming a step no validation produced.
     assert checkpoint["training"]["validation"]["validated_at_step"] is None
 
-    # A run with no validation datasets has no expected keys, so the count matches at zero --
+    # A run with no validation datasets has no expected keys, so the count matches at zero.
     # where a mean does not exist and dividing by it raised.
     bare = tmp_path / "no-val-datasets"
     _RealCheckpoint(bare, expected_keys=set()).on_train_epoch_end(module.trainer, module)
@@ -487,7 +487,7 @@ def _module_with_names(names: dict[str, int]) -> RealSpeclibModule:
 
 
 def _batch_missing_irt(rows: int, unlabeled: int) -> tuple[RealSpeclibModule, object]:
-    """A batch where ``unlabeled`` of ``rows`` report a raw retention time and no iRT -- the
+    """A batch where ``unlabeled`` of ``rows`` report a raw retention time and no iRT; the
     shape a spectral library arrives in."""
     examples = _make_examples(rows)
     for example in examples[:unlabeled]:
@@ -624,7 +624,7 @@ def test_the_rate_stops_at_its_floor_without_reporting_a_cut():
 
 
 def test_an_incomplete_check_is_left_to_early_stopping_to_report():
-    """The decay must not count a check it could not read as a plateau -- early stopping raises
+    """The decay must not count a check it could not read as a plateau; early stopping raises
     on the same check, and a rate cut on the way there would be noise in the traceback."""
     callback = _decay(patience=1)
     trainer = _DecayTrainer(0.5)

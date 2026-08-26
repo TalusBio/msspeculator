@@ -59,11 +59,11 @@ def decode_fragments(
     ``frag`` must already be restricted to b/y ions at fragment charge 1-2 with no neutral
     loss, and to the keys the caller wants; it carries its own ``raw_file`` column, so one call
     handles a shard holding several raw files. This function does the (site, col) arithmetic,
-    the max-collapse of duplicate cells, and the per-spectrum scatter — nothing else. It is the
+    the max-collapse of duplicate cells, and the per-spectrum scatter, nothing else. It is the
     single scatter implementation: both the streaming reader and the in-memory ``to_labels``
     path go through here.
     Returns the labels plus each emitted example's ``(raw_file, scan_number)`` key, in order,
-    so the caller can attach that spectrum's own acquisition factors — which vary within a raw
+    so the caller can attach that spectrum's own acquisition factors, which vary within a raw
     file and must not be collapsed to one value per run.
     Spectra whose key is absent from ``index`` are skipped: the meta join is what says a
     spectrum is usable, and a fragment row without one has no peptide to attach to.
@@ -77,11 +77,11 @@ def decode_fragments(
     if frag.empty:
         return empty, []
     # Both preconditions run on ~0.7-1M filtered rows per shard per epoch, and each is checked
-    # the way that is actually fastest for its dtype -- not uniformly "with numpy".
+    # the way that is actually fastest for its dtype; not uniformly "with numpy".
     #
     # ion_type is a parquet string column, so it arrives as OBJECT dtype and np.unique falls
     # back to a Python-level comparison sort: measured at 1M rows, np.unique is 0.2520 s
-    # against 0.0123 s for set(tolist()) -- 20x SLOWER. Hashing wins on object dtype; do not
+    # against 0.0123 s for set(tolist()); 20x SLOWER. Hashing wins on object dtype; do not
     # "vectorize" this one.
     ion_types = frag[s.ann_ion_type].to_numpy()
     bad_ion = sorted(set(ion_types.tolist()) - {"b", "y"})
@@ -91,7 +91,7 @@ def decode_fragments(
             "Pre-filter with fragment_filter_mask before calling."
         )
     # Fragment charge IS numeric, so np.isin is 0.0003 s against 0.0542 s for the per-row
-    # `set(int(x) for x in z_raw)` this replaced -- and that `int(x)` also turned a NaN charge
+    # `set(int(x) for x in z_raw)` this replaced; and that `int(x)` also turned a NaN charge
     # into a bare "cannot convert float NaN to integer" instead of the named error below.
     z_raw = frag[s.ann_frag_charge].to_numpy()
     bad_z_mask = ~np.isin(z_raw, (1, 2))  # NaN is never in (1, 2), so it reports here
@@ -173,8 +173,8 @@ def fragment_filter_mask(ann: pd.DataFrame, schema: ProspectSchema) -> np.ndarra
     """b/y ions, fragment charge 1-2, no neutral loss. Measured to keep 10-35% by pool.
     ``neutral_loss`` may arrive as ``category`` dtype (the streaming reader reads it
     dictionary-encoded to avoid materializing a Python string per row). ``.fillna("")`` raises
-    on a categorical whose categories do not already include ``""`` -- true of any shard whose
-    fragments all carry a neutral loss -- so the "no neutral loss" check is instead
+    on a categorical whose categories do not already include ``""``; true of any shard whose
+    fragments all carry a neutral loss; so the "no neutral loss" check is instead
     ``isna() | (col == "")``, which needs no such category to exist and is equivalent to the
     old ``fillna("") == ""`` for both ``object`` and ``category`` dtype.
     """

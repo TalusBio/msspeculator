@@ -105,7 +105,7 @@ def test_set_norm_leaves_unspecified_stats_untouched():
     """A regime with no data for a property must be able to skip it.
 
     Regression: the real-speclib regime passed (0.0, 1.0) for CCS because PROSPECT has no
-    CCS column. That did not disable the CCS head — it overwrote the calibration pretrain
+    CCS column. That did not disable the CCS head, it overwrote the calibration pretrain
     had learned, so a trained head denormalized to raw standardized values and emitted
     negative CCS that looked like plausible small numbers.
     """
@@ -153,7 +153,7 @@ def test_set_norm_refuses_to_re_establish_rt():
 
     Re-standardizing mid-curriculum recalibrates an already-trained head against a new
     frame. Silently accepting it, or silently ignoring the call, both leave the caller
-    believing something untrue -- so it raises.
+    believing something untrue; so it raises.
     """
     import pytest
 
@@ -164,7 +164,7 @@ def test_set_norm_refuses_to_re_establish_rt():
         model.set_norm(rt_mean=43.0, rt_std=30.0)
     assert float(model.rt_mean) == 50.0, "refused call must not have partially applied"
 
-    # CCS-only updates are unaffected -- the guard is on the RT affine.
+    # CCS-only updates are unaffected; the guard is on the RT affine.
     model.set_norm(ccs_mean=500.0, ccs_std=30.0)
     assert float(model.ccs_mean) == 500.0
 

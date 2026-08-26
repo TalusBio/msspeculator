@@ -4,20 +4,20 @@ A second Lightning regime over the SAME StudentModel backbone (see lightning.py)
 on real experimental spectra (e.g. PROSPECT) and conditions the backbone on two context
 vectors, each generated from metadata rather than gradient-descended per source id:
 
-- ``ms_context`` (MS2 side) comes from a run's acquisition factors — instrument, detector,
-  fragmentation (categorical) plus collision energy (continuous) — via :class:`MSContextEncoder`.
+- ``ms_context`` (MS2 side) comes from a run's acquisition factors, instrument, detector,
+  fragmentation (categorical) plus collision energy (continuous), via :class:`MSContextEncoder`.
   Energy is never fabricated, and it is per EXAMPLE, not per run: a spectrum with no recorded
   collision energy carries NaN through the batch and is masked out of the energy term, so that
   term contributes zero for it rather than an invented center value. (The whole-call
   ``energy=None`` escape hatch still exists on :class:`MSContextEncoder`, but this path always
   passes a tensor.)
 - ``chrom_context`` (RT side) comes from a per-DATASET :class:`ChromRunbook` row (dataset,
-  not raw_file — coarser but good enough to start). Row 0 is reserved as the neutral/iRT row.
+  not raw_file, coarser but good enough to start). Row 0 is reserved as the neutral/iRT row.
   RT is dual-target: the context-free base head (``rt_base``, no chrom_context) is pinned to
   iRT, and the runbook-conditioned head (``rt``) is fit to each example's raw retention_time.
   So the runbook learns ONLY the dataset's LC deviation, and base RT stays the run-independent
   peptide property.
-- CCS is unsupervised here (real DDA has none) — left to teacher distillation.
+- CCS is unsupervised here (real DDA has none), left to teacher distillation.
 
 Backbone + context modules are optimized together. To fine-tune only the context (adapt to a
 new run), freeze the model and step only the encoder/runbook.
@@ -90,7 +90,7 @@ class RealBatch:
 class BatchSource(Protocol):
     """What the trainer needs of a dataset: a row count, and this epoch's batches.
 
-    Two implementations satisfy it — the in-memory :class:`RealSpeclibDataset` below and the
+    Two implementations satisfy it. The in-memory :class:`RealSpeclibDataset` below and the
     streaming ``PreparedStreamingDataset``, which is what production passes. Annotating the
     concrete in-memory class named only one of the two and would have made a type checker
     reject the real call site.
@@ -150,7 +150,7 @@ class RealSpeclibModule(L.LightningModule):
     ``ms_context`` (from acquisition factors via :class:`MSContextEncoder`), the dual RT
     targets on the base head (iRT) and the ``chrom_context``-conditioned head (raw RT, via
     :class:`ChromRunbook`). Set ``freeze_backbone`` to adapt to a new run by training only the
-    context (runbook + encoder) — the PEFT path from the module docstring — leaving the
+    context (runbook + encoder), the PEFT path from the module docstring, leaving the
     backbone fixed."""
 
     def __init__(
@@ -218,7 +218,7 @@ class RealSpeclibModule(L.LightningModule):
             rb.ms_factors.energy,
         )
         # Two per-dataset chromatography terms, doing different jobs: the context vector is an
-        # additive bias in feature space (peptide-dependent, can reorder), the affine is a
+        # additive bias in feature space (peptide-dependent, can reorder). The affine is a
         # scale+shift on the head's output (global, absorbs gradient length / unit differences
         # that an additive bias cannot express).
         chrom_context = self.runbook(rb.dataset_id)
@@ -261,7 +261,7 @@ class RealSpeclibModule(L.LightningModule):
         log = {name: value for name, (_, value) in loss_terms.items()}
         log["train_spectral_angle"] = train_sa
         # An unlabeled row still supervises MS2, so a low fraction is a corpus fact rather than
-        # a fault -- but it has to be visible, or an iRT term training on a tenth of the batch
+        # a fault; but it has to be visible, or an iRT term training on a tenth of the batch
         # reads as a converged one.
         log["train_irt_labeled_fraction"] = torch.isfinite(lb.rt_target).float().mean()
         if self.residue_substitution_probability:
@@ -498,7 +498,7 @@ class _RealPlateauDecay(L.Callback):
 
     A horizon-based schedule is the obvious alternative and does not fit this stage. Cosine and
     OneCycle need to know where the end is; here the end is wherever early stopping lands, and
-    the first full local run stopped at epoch 8 of a nominal 60 -- a cosine over that horizon
+    the first full local run stopped at epoch 8 of a nominal 60; a cosine over that horizon
     would still have been at 98% of the initial rate. What that run actually showed was
     agreement oscillating in a 0.4% band from epoch 3 onward without trending, which is a
     converged-at-this-rate signature: more patience buys more oscillation, a smaller step does
@@ -610,13 +610,13 @@ class _RealEpochValidation(L.Callback):
     A wall-clock ``val_check_interval`` is the ONLY validation trigger a prepared streaming run
     has: the loader is unsized, ``check_val_every_n_epoch`` is None, and the boundary escape
     hatch in Lightning's own loop tests ``val_check_batch == inf``, which timed mode never sets.
-    An epoch shorter than the interval therefore ends with no validation at all — no fresh
+    An epoch shorter than the interval therefore ends with no validation at all, no fresh
     metrics for the epoch-end checkpoint, and none for early stopping.
 
     The rule here asks one question: has a check run since this epoch began? That deliberately
     needs no estimate of how long an epoch takes. An epoch's duration is unknown before the
-    first epoch and can change mid-run — a corpus, batch-size or hardware change moves steps per
-    epoch — so an interval derived from an earlier epoch would go stale with nothing to notice it.
+    first epoch and can change mid-run, a corpus, batch-size or hardware change moves steps per
+    epoch, so an interval derived from an earlier epoch would go stale with nothing to notice it.
     Validation stays at most one interval (plus a batch) apart in either direction.
     """
 
@@ -660,7 +660,7 @@ class _RealEpochValidation(L.Callback):
             )
         self._forced_pending = True
         # The interval test is ``now - _last_val_time >= interval``, and the evaluation loop
-        # restamps it when a check runs — so backdating makes the next batch end due exactly once.
+        # restamps it when a check runs, so backdating makes the next batch end due exactly once.
         trainer._last_val_time = float("-inf")
 
 
@@ -757,8 +757,8 @@ def establish_rt_norm(model: StudentModel, stats: list[tuple[int, float, float]]
     """Set the global RT affine from combined ``(n, sum, sumsq)`` iRT statistics.
 
     Sufficient statistics rather than an array, so several sources combine by addition and
-    nothing has to be held. The population must be exactly what training sees — for this
-    pipeline the train split alone, with val and test both genuinely held out — and it is
+    nothing has to be held. The population must be exactly what training sees, for this
+    pipeline the train split alone, with val and test both genuinely held out, and it is
     counted pre-decode, so it includes spectra that later drop out for having no surviving b/y
     fragments or fewer than two residues. Near-exact rather than exact, and deliberately
     preferred over the alternatives (Welford over the stream, or estimating from the first
@@ -821,7 +821,7 @@ def fit_realspeclib_datasets(
     ``PreparedStreamingDataset`` for both train and validation. Normalisation is NOT touched
     here: the caller establishes the RT affine before training (see :func:`establish_rt_norm`).
 
-    Global RNG seeding is the CALLER's responsibility (e.g. via ``L.seed_everything``) — this
+    Global RNG seeding is the CALLER's responsibility (e.g. via ``L.seed_everything``), this
     function does not call it. ``seed`` here only threads into ``BatchIterable`` to fix the
     per-epoch batch shuffle; it does not touch model/encoder/runbook init or dropout. Seeding
     globally here too would reset the RNG stream a second time after the caller already built

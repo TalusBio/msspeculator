@@ -183,7 +183,7 @@ pub struct LibraryStats {
 
 /// Map one annotated fragment onto the `(site, ion)` grid, or `None` if it has no place in it.
 ///
-/// The grid holds b and y at charges 1 and 2 with no losses, so everything else is dropped —
+/// The grid holds b and y at charges 1 and 2 with no losses, so everything else is dropped,
 /// about 2.5% of a typical timsTOF library. Indexing follows `chem::fragment_mz_matrix`: row `i`
 /// is the site after residue `i + 1`, so b ordinal `n` is row `n - 1` and y ordinal `n` is row
 /// `length - 1 - n`. Getting this wrong transposes b against y and still produces a plausible

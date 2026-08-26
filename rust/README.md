@@ -1,22 +1,22 @@
 # pepdistill_rs
 
 Rust core for `pepdistill`: chemistry (residue/mod masses, fragment m/z), the `Peptide`
-type, tokenization, and batched tensor encoding (`collate`/`bucket_arrays`). This crate is
-the **single source of truth** for chemistry and encoding — `pepdistill.chem` and
+type, tokenization, and batched tensor encoding (`collate`/`bucket_arrays`). This crate owns
+chemistry and encoding. `pepdistill.chem` and
 `pepdistill.data.encode` are thin Python re-export shims over it, not independent
 implementations.
 
 ## Layout
 
-- `core/` (`pepdistill-core`) — the authority: chemistry constants, `Peptide` (masses,
+- `core/` (`pepdistill-core`) is the authority for chemistry constants, `Peptide` (masses,
   precursor m/z, canonical/modified sequence), the tokenizer, and the batched bucket
   builder (fragment m/z matrix + tensor packing). Pure Rust, unit-tested in isolation
   (`cargo test -p pepdistill-core`).
-- `src/lib.rs` (crate `pepdistill_rs`) — a thin pyo3 binding layer over `core`: exposes the
+- `src/lib.rs` (crate `pepdistill_rs`) is a thin pyo3 binding layer over `core`. It exposes the
   `Peptide` pyclass, vocab/chemistry constants, and numpy-returning functions
   (`fragment_mz`, `fragment_mz_matrix`, `ms2_target_shape`, `collate`, ...). It adds no
   chemistry or tokenization logic of its own.
-- `cli/` (`pepdistill-cli`) — a standalone Rust binary (no Python) used for spectral-library
+- `cli/` (`pepdistill-cli`) is a standalone Rust binary with no Python dependency. It handles spectral-library
   generation and the Python-vs-Rust prediction-parity check (`tests/test_rust_parity.py`).
   `library --fasta ... --out library.tsv` digests and enumerates precursors, loads the `.safetensors`
   weights once, predicts in Rust, converts CCS to Bruker 1/K0, and writes DIA-NN TSV.
@@ -42,7 +42,7 @@ end-to-end, workload- and hardware-specific throughput.
 This extension is a **hard runtime dependency** of `pepdistill`, not an optional
 accelerator. The root `pyproject.toml` declares it via `[tool.uv.sources]` as an editable
 path dependency on this directory, so a plain `uv sync` from the repo root builds and
-installs it (requires a Rust toolchain — `cargo` — on `PATH`):
+installs it. A Rust toolchain with `cargo` must be on `PATH`:
 
 ```sh
 uv sync
@@ -63,11 +63,11 @@ After either, `import pepdistill_rs` succeeds in the project venv and
 Rust owns chemistry: `mod_delta`/`mod_composition` (descriptor -> mass / element composition),
 `RESIDUE_MASS`, `H2O`, `PROTON`, vocab constants (`AA_OFFSET`/`PAD_IDX`/`N_TOKENS`/terminus
 indices), and ion-series layout (`ION_TYPES`) all live in `rust/core` and are exported through
-`pepdistill_rs`. Python code never duplicates or re-derives these values — it imports them from
+`pepdistill_rs`. Python code never duplicates or re-derives these values. It imports them from
 `pepdistill.chem` (re-exported from the ext).
 
 Callers pass **ProForma descriptors** (e.g. `"UNIMOD:35"`, `"Formula:H2O"`), not pre-scaled
-deltas — Rust resolves composition and mass internally against the vendored UNIMOD table. This
+deltas. Rust resolves composition and mass internally against the vendored UNIMOD table. This
 applies uniformly to `Peptide` construction, `collate`/`bucket_arrays`, and
 `fragment_mz`/`fragment_mz_matrix`. There is no
 Python-side chemistry to keep in parity with Rust; Rust unit tests

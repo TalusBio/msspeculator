@@ -96,7 +96,7 @@ def _leave_one_out_sa(unit: np.ndarray) -> np.ndarray:
     context normalizes the spectra once.
 
     The consensus is built only from the rows handed in, so a filtered subset is scored against
-    itself -- measuring a subset against a consensus that still contained the rejected spectra
+    itself; measuring a subset against a consensus that still contained the rejected spectra
     scored *identical* spectra at 0.21.
     """
     if unit.shape[0] < 2:
@@ -165,8 +165,8 @@ def curate_prepared_frame(
     That single width is used *directly* as the acceptance window: a PSM counts when its RT lies
     within ``apex_rt +/- run_width_minutes / 2``. Because the width is estimated from sampled
     half-height points rather than an integrated peak, it is clamped to
-    ``[min_run_width_minutes, max_run_width_minutes]`` -- the range a real chromatographic peak
-    can occupy -- and each run records whether that clamp applied.
+    ``[min_run_width_minutes, max_run_width_minutes]``; the range a real chromatographic peak
+    can occupy; and each run records whether that clamp applied.
 
     Peptidoforms below ``min_in_window_psms`` are rejected; qualifying rows are ranked within a
     charge/acquisition context by score, apex proximity, precursor intensity, then stable ID.
@@ -244,7 +244,7 @@ def curate_prepared_frame(
             # The estimate is the RT span between *sampled* half-height points, so it can be
             # implausible in either direction: a fraction of a second when a run has no anchors,
             # or minutes when a peptidoform elutes more than once. Clamp into the range a real
-            # peak can occupy and record which runs were clamped -- a clamped width is a stated
+            # peak can occupy and record which runs were clamped; a clamped width is a stated
             # prior about chromatography, not a measurement from this run. A run whose width is
             # not estimable at all stays null and selects nothing; there is no invented width.
             (

@@ -257,7 +257,7 @@ def test_runbook_affine_recovers_a_known_scale_and_shift():
     for p in m.parameters():  # freeze the student: only the runbook may learn
         p.requires_grad_(False)
     rb = ChromRunbook(1, m.cfg.context_dim)
-    # Zero the context vector's path so the affine is the only route -- otherwise the two
+    # Zero the context vector's path so the affine is the only route; otherwise the two
     # mechanisms are partly interchangeable and the recovered numbers are not identifiable.
     rb.emb.weight.requires_grad_(False)
 
@@ -310,7 +310,7 @@ def test_affine_never_touches_rt_base():
 
 def _perturbed_encoder(context_dim: int = 8) -> MSContextEncoder:
     """A fresh encoder has energy_mlp's LAST Linear zero-init (weight AND bias), so
-    energy_mlp(anything) == 0 regardless of input -- every "does energy do X" test built
+    energy_mlp(anything) == 0 regardless of input; every "does energy do X" test built
     on a bare MSContextEncoder is vacuous, because masked-vs-unmasked collapse to the
     same (zero) output no matter which side of a masking bug you're looking at. Perturb
     every energy_mlp parameter so mlp(0) is genuinely nonzero, the way it would be after
@@ -349,7 +349,7 @@ def test_masking_happens_after_the_mlp_not_by_filling_zero():
     masked = enc(ids, ids, ids, energy=torch.full((1,), float("nan")))
     assert not torch.allclose(filled, masked)
     # Directional: pin down WHICH side carries the nonzero term. "not allclose" alone is
-    # symmetric and also passes if the present/absent mask were reversed -- a masked
+    # symmetric and also passes if the present/absent mask were reversed; a masked
     # example must equal the no-energy path exactly, not merely differ from the filled one.
     absent = enc(ids, ids, ids, energy=None)
     assert torch.allclose(masked, absent)

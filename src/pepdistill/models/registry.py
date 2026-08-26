@@ -86,7 +86,7 @@ def save_checkpoint(
     """Save the student, plus any trained acquisition context so the artifact is complete.
 
     The context projections live inside StudentModel, but the ``MSContextEncoder`` that
-    *produces* the context vectors are separate modules — persist them here or a loaded model
+    *produces* the context vectors are separate modules, persist them here or a loaded model
     can only make base (context-free) predictions.
     """
     blob: dict = {"config": model.cfg.to_dict(), "state_dict": model.state_dict()}
@@ -141,7 +141,7 @@ def load_context(path: str | Path, map_location: str = "cpu") -> ContextBundle |
             setups=e.get("setups"),
         )
         # A checkpoint written before named setups existed has no `setup_emb`. Its absence is
-        # not ambiguous -- there were none to save -- so the zero-init table stands, which is
+        # not ambiguous; there were none to save; so the zero-init table stands, which is
         # exactly the neutral term an unnamed source gets. Filled in by name rather than with a
         # non-strict load, which would swallow a genuinely mismatched checkpoint too.
         state = dict(e["state_dict"])

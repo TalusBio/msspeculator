@@ -3,7 +3,7 @@
 //! Two views of one stored value. The **atomic composition** keeps isotopes distinct
 //! (`13C(4) 15N`) and yields an exact monoisotopic mass. The **element composition** folds each
 //! isotope onto its parent element and yields the fixed 6-vector the student consumes. They
-//! disagree for isotope-labeled mods — that is the point, not a defect.
+//! They disagree for isotope-labeled mods. That is the point, not a defect.
 //!
 //! Nuclide masses are not defined here; they are vendored from UNIMOD (see `unimod.rs`) so no
 //! chemistry constant is ever hand-typed.
@@ -11,7 +11,7 @@
 use std::collections::HashMap;
 
 /// The frozen model-input basis. Changing this changes the student's input contract and
-/// invalidates every checkpoint — it is not a list that grows casually.
+/// invalidates every checkpoint. It is not a list that grows casually.
 pub const ELEMENTS: [&str; 6] = ["C", "H", "N", "O", "S", "P"];
 pub const N_ELEMENTS: usize = ELEMENTS.len();
 
@@ -89,7 +89,7 @@ impl AtomicComposition {
     /// Project onto the fixed 6-element basis, folding isotopes onto their parents.
     ///
     /// Errors on any element outside the basis. Zero-filling instead would understate the
-    /// modification in a model input — a silent wrong answer, which is worse than no answer.
+    /// modification in a model input. A silent wrong answer is worse than no answer.
     pub fn element_comp(&self) -> anyhow::Result<[i8; N_ELEMENTS]> {
         let mut out = [0i32; N_ELEMENTS];
         for (sym, n) in &self.counts {

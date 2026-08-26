@@ -275,7 +275,7 @@ def test_parity_chrom_context(artifact, capsys):
     prec = Precursor(peptide=Peptide(PEPTIDE), charge=CHARGE, split="train")
     batch = collate([prec])
     ids = torch.tensor([1])  # dsA -> row 1
-    # A named dataset supplies BOTH runbook terms — the additive context vector and the output
+    # A named dataset supplies BOTH runbook terms, the additive context vector and the output
     # scale+shift. Passing only one here would test half of what the regime trains, and the
     # fixture's normal_(std=0.3) over every parameter makes the affine decidedly non-identity.
     chrom = runbook(ids)
@@ -308,7 +308,7 @@ def test_parity_chrom_context(artifact, capsys):
         ),
         # Two composition-routed mods on ONE site: torch accumulates the compositions and runs comp_enc
         # once, so the site gets ONE comp_enc.bias. Encoding each mod separately and summing
-        # the vectors would add the bias twice — a whole-bias-sized error, not a rounding one.
+        # the vectors would add the bias twice, a whole-bias-sized error, not a rounding one.
         (
             "co-sited",
             "PEPC[UNIMOD:35][UNIMOD:21]IDER",
@@ -455,7 +455,7 @@ def _spectronaut_library(path, model, peptides):
     """Write a Spectronaut TSV whose intensities are the model's own, shifted.
 
     Predictions rather than random numbers so a fit has something coherent to find, and shifted
-    so the zero-context starting point is not already optimal — the point of the test is that
+    so the zero-context starting point is not already optimal, the point of the test is that
     fitting moves the held-out score, which a library the model already predicts perfectly
     could not show.
     """
@@ -746,7 +746,7 @@ def test_mzspeclib_output_is_readable_by_the_reference_implementation(artifact, 
 def test_mzspeclib_output_violates_no_rule_at_any_level(artifact, tmp_path):
     """Parsing is not conformance: run the reference validator and require a clean log.
 
-    Every level, not just MUST -- a SHOULD violation is a reader having to guess at something the
+    Every validation level matters. A SHOULD violation still forces a reader to guess at something the
     format has a term for, which is the situation this export exists to end.
     """
     pytest.importorskip("mzspeclib", reason="pip install mzspeclib to check validity")
@@ -762,8 +762,8 @@ def test_mzspeclib_output_violates_no_rule_at_any_level(artifact, tmp_path):
 def test_mzspeclib_reports_both_retention_quantities_under_a_chrom_context(artifact, tmp_path):
     """A named dataset makes `rt` a gradient time, so the index has to be reported separately.
 
-    The two are not interconvertible -- the context enters the RT head's input, not its output --
-    so a library that reported only one would have thrown the other away.
+    The two are not interconvertible. The context enters the RT head's input, not its output.
+    A library that reported only one would have thrown the other away.
     """
     pytest.importorskip("mzspeclib", reason="pip install mzspeclib to check validity")
     from mzspeclib import SpectrumLibrary

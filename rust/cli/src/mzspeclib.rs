@@ -9,7 +9,7 @@
 //! accession, because readers match on both halves: `MS:1001117|theoretical mass` is silently
 //! invisible to a validator that knows the accession as `theoretical neutral mass`. The output is
 //! read back by the reference Python `mzspeclib` implementation in `tests/test_rust_parity.py`,
-//! which also runs its validator -- we are not the authority on whether this is a valid file.
+//! which also runs its validator; we are not the authority on whether this is a valid file.
 
 use std::io::Write;
 use std::path::Path;
@@ -120,7 +120,7 @@ impl<W: Write> LibrarySink for MzSpecLibSink<W> {
         // about what wrote the file, and the rule that asks for it is a MAY.
         //
         // Nothing else spells "the model and the settings that produced this library" either, so
-        // the resolved configuration rides as name/value pairs -- the grammar's own escape hatch
+        // the resolved configuration rides as name/value pairs; the grammar's own escape hatch
         // for an attribute the vocabulary has no term for. One group per key: the pair is the
         // attribute, which is why both lines carry the same group id.
         for (group, (key, value)) in provenance_attributes(config).into_iter().enumerate() {
@@ -152,7 +152,7 @@ impl<W: Write> LibrarySink for MzSpecLibSink<W> {
         )?;
         // No `<AttributeSet Interpretation=all>`: the reference reader crashes on one, because
         // `_new_interpretation` applies sets with an `owner_id` its attribute manager does not
-        // accept. Entries carry no interpretation at all instead -- with exactly one analyte per
+        // accept. Entries carry no interpretation at all instead; with exactly one analyte per
         // spectrum there is nothing for one to disambiguate, and the validator agrees.
         Ok(())
     }
@@ -174,7 +174,7 @@ impl<W: Write> LibrarySink for MzSpecLibSink<W> {
         // `ms level`, origin type and aggregation type are in the header's `Spectrum=all` set.
         //
         // Retention needs a unit, and the unit is a second attribute in the same group. An index
-        // is not a duration, so `minute` overstates it -- but the vocabulary constrains
+        // is not a duration, so `minute` overstates it; but the vocabulary constrains
         // `MS:1000896` to second or minute, and both `UO:0000186|dimensionless unit` and omitting
         // the unit are MUST violations. There is no value-bearing unitless retention term to
         // switch to (`MS:1002005` names a calibration standard, `MS:4000149` is a formula), so the

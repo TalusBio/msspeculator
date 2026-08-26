@@ -15,8 +15,8 @@ prepared experimental spectral libraries.
 - **Deterministic splits.** Train/val/test is assigned by hashing the *stripped*
   sequence, so every mod-form and charge state of a peptide stays in one split
   (no leakage) and the split is stable across runs and dataset growth.
-- **One config-driven pipeline.** A single `run` command walks toggleable Lightning stages
-  — `pretrain` (teacher distill) → `train` (real spectra) → `export` → `bench` — from one
+- **One config-driven pipeline.** A single `run` command walks these optional Lightning stages:
+  `pretrain` (teacher distill), `train` (real spectra), `export`, and `bench`. One
   TOML config. `predict` (library generation) is the separate inference command.
 - **Learns from real spectra too.** Beyond teacher distillation, the student can fine-tune on
   real experimental libraries (PROSPECT) with per-run acquisition **context conditioning**:
@@ -39,11 +39,11 @@ torch say so and name the extra instead of failing on a missing import.
 
 The `dev` dependency group holds only tools (pytest, ruff, pre-commit) and deliberately does not
 reference these extras. Default groups are installed by every `uv run`, so anything named there
-would reach preparation workers too — and excluding it per-worker needs `--no-default-groups`,
+would reach preparation workers too. Excluding it per worker needs `--no-default-groups`,
 which older uv (including the cloud image's) does not have.
 
-Chemistry, the `Peptide` type, tokenization, and batch-encoding are single-sourced in Rust
-(`rust/core`) and required at runtime — `pepdistill.chem` is just a re-export shim over the
+Rust owns chemistry, the `Peptide` type, tokenization, and batch encoding. The code lives in
+(`rust/core`) and is required at runtime. `pepdistill.chem` is a re-export shim over the
 `pepdistill_rs` extension. `pepdistill-rs` is declared as a `[tool.uv.sources]` path
 dependency on `rust/` (build backend: maturin), so a plain `uv sync` compiles and installs
 it automatically. This means **a Rust toolchain (`cargo`) must be on `PATH`** the first time
@@ -68,8 +68,8 @@ uv run pre-commit install
 The pre-commit configuration uses local hooks that call `task format` and `task lint`; no remote
 hook repository or independently pinned formatter configuration is involved.
 
-The `fake` teacher (deterministic, dependency-free) is always available for
-development and tests; the real `alphapeptdeep` teacher needs the `teacher` extra.
+The `fake` teacher is deterministic and has no extra dependencies, so it is always available for
+development and tests. The real `alphapeptdeep` teacher needs the `teacher` extra.
 
 ## Documentation
 
@@ -129,8 +129,8 @@ pepdistill predict --model work/model.ckpt  --fasta proteome.fasta -o library.pa
 
 Production inference is the Rust path; see `export-rust` below.
 
-Condition MS2 on the run's acquisition context (torch runtime only, needs a checkpoint with a
-saved `MSContextEncoder` — i.e. one trained with `[train]` or `[pretrain]` enabled). Give the
+Condition MS2 on the run's acquisition context with the torch runtime. The checkpoint must contain
+an `MSContextEncoder`, which means it was trained with `[train]` or `[pretrain]` enabled. Give the
 full factor grammar `INSTRUMENT::DETECTOR::FRAGMENTATION::ENERGY`, or just `--nce` as a
 shorthand for "unknown instrument/detector/fragmentation, only the energy":
 
@@ -205,12 +205,12 @@ cargo run -q --release -p pepdistill-cli -- \
 The source tables for that panel and the Thermo Pierce PRTC panel live in
 `data/reference_peptides/` with source URLs and ProForma labeling notes.
 
-It prints one JSON object — precursor m/z, RT, CCS, and the fragment table (struct-of-arrays) —
+It prints one JSON object containing precursor m/z, RT, CCS, and the fragment table (struct-of-arrays).
 to stdout. Transformer presets only; RT is the context-free iRT base unless `--chrom-context
 NAME` selects a saved dataset. Parity with the torch path is measured by
 `tests/test_rust_parity.py`.
 
-`--peptide` accepts a strict modified sequence, not just a bare one — `PEPC[UNIMOD:4]IDER`,
+`--peptide` accepts a strict modified sequence, such as `PEPC[UNIMOD:4]IDER`,
 `[UNIMOD:737]-PEPTIDER`, `PEPTIDER-[UNIMOD:2]`, `PEP[Formula:H2O]TIDER`, or a signed Dalton
 delta `PEP[+42.010565]TIDER`. Public input does not accept modification names; prepared training
 data retains its legacy resolver internally. The JSON's `peptide` field echoes the canonical
@@ -219,7 +219,7 @@ the reader refuses one it does not understand rather than guessing at missing te
 
 ## Output
 
-`library.parquet` is a tidy long-format spectral library — one row per retained
+`library.parquet` is a long-format spectral library with one row per retained
 fragment:
 
 | column | meaning |
@@ -249,7 +249,7 @@ pepdistill/
   cli.py       run/predict/export-rust plus prepare/prepare-status/prepare-finalize
 
 rust/
-  core/        chemistry + Peptide + tokenizer + student forward — the single source of truth,
+  core/        chemistry + Peptide + tokenizer + student forward. This is the shared implementation,
                used by both the Python ext and the CLI
   cli/         pepdistill-cli: FASTA -> DIA-NN TSV and single-peptide JSON inference
   src/lib.rs   pepdistill_rs: pyo3 extension exposing core to Python (a hard dependency)

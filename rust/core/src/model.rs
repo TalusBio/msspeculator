@@ -1,4 +1,4 @@
-//! Hand-rolled forward for the transformer student — a 1:1 port of
+//! Hand-rolled forward for the transformer student. This is a 1:1 port of
 //! `StudentModel.forward_dense` (same-length dense batches, no padding, dropout off).
 //!
 //! Charge is factored out of the trunk (RT stays charge-invariant) and re-enters at the heads:
@@ -80,7 +80,7 @@ where
     y
 }
 
-/// LayerNorm over the last dim (biased variance, eps inside sqrt) — matches torch nn.LayerNorm.
+/// LayerNorm over the last dim (biased variance, eps inside sqrt). It matches torch nn.LayerNorm.
 fn layernorm<SX, SG, SB>(
     x: &ArrayBase<SX, Ix2>,
     g: &ArrayBase<SG, Ix1>,
@@ -375,7 +375,7 @@ impl<'a> Predictor<'a> {
     /// Project any acquisition context vector into the additive fragment-feature shift.
     ///
     /// Split out of [`Self::ms_context_shift`] because a fitted context has no acquisition factors
-    /// behind it — it is a vector in the same space, optimized directly, and it has to reach the
+    /// behind it. It is a vector in the same space, optimized directly, and it has to reach the
     /// heads through exactly the projection a factor-derived context uses or the fit would be
     /// optimizing against a different model than inference runs.
     pub fn context_shift(&self, context: ArrayView1<'_, f32>) -> Result<Array1<f32>> {
@@ -437,7 +437,7 @@ impl<'a> Predictor<'a> {
         ))
     }
 
-    /// Per-dataset RT output affine `(scale, shift)` — the ChromRunbook's scale+shift row.
+    /// Per-dataset RT output affine `(scale, shift)`. This is the ChromRunbook's scale+shift row.
     ///
     /// `chrom_context` above is an additive bias in feature space and cannot express a
     /// rescale; this carries the part of a dataset's raw-RT relationship that is a global
@@ -507,7 +507,7 @@ impl<'a> Predictor<'a> {
         let cfg = self.cfg();
         let d = cfg.d_model;
         let seq = pep.sequence.as_bytes();
-        // Guarded here, not just in `predict`: `encode` is public, and below `seq.len() - 1`
+        // Guarded here and in `predict`: `encode` is public, and below `seq.len() - 1`
         // would wrap to usize::MAX on an empty peptide and abort in an allocation.
         if seq.len() < 2 {
             return Err(anyhow!(
@@ -529,7 +529,7 @@ impl<'a> Predictor<'a> {
         // --- embed: token + position + routed mod vector ---
         // Eval routing sends named mods through comp_enc and mass-only mods through mass_enc,
         // never both; unmodified columns (termini included) contribute exactly zero (there is
-        // no unconditional bias term — the encoder only runs where mod_present).
+        // no unconditional bias term. The encoder only runs where mod_present).
         //
         // The four channels come from `tokenize::mod_arrays`, the same builder the torch path
         // uses through the pyo3 ext, so this ACCUMULATES co-sited mods into one channel value
@@ -822,7 +822,7 @@ impl<'a> Predictor<'a> {
         }
         let rt_2d = rt_feat.insert_axis(ndarray::Axis(0)); // [1,d]
         let rt_out = self.head(&rt_2d, "model.rt_head")?;
-        // Per-dataset affine applies in STANDARDIZED space, before denormalization — same
+        // Per-dataset affine applies in STANDARDIZED space, before denormalization. The same
         // order as torch, where `rt = scale * rt_head(feat) + shift` is compared against
         // standardize_rt(raw_rt). Applying it after denormalization would rescale the frame
         // itself and silently disagree with the training-time semantics.

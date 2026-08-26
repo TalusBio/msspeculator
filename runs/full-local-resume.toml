@@ -1,7 +1,7 @@
 # Resume the local `small` run with learning-rate decay.
 #
 # The first run peaked at epoch 3 (0.7824 mean per-dataset spectral angle) and then oscillated in
-# a 0.4% band for five more checks before early stopping — a converged-at-this-rate signature.
+# a 0.4% band for five more checks before early stopping, a converged-at-this-rate signature.
 # This continues from that peak with the rate already halved, because we know 3e-4 is plateaued
 # there and letting the decay rediscover it would spend three validation checks (~1.5h) to reach
 # a rate we can just set.

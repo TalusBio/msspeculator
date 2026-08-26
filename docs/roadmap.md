@@ -26,7 +26,7 @@ inference is the Rust path via `export-rust`.
 
 ## Landed architecture
 
-- Rust is the single source of truth for peptide chemistry, tokenization, tensor packing,
+- Rust owns peptide chemistry, tokenization, tensor packing,
   safetensors inference, and DIA-NN library generation.
 - Real-data validation is deduplicated and logged per dataset. Early stopping follows mean
   per-dataset spectral agreement and errors if an expected metric is missing.
@@ -60,7 +60,7 @@ inference is the Rust path via `export-rust`.
   timsTOF heron library a fitted row moved held-out agreement 0.4691 -> 0.5316 where borrowing
   the closest existing instrument row reached only 0.5026. The Python `freeze_backbone` reference,
   re-run under the same project split, reached 0.4656 -> 0.5355, so the Rust fit recovers 89% of
-  its improvement — the remaining gap is the finite-difference gradient and the padded fragment
+  its improvement. The remaining gap is the finite-difference gradient and the padded fragment
   rows Python's grid carries, not a disagreement about the objective.
 - The RT losses mask per row, so a source carrying only one of the two retention labels is
   supervised on what it has instead of being dropped from the corpus.
@@ -72,7 +72,7 @@ inference is the Rust path via `export-rust`.
   than trusted. The UNIMOD tables' headers carry the blake2b of the exact `unimod.xml` they were
   extracted from, so `gen_unimod.py --expect-digest <hash>` fails if upstream has moved; on
   2026-08-25 today's upstream reproduced both tables byte-for-byte (40 nuclides, 1,560
-  modifications). A fetch date is deliberately absent — the digest identifies the source exactly
+  modifications). A fetch date is deliberately absent. The digest identifies the source exactly
   and a date would make every regeneration differ. `unimod.tsv`'s mass column stays a test
   fixture: mass is computed from the composition and asserted against it on every row. The
   PROSPECT manifests carry `_source`/`_generator` keys written by their builders, and an exported
@@ -83,9 +83,9 @@ inference is the Rust path via `export-rust`.
   nominal 60. Off by default; the local full-run config cuts by half after 3 flat checks.
 - The full preparation config selects all non-test `prospect`, `tmt`, `multi_ptm`, and `tmt_ptm`
   archives. The separately labelled `test_ptm` record is excluded from training.
-- Library generation is reproducible and self-describing. One resolved configuration -- blake2b
+- Library generation is reproducible and self-describing. One resolved configuration, including blake2b
   digests of the model and the FASTA, every digestion/modification/context/fragment setting as
-  resolved, and the resulting counts -- is written beside the library as `config.json` and, for
+  resolved, and the resulting counts are written beside the library as `config.json` and, for
   mzSpecLib output, into the library header itself, so a published library cannot be separated
   from its provenance by a copy. The format follows the `--out` suffix (`.mzspeclib.txt[.gz]`
   against everything else) rather than a flag that could contradict it. The mzSpecLib writer is
@@ -103,7 +103,7 @@ inference is the Rust path via `export-rust`.
 3. **Evaluate representation augmentation.** Compare the 1%-of-peptides chemistry-preserving
    substitution run against an unaugmented control before changing its rate or policy.
 4. **Validate prepared-data curation across the full corpus.** The `v2` preparation path now
-   estimates one robust peak width per raw file, centers it on each peptidoform apex across all
+   estimates one stable peak width per raw file, centers it on each peptidoform apex across all
    charge/acquisition modes, requires four in-window PSMs, and retains the best two PSMs per
    charge/acquisition context. Compare its per-source retention and spectral-consistency reports
    with the unfiltered `v1` assets before making `v2` the training default. Replicate-consensus

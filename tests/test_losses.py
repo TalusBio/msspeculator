@@ -12,7 +12,7 @@ from pepdistill.distill.losses import labeled_mse
 def test_an_unlabeled_row_cannot_poison_the_gradient():
     """The reason the target is substituted before the subtraction rather than masked after it:
     ``0 * NaN`` is NaN, so masking the residual would leave every shared parameter upstream of
-    the RT head with a NaN gradient -- one library row would destroy the whole batch."""
+    the RT head with a NaN gradient; one library row would destroy the whole batch."""
     prediction = torch.tensor([1.0, 5.0, 3.0], requires_grad=True)
     target = torch.tensor([0.0, float("nan"), 1.0])
 

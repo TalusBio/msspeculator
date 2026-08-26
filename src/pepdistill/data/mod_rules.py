@@ -90,7 +90,7 @@ def sampled_sites(
     """Draw variable modifications, each candidate site independently at its rule's probability.
 
     Independent per site rather than per peptide, so a peptide with ten serines is ten times as
-    likely to carry a phosphate as one with a single serine -- which is what a per-amino-acid rate
+    likely to carry a phosphate as one with a single serine; which is what a per-amino-acid rate
     means. Draws are then truncated to ``max_mods``; truncation keeps a random subset rather than
     the first few, since candidate sites are generated in sequence order and keeping the first
     would bias every modification towards the N-terminus.

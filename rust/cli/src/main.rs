@@ -36,7 +36,7 @@ enum Command {
 /// `--add-unimod ACCESSION[:MASS]`: a modification the library contains.
 ///
 /// The mass is optional and only needed when the file spells a shift more coarsely than the
-/// automatic tolerance accepts — DIA-NN writes 6C-CysPAT as `+221.082`, which is 3e-4 from the
+/// automatic tolerance accepts, DIA-NN writes 6C-CysPAT as `+221.082`, which is 3e-4 from the
 /// table. Stating it is a declaration that the rounding is intended, not a widening of the
 /// tolerance for every modification.
 #[derive(Clone)]

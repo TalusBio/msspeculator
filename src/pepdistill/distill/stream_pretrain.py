@@ -1,6 +1,6 @@
 """Online teacher-distill pretrain: enumerate the digests, chunk-label, per-peptide NCE sweep.
 
-Aggressive but not wasteful. Instead of randomly sampling peptides (coupon-collector — needs
+Aggressive but not wasteful. Instead of randomly sampling peptides (coupon-collector, needs
 ~16x the draws to cover a space), it *enumerates* the digests lazily: walk the FASTA, yield
 every tryptic peptide and every unspecific (immunopeptidome-like) window, no dedup (~2% repeat
 rate isn't worth a proteome-scale seen-set). One pass = full coverage.
@@ -60,7 +60,7 @@ class StreamPretrainCfg:
     passes: int = 1  # full enumerations of the digests
     # Emit EVERY charge in each mix's range per peptide, consecutively, rather than sampling
     # one. Charge is factored out of the trunk and re-enters only at the MS2/CCS heads, so those
-    # heads learn it from the contrast between charges of the SAME peptide — a contrast sampling
+    # heads learn it from the contrast between charges of the SAME peptide, a contrast sampling
     # never produces, since each peptide appears at one charge per pass. Costs len(charges)x the
     # precursors, and therefore that much teacher time, per peptide.
     all_charge_states: bool = True
@@ -71,7 +71,7 @@ class StreamPretrainCfg:
     instrument: str = "Lumos"
     detector: str = "FTMS"
     fragmentation: str = "HCD"
-    # Early stop when the student saturates the teacher (MS2 loss plateaus) — avoids burning
+    # Early stop when the student saturates the teacher (MS2 loss plateaus), avoids burning
     # teacher throughput on a converged model. patience=0 disables it. Patience counts
     # consecutive `check_every`-step windows with < min_delta mean-loss improvement.
     patience: int = 0
@@ -147,8 +147,8 @@ class _StreamingDataset(IterableDataset):
         """``items: [(mix_idx, seq)]`` -> flat precursor list, grouped by mix.
 
         Not aligned 1:1 to ``items``: with ``all_charge_states`` a sequence expands to one
-        precursor per charge. Nothing downstream needs the item correspondence — the teacher
-        takes a flat list and labels are zipped back positionally — and keeping a peptide's
+        precursor per charge. Nothing downstream needs the item correspondence, the teacher
+        takes a flat list and labels are zipped back positionally, and keeping a peptide's
         charge states consecutive is what puts them in the same mini-batch.
         """
         by_mix: dict[int, list[str]] = {}
@@ -217,7 +217,7 @@ def _estimate_norm(teacher, encoder: MSContextEncoder, cfg: StreamPretrainCfg, n
 
 
 class _StepLogger(L.Callback):
-    # NB: store the emit fn as `_emit`, NOT `log` — Lightning treats a callback's `.log`
+    # NB: store the emit fn as `_emit`, NOT `log`, Lightning treats a callback's `.log`
     # as its own logging hook, which would shadow our callable.
     def __init__(self, every: int, emit) -> None:
         self.every, self._emit = every, emit
@@ -323,7 +323,7 @@ def fit_stream_pretrain(
     # (teacher CCS is ~543+-122; under an identity norm that target would dominate the loss).
     #
     # RT is deliberately NOT established from the teacher. iRT is the canonical RT frame, and
-    # the teacher predicts RT in its own normalized 0-1 space (~0.49+-0.27) — a different
+    # the teacher predicts RT in its own normalized 0-1 space (~0.49+-0.27), a different
     # quantity. Establishing the global affine from it forces every later real dataset to be
     # standardized through the wrong units: measured, that drove train_irt from 0.031 to 379.8
     # and val_spectral_angle from 0.617 to 0.476. Teacher RT under the identity norm is already

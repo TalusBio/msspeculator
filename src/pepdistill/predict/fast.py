@@ -3,7 +3,7 @@
 The naive predictor loops in Python over every fragment (millions of rows); that, not
 the network, was the bottleneck. Here we group precursors by length so each bucket is a
 dense tensor with no padding, run the model once per bucket, and compute fragment m/z +
-assemble the output with pure numpy — no per-fragment Python. Only O(precursors) Python
+assemble the output with pure numpy, no per-fragment Python. Only O(precursors) Python
 remains (mod placement + modified-sequence strings), never O(fragments).
 
 """

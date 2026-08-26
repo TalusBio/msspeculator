@@ -6,8 +6,8 @@ Pass `--expect-digest HEX` to fail unless upstream still hashes to what the vend
 were extracted from; the exact command is recorded in each file's own header.
 
 Emits two TSVs under rust/core/data/, each opening with a '#'-prefixed provenance/license
-header (see `_header` below) that travels with the file itself -- not just this docstring --
-since the TSVs, not this script, are the redistributed/compiled artifact:
+header (see `_header` below) that travels with the file itself. The TSVs, not this script, are
+the redistributed and compiled artifact:
   elements.tsv  symbol \t mono_mass          (from <umod:elem>)
   unimod.tsv    accession \t title \t composition \t mono_mass   (from <umod:mod>)
 
@@ -42,7 +42,7 @@ Terms:  The header of unimod.xml itself (fetched 2026-07-28) reads, verbatim:
         source, the copyright notice, and the license; the emitted tables are named
         `elements.tsv` / `unimod.tsv`, distinct from "Unimod"; and this docstring records the
         transformation applied (element-list and modification-list extraction into TSV).
-        Redistribution and modification are permitted under the Design Science License —
+        Redistribution and modification are permitted under the Design Science License,
         vendoring is allowed.
 """
 
@@ -60,14 +60,14 @@ OUT = Path(__file__).resolve().parent.parent / "rust" / "core" / "data"
 
 # Field-per-line rather than prose: a reader scanning the top of a data file wants to find one
 # fact, and wrapped sentences hide them. Emitted as a '#'-prefixed header on both TSVs so the
-# provenance travels with the redistributed artifact, not just this generator's docstring. The
+# provenance travels with the redistributed artifact, rather than this generator's docstring. The
 # Rust loader (rust/core/src/unimod.rs) skips '#'-prefixed lines when parsing.
 #
 # `source-hash` is what makes "extracted from" checkable, and it is deliberately the only
 # identity recorded: a fetch date says when somebody ran this, while the digest says exactly what
 # they ran it against, and writing a date would make every regeneration differ from the last.
 _LICENSE = (
-    "# license      Design Science License (https://www.unimod.org/dsl.txt) -- NO WARRANTY.\n"
+    "# license      Design Science License (https://www.unimod.org/dsl.txt); NO WARRANTY.\n"
     "#              Copyright (C) 2002-2006 Unimod. This file is NOT unimod.xml and is not\n"
     "#              affiliated with or endorsed by Unimod; it is a derivative work.\n"
 )
@@ -80,7 +80,7 @@ def _header(title: str, source_hash: str, extracted: str, columns: str) -> str:
         f"# source       {URL}\n"
         f"# source-hash  blake2b-256:{source_hash}\n"
         f"# verify       uv run python tools/gen_unimod.py --expect-digest {source_hash}\n"
-        "# generator    tools/gen_unimod.py -- regenerate rather than hand-edit\n"
+        "# generator    tools/gen_unimod.py; regenerate rather than hand-edit\n"
         f"# extracted    {extracted}\n"
         f"# columns      {columns}\n"
         "#\n" + _LICENSE
@@ -108,7 +108,7 @@ def main() -> None:
     args = parser.parse_args()
 
     # Read to bytes, then parse from bytes: hashing needs the source to exist as bytes, and
-    # parsing a live socket cannot tell a complete document from a truncated one -- a mid-transfer
+    # parsing a live socket cannot tell a complete document from a truncated one; a mid-transfer
     # reset that still returns 200 is exactly how a short FASTA got hashed as valid provenance.
     with urllib.request.urlopen(URL, timeout=180) as fh:
         raw = fh.read()
@@ -133,7 +133,7 @@ def main() -> None:
     rows.sort()
     (OUT / "elements.tsv").write_text(
         _header(
-            "UNIMOD nuclide masses -- derivative work, NOT unimod.xml.",
+            "UNIMOD nuclide masses; derivative work, NOT unimod.xml.",
             source_hash,
             f"{len(rows)} nuclides from <umod:elements>: each <umod:elem>'s `title` and "
             "`mono_mass`, sorted by symbol",
@@ -165,13 +165,13 @@ def main() -> None:
     mrows.sort()
     (OUT / "unimod.tsv").write_text(
         _header(
-            "UNIMOD modification deltas -- derivative work, NOT unimod.xml.",
+            "UNIMOD modification deltas; derivative work, NOT unimod.xml.",
             source_hash,
             f"{len(mrows)} modifications from <umod:modifications>: each <umod:mod> that has a "
             "<umod:delta>, keeping `record_id`, `title`, the delta's element list rendered as "
             "'Sym' / 'Sym(count)' (e.g. '13C(4) N 15N'), and the delta's `mono_mass`, sorted by "
             "accession",
-            "accession, title, composition, mono_mass -- mono_mass is a TEST FIXTURE: mass is "
+            "accession, title, composition, mono_mass; mono_mass is a TEST FIXTURE: mass is "
             "computed from the composition and asserted against it on every row",
         )
         + "".join(f"{a}\t{t}\t{c}\t{m!r}\n" for a, t, c, m in mrows)

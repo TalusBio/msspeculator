@@ -22,7 +22,7 @@ class PrecursorLabels:
     max is 1.0. Real PROSPECT labels are base-peak normalized per spectrum *before* the
     b/y + charge<=2 + no-neutral-loss filter, which drops the base peak for about a third of
     spectra, so their max is often below 1.0. Both MS2 losses (``ms2_cosine_loss``,
-    ``spectral_angle``) are scale-invariant, so this difference does not reach training —
+    ``spectral_angle``) are scale-invariant, so this difference does not reach training,
     but do not compare magnitudes across the two sources.
     ``rt`` and ``ccs`` are scalars in the teacher's native units.
     """

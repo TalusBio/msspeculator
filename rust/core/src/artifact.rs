@@ -15,12 +15,12 @@ use serde::Deserialize;
 ///
 /// v3 added the ChromRunbook's per-dataset RT output affine (`runbook.log_scale.weight`,
 /// `runbook.shift.weight`). A v2 artifact simply lacks those tensors. Treating their absence
-/// as identity would be a plausible guess, but it is still a guess about what a file means —
-/// and a v2 checkpoint cannot load into the current runbook anyway. Reject and re-export.
+/// as identity would be a plausible guess, but it is still a guess about what a file means.
+/// A v2 checkpoint cannot load into the current runbook anyway. Reject and re-export.
 ///
 /// Named acquisition setups (`enc.setup_emb.weight` + `ms_context_index`) were added WITHOUT a
 /// bump, and the difference from v3 is the whole rule: a missing affine left the reader
-/// guessing what a dataset row meant, while a missing setup index says something exact — no
+/// guessing what a dataset row meant, while a missing setup index says something exact. No
 /// setup was ever named. Since the version check is strict equality, bumping would force every
 /// published artifact to be re-exported to buy nothing.
 pub const FORMAT_VERSION: u32 = 3;
@@ -148,7 +148,7 @@ impl Artifact {
             return Err(anyhow!(
                 "artifact format_version {} is not supported (this build reads {}); \
                  v1 predates the composition mod encoding and v2 predates the per-dataset RT \
-                 affine, so their tensors do not mean what this build expects — re-export from \
+                 affine, so their tensors do not mean what this build expects. Re-export from \
                  a retrained checkpoint",
                 meta.format_version,
                 FORMAT_VERSION

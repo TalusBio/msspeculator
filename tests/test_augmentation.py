@@ -23,7 +23,7 @@ def test_substitution_preserves_effective_composition_and_mass():
     augmented = substitute_residues(original, 1.0)
 
     changed = (augmented.tokens != original.tokens).nonzero(as_tuple=False)
-    assert changed.shape == (1, 2)  # at most—and with p=1, exactly—one site per peptide
+    assert changed.shape == (1, 2)  # at most, and with p=1, exactly, one site per peptide
     row, column = changed[0].tolist()
     old = _amino_acid(int(original.tokens[row, column]))
     new = _amino_acid(int(augmented.tokens[row, column]))

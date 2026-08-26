@@ -74,7 +74,7 @@ def test_stream_pretrain_runs_and_moves_encoder(tmp_path):
     # energy was fed through the MLP -> encoder weights received gradient and moved.
     assert not torch.allclose(before, enc.energy_mlp[-1].weight.detach())
     # rt/ccs norm was estimated from a teacher sample (not left at the 0/1 identity).
-    # Pretrain establishes the CCS frame -- it is the only source of CCS -- but deliberately
+    # Pretrain establishes the CCS frame; it is the only source of CCS; but deliberately
     # NOT the RT frame: iRT is canonical and the teacher's RT is a different quantity in its
     # own normalized units. The first real dataset establishes RT.
     assert float(model.ccs_mean) != 0.0 or float(model.ccs_std) != 1.0
@@ -179,7 +179,7 @@ def test_label_chunk_sets_ms_factors_with_swept_energy(tmp_path):
         assert f.energy is not None
         assert f.energy.dtype == torch.float32
         seen_energy.extend(f.energy.tolist())
-    # The energy sweep isn't constant across peptides — a genuine per-peptide NCE draw.
+    # The energy sweep isn't constant across peptides, a genuine per-peptide NCE draw.
     assert len(set(seen_energy)) > 1
     assert all(cfg.nce_range[0] <= e <= cfg.nce_range[1] for e in seen_energy)
 

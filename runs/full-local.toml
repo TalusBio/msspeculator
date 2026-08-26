@@ -8,7 +8,7 @@ out = "runs/full-local-small"
 preset = "small"
 activation = "gelu_tanh"
 # Measured on this box: Metal runs the `small` step 2.3x faster than four CPU threads, and
-# dropout's mask generation was a quarter of that step — 21M training rows against 134k
+# dropout's mask generation was a quarter of that step, 21M training rows against 134k
 # parameters regularize well enough without it.
 device = "mps"
 dropout = 0.0

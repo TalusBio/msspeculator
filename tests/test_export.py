@@ -49,7 +49,7 @@ def test_export_carries_the_provenance_of_its_checkpoint(tmp_path: Path):
     """The artifact is what gets redistributed and bundled, so its origin travels inside it.
 
     A note in a README drifts from the file it describes; metadata cannot. The Rust reader does not
-    model this key, which is the point -- whatever the trainer recorded passes through unaltered.
+    model this key, which is the point; whatever the trainer recorded passes through unaltered.
     """
     model = build_student("small")
     model.set_norm(31.0, 4.0, 410.0, 25.0)

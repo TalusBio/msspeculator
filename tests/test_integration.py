@@ -195,7 +195,7 @@ def test_rate_limit_thins_batches_but_never_drops_an_epoch_boundary():
 
     The rate limit keeps one pending payload and REPLACES it when a later step arrives. A
     diagnostics render lands right after validation has just flushed, so the interval is never
-    due, and the next training batch used to overwrite it — silently costing a whole run every
+    due, and the next training batch used to overwrite it, silently costing a whole run every
     diagnostics image and scalar after step 0, while the per-batch losses looked fine.
     """
     from pepdistill.distill.pipeline import _RemoteLogThrottle

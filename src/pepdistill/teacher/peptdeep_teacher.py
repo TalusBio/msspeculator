@@ -36,7 +36,7 @@ def _modification_title(pep, spec) -> str:
     if not isinstance(spec, str):
         raise ValueError(
             f"peptide {pep.modified_sequence()!r} carries a mass-only modification "
-            f"({spec:+}), which the peptdeep teacher cannot represent — it identifies "
+            f"({spec:+}), which the peptdeep teacher cannot represent. It identifies "
             "modifications by name. Supply a named modification, or label this peptide with a "
             "teacher that accepts raw deltas."
         )
@@ -85,7 +85,7 @@ def _alphabase_mod(pep, site, spec) -> tuple[str, int]:
     place a foreign one is emitted. alphabase keys every modification as ``Name@Site``, so the bare
     UNIMOD title gains the suffix that our site implies.
 
-    Name and site are resolved together because they are coupled — see
+    Name and site are resolved together because they are coupled, see
     :func:`_site_for_alphabase_name`. Every candidate is checked against alphabase's own table,
     so an unresolvable modification still raises instead of reaching the model mis-specified.
     """
@@ -95,7 +95,7 @@ def _alphabase_mod(pep, site, spec) -> tuple[str, int]:
 
     # The terminal branch must come before any "already an alphabase name" shortcut: our site is
     # the authority on where the modification sits, and a residue-suffixed alias found on a
-    # terminus would otherwise be filed on residue 1 -- a plausible, confident, wrong spectrum.
+    # terminus would otherwise be filed on residue 1; a plausible, confident, wrong spectrum.
     if site == "n":
         candidates = [f"{base}@{suffix}" for suffix in _NTERM_SUFFIXES]
     elif site == "c":

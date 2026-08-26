@@ -1,9 +1,9 @@
 """Turn precursors into padded tensors for the student model.
 
 Encoding is deliberately minimal (the whole point of distillation here): per-residue
-amino-acid index, a charge scalar, and modifications split into four channels — element
+amino-acid index, a charge scalar, and modifications split into four channels, element
 composition (``mod_comp``), raw mass (``mod_mass``), and two boolean masks (``mod_present``,
-``mod_has_composition``) — so a modification can be routed through a compositional or a mass-only
+``mod_has_composition``), so a modification can be routed through a compositional or a mass-only
 encoder. No LSTM means everything is a fixed-shape, batch-parallel tensor.
 
 Peptides are always wrapped with explicit N-/C-terminal tokens:
@@ -36,18 +36,18 @@ from .precursors import Precursor
 #
 # FRAG_OFFSET is the same contract for the MS2 axis: with the mandatory N-term token at column
 # 0, adjacent-pool row 0 pools [N] with residue 1, so the L-1 real inter-residue fragment sites
-# start at row FRAG_OFFSET. Every slice of an MS2 output — here, predict/fast.py,
-# predict/library.py, distill/dataset.py, and the Rust runtime — reads this one constant, so
+# start at row FRAG_OFFSET. Every slice of an MS2 output, here, predict/fast.py,
+# predict/library.py, distill/dataset.py, and the Rust runtime, reads this one constant, so
 # the torch and Rust paths cannot drift into off-by-one disagreement.
 
 
 @dataclass(slots=True)
 class Batch:
     tokens: torch.Tensor  # (B, T) long, T = maxL + 2
-    mod_comp: torch.Tensor  # (B, T, 6) float — element composition delta
-    mod_mass: torch.Tensor  # (B, T) float — mass delta in Daltons, unscaled
-    mod_present: torch.Tensor  # (B, T) bool — any modification here
-    mod_has_composition: torch.Tensor  # (B, T) bool — composition known, so routable to comp_enc
+    mod_comp: torch.Tensor  # (B, T, 6) float, element composition delta
+    mod_mass: torch.Tensor  # (B, T) float, mass delta in Daltons, unscaled
+    mod_present: torch.Tensor  # (B, T) bool, any modification here
+    mod_has_composition: torch.Tensor  # (B, T) bool, composition known, so routable to comp_enc
     charge: torch.Tensor  # (B,) long
     lengths: torch.Tensor  # (B,) long, residue count L (excludes termini)
     pad_mask: torch.Tensor  # (B, T) bool, True where padded

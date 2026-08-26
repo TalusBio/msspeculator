@@ -1,12 +1,12 @@
 //! Fit one acquisition-context vector against a published spectral library.
 //!
 //! Answers "given a library with no recorded instrument or collision energy, what acquisition
-//! context explains it" — by optimizing the context directly rather than borrowing an existing
+//! context explains it. The fit optimizes the context directly rather than borrowing an existing
 //! instrument's row. Everything else stays frozen: this fits sixteen-odd numbers, not a model.
 //!
 //! Two properties of the forward path make it cheap. [`Predictor::encode`] is charge- and
 //! context-independent, so the backbone is paid once per library and cached. Context then enters
-//! only at [`Predictor::predict_batch_charges`], which is two small linears — so an objective
+//! only at [`Predictor::predict_batch_charges`], which is two small linears. An objective
 //! evaluation costs a head pass, not a model pass, and brute-forcing the gradient by finite
 //! differences is affordable.
 //!
@@ -316,7 +316,7 @@ pub fn fit_ms_context(
     for _ in 0..config.epochs {
         // Gradients accumulate across groups until `batch_size` precursors have contributed.
         // Groups are keyed by (length, charge) so the encoder and the charge heads each see one
-        // shape, which leaves a long tail of small ones — and Adam normalizes per coordinate, so
+        // shape, which leaves a long tail of small ones, and Adam normalizes per coordinate, so
         // stepping on a six-precursor group moves as far as stepping on a full one, just in a
         // noisier direction. Accumulating first makes every step's sample size the configured one
         // regardless of how a particular library happens to bucket.

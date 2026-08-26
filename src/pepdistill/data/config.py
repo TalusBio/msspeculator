@@ -56,7 +56,7 @@ class DigestConfig:
 
         The grammar answers both questions a rule has to: which sites it applies to (the residue
         set) and what it places there (the accession). Neither was checked on the pretrain path
-        before, and neither failure was prompt -- a site-agnostic name raised ``IndexError`` from a
+        before, and neither failure was prompt; a site-agnostic name raised ``IndexError`` from a
         string split, and an unknown one built precursors quite happily, because ``Peptide``
         resolves mass lazily, then failed once the teacher asked for a mass well into a run.
         """

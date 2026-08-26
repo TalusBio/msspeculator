@@ -6,15 +6,16 @@ and threaded through, so the teacher warmup and the real-data sink share one acq
 (instrument/detector/fragmentation/energy) axis (the teacher's NCE is a factor, not a baked base).
 
 Stages:
-- **pretrain** — online teacher-distill warmup. Enumerate the ``sources`` live (unspecific
+- **pretrain**, online teacher-distill warmup. Enumerate the ``sources`` live (unspecific
   enzyme -> immunopeptidome windows, else tryptic) with the teacher labeling over an NCE sweep,
   so collision energy comes from the data (never fabricated) and the encoder learns a real CE
-  axis. (A fixed-energy corpus would just be a dataset that carries its own CE — no special mode.)
-- **train** — real-speclib sink over a prepared Parquet manifest, streamed from local storage or
+  axis. A fixed-energy corpus would just be a dataset that carries its own CE. It needs no
+  special mode.
+- **train**, real-speclib sink over a prepared Parquet manifest, streamed from local storage or
   object storage, with per-dataset ``chrom_context`` and factor-driven ``ms_context``.
-- **bench** — library-generation throughput on a FASTA digest.
+- **bench**, library-generation throughput on a FASTA digest.
 
-Inference (predict a library from a finished model) is deliberately NOT here — it is the
+Inference (predict a library from a finished model) is deliberately NOT here. It is the
 standalone ``predict`` command.
 """
 
@@ -113,7 +114,7 @@ class PretrainCfg:
     chunk_size: int = 10000
     # Emit every charge per peptide (consecutively, so they share a mini-batch) instead of
     # sampling one. Charge only reaches the MS2/CCS heads, which learn it from the contrast
-    # between charges of the same peptide — sampling never shows them that. Costs
+    # between charges of the same peptide, sampling never shows them that. Costs
     # len(charges)x teacher time.
     all_charge_states: bool = True
     # Early stop the stream when MS2 loss plateaus (student saturated the teacher). 0 = off.
@@ -200,12 +201,12 @@ class AugmentationCfg:
             )
 
 
-# What the real-data stage trains on — and therefore the population the RT affine is estimated
+# What the real-data stage trains on, and therefore the population the RT affine is estimated
 # from. ONE constant for both, because they must not drift: the affine is set once and is
 # permanent for the run, so a mismatched population is a silent, unrecoverable change of scale.
 #
 # Train only. Both other splits are genuinely held out: val is what the run is evaluated on,
-# and test is untouched by this pipeline end to end — it is not trained on and it is not
+# and test is untouched by this pipeline end to end, it is not trained on and it is not
 # normalised from. This is a deliberate departure from the pre-streaming `fit_realspeclib`,
 # which trained on `split != "val"` and so consumed test as well.
 def _train_cfg(raw: dict) -> TrainCfg:
@@ -346,8 +347,8 @@ def _digest_cfg(s: DigestSource) -> DigestConfig:
         max_charge=s.max_charge,
         max_variable_mods=s.max_var_mods,
         fixed_mods=tuple(s.fixed_mods),
-        # TOML spells the variable rules as an inline table -- `{ "STY[UNIMOD:21]" = 0.001 }` --
-        # which arrives as a dict. Accepted either way so a config and a constructed source agree.
+        # TOML spells the variable rules as an inline table, `{ "STY[UNIMOD:21]" = 0.001 }`.
+        # It arrives as a dict. Accepted either way so a config and a constructed source agree.
         variable_mods=(
             tuple(s.variable_mods.items())
             if isinstance(s.variable_mods, dict)
@@ -463,7 +464,7 @@ class _RemoteLogThrottle:
     session. It was a nested class when a bug in exactly this rule silently dropped every
     diagnostics render for a whole run.
 
-    A pending payload is REPLACED, not merged, once a later step arrives — merging across steps
+    A pending payload is REPLACED, not merged, once a later step arrives, merging across steps
     would attribute one step's metrics to another. That makes forcing the only way for an
     infrequent payload to survive: without it, anything logged between two training batches is
     overwritten within milliseconds. So payloads whose keys start with ``boundary_prefixes``
@@ -801,7 +802,7 @@ def run_pipeline(cfg: RunConfig, log=print) -> dict:
         encoder.train()
         if loaded_context is not None and loaded_context.runbook is not None:
             loaded_context.runbook.train()
-    log(f"student '{cfg.preset}' — {model.num_parameters():,} params (device={cfg.device})")
+    log(f"student '{cfg.preset}', {model.num_parameters():,} params (device={cfg.device})")
 
     if cfg.pretrain.enabled:
         mod, diagnostic_renderer = _run_pretrain(
@@ -819,7 +820,7 @@ def run_pipeline(cfg: RunConfig, log=print) -> dict:
         # for the metrics just extracted, but it transitively pins the Lightning Trainer ->
         # dataloader -> _StreamingDataset -> teacher -> peptdeep's models (hundreds of MB).
         # Left alive, that sits resident through the whole real-data stage; observed as an OOM
-        # killing a single-shard train stage on a laptop. The student weights are unaffected —
+        # killing a single-shard train stage on a laptop. The student weights are unaffected,
         # `model` is the shared backbone and is held separately.
         del mod
         gc.collect()
@@ -879,7 +880,7 @@ def run_pipeline(cfg: RunConfig, log=print) -> dict:
             + ("; holding decoded shards in RAM" if cfg.train.in_memory else "")
         )
         # Whether the affine was set here or inherited is the difference between a cold start
-        # and a continued curriculum, for a value that is permanent once set — so say which.
+        # and a continued curriculum, for a value that is permanent once set, so say which.
         if establish_rt_norm(model, [prepared_manifest.irt_stats]):
             log(
                 f"[train] RT affine set: mean {float(model.rt_mean):.4g}, "
@@ -977,7 +978,7 @@ def run_pipeline(cfg: RunConfig, log=print) -> dict:
 
 
 def _energy_curve(encoder, ce_min: float, ce_max: float, n: int = 5) -> dict[str, float]:
-    """ms_context magnitude across the energy range — a quick read on what the encoder learned.
+    """ms_context magnitude across the energy range, a quick read on what the encoder learned.
 
     Keys are strings because this dict is handed to W&B's run summary, whose encoder builds key
     paths by concatenation and raises on a non-string key. `json.dumps` coerces float keys

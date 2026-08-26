@@ -242,7 +242,7 @@ def _val_winners(chunks: list[str], out_uri: str) -> list[int]:
         .filter(pl.col("split") == "val")
         # Keyed on the peptidoform, not the stripped sequence. Keying on the stripped sequence kept
         # only the best-scoring modform of a peptide at each charge, so a phosphorylated form and
-        # its unmodified counterpart -- different molecules with different spectra -- competed for
+        # its unmodified counterpart; different molecules with different spectra; competed for
         # one validation slot and the loser left the validation set entirely. That under-reports
         # exactly the modforms this model exists to predict.
         .sort(
@@ -278,7 +278,7 @@ def _irt_stats(chunks: list[str]) -> tuple[int, float, float]:
 
 
 def _split_rows(chunks: list[str]) -> dict[str, int]:
-    """Rows per split, counted exactly as the loader admits them -- split alone, no RT test."""
+    """Rows per split, counted exactly as the loader admits them; split alone, no RT test."""
     rows = (
         canonical_prepared_scan(chunks)
         .group_by("split")

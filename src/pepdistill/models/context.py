@@ -2,9 +2,9 @@
 
 Two modules, one per side of the backbone's context split:
 
-- :class:`MSContextEncoder` composes ``ms_context`` (MS2 side) from acquisition factors —
+- :class:`MSContextEncoder` composes ``ms_context`` (MS2 side) from acquisition factors,
   instrument, detector, fragmentation (categorical embeddings) plus collision energy
-  (continuous, via an MLP) — so the vector is a learned function of metadata shared across
+  (continuous, via an MLP), so the vector is a learned function of metadata shared across
   every source, rather than a per-source id gradient-descended from scratch.
 - :class:`ChromRunbook` generates ``chrom_context`` (RT side) from a per-dataset id, row 0
   reserved as the neutral/iRT row.
@@ -58,10 +58,10 @@ def _assign_rows(existing: Mapping[str, int], names: Iterable[str]) -> dict[str,
 class MSContextEncoder(nn.Module):
     """Compose ``ms_context`` (MS2 side) from acquisition factors: instrument, detector,
     fragmentation (categorical embeddings, index 0 = unknown/blank -> zero row) plus collision
-    energy (continuous, via a plain MLP whose first ``Linear`` IS the learned affine — no
+    energy (continuous, via a plain MLP whose first ``Linear`` IS the learned affine, no
     BatchNorm1d: a single-NCE batch would collapse a batch-statistic normalization to a
     degenerate center/scale, so the affine is a trained parameter instead). Every term is
-    zero-init, so an all-unknown / energy-less input returns the zero vector — the
+    zero-init, so an all-unknown / energy-less input returns the zero vector, the
     context-free base. Collision energy is never fabricated: a spectrum with no recorded energy
     carries NaN, and the NaN entries of the ``energy`` tensor are masked out per example, so
     that term contributes zero for exactly those rows. (``energy=None`` omits the term for a
@@ -70,7 +70,7 @@ class MSContextEncoder(nn.Module):
 
     Alongside the factors it carries a table of **named acquisition setups**: rows addressed by
     name rather than composed from metadata, for a source that records no factors to compose
-    from. A published spectral library is the case — it reports no instrument and no collision
+    from. A published spectral library is the case, it reports no instrument and no collision
     energy, and a timsTOF ramps energy with ion mobility anyway, so there is nothing for the
     factor terms to consume and its offset from the base model has to be fitted as a row.
     Additive alongside the factor terms and zero-init like them, so a setup nobody named
@@ -181,7 +181,7 @@ class MSContextEncoder(nn.Module):
             # and it must contribute exactly zero rather than a value we invented.
             #
             # The mask is applied AFTER the MLP on purpose: energy_mlp's first Linear carries a
-            # bias, so mlp(0) != 0 — filling missing energy with zero beforehand would inject a
+            # bias, so mlp(0) != 0, filling missing energy with zero beforehand would inject a
             # learned constant, which is exactly the fabrication this avoids. nan_to_num only
             # stops NaN propagating through the lane that is about to be zeroed.
             present = torch.isfinite(energy)
@@ -220,7 +220,7 @@ class ChromRunbook(nn.Module):
                     "neutral iRT row and is never a dataset"
                 )
         # Per-dataset output affine on the RT head. `emb` above is an ADDITIVE bias in feature
-        # space, which can bend the mapping but cannot express a rescale — yet a dataset's raw
+        # space, which can bend the mapping but cannot express a rescale, yet a dataset's raw
         # RT differs from the iRT frame by SCALE as much as offset (gradient length, minutes vs
         # indexed units, dead volume). Both zero-init, so scale=exp(0)=1 and shift=0: the
         # neutral row and an untrained book are exactly identity.
@@ -323,7 +323,7 @@ class ChromRunbook(nn.Module):
         and well-behaved multiplicatively. Log space also means weight decay pulls the scale
         toward 1 rather than toward 0, which is the right prior for a rescale.
 
-        Deliberately unclamped — a scale that runs away means the data disagrees with the
+        Deliberately unclamped. A scale that runs away means the data disagrees with the
         model, and clamping would bury that signal under a value that merely looks poorly fit.
         """
         present = dataset_id.ne(0)

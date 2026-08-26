@@ -42,7 +42,7 @@ def main() -> None:
     if not Path("pyproject.toml").exists():
         raise SystemExit("stage is incomplete; run tools/prepare_launchpad_full_run.py first")
     # `etl` only. Torch is not a core dependency and the default `dev` group does not reference it,
-    # so this resolves without the ~3 GB of CUDA wheels that a worker never uses -- downloading
+    # so this resolves without the ~3 GB of CUDA wheels that a worker never uses; downloading
     # those is what timed out and killed 12 of 40 children of one array job. Deliberately no
     # group-exclusion flag: the cloud image's uv predates `--no-default-groups` and rejects it.
     command = [

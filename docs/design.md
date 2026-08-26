@@ -1,4 +1,4 @@
-# pepdistill — current design
+# pepdistill: current design
 
 ## Goal
 
@@ -25,7 +25,8 @@ it does not extract PROSPECT archives in the training process.
 Preparation is a separate, restartable ETL:
 
 - A vendored catalog and compressed shard index describe the upstream Zenodo records.
-- An optional S3 prefix is a read-through intermediate cache, never the source of truth.
+- An optional S3 prefix is a read-through cache. The vendored catalog and shard index remain the
+  source records.
 - Every global input shard maps to one immutable output asset and completion manifest.
 - `--range START:STOP` distributes half-open global shard ranges independently of worker count.
 - Finalization verifies all shard assets and publishes the worker-independent training manifest.
@@ -36,7 +37,7 @@ transformer padding/masks and allowing Parquet decode and tensor collation to ov
 
 ## Model and data contracts
 
-- Rust (`rust/core`) is the single source of truth for peptide parsing, chemistry, tokenization,
+- Rust (`rust/core`) owns peptide parsing, chemistry, tokenization,
   fragment m/z, tensor packing, and the standalone student forward pass. Python imports these
   contracts through `pepdistill_rs`.
 
@@ -47,7 +48,7 @@ token and compositional-modification paths a shared chemical representation. Res
 like residue masses, are exported from the Rust chemistry authority.
 - The production activation is tanh-approximated GELU. All maintained presets are transformers;
   the `small` and `base` families expose controlled head-count variants for training sweeps.
-- The input combines residue/terminus tokens, compositional and mass-only modification features,
+- The input combines residue/terminus tokens, compositional and mass-only modification fields,
   position, precursor charge, and optional acquisition context.
 - MS2 context uses instrument, detector, fragmentation, and collision energy. RT can select a
   saved chromatography context. CCS prediction itself is context-free.
@@ -62,14 +63,14 @@ like residue masses, are exported from the Rust chemistry authority.
 ## Inference and output
 
 The Python predictor writes long-format Parquet. The production Rust path loads a self-contained,
-versioned `.safetensors` artifact -- from a path, or from the one vendored into the binary, so a
-clean clone builds a tool that predicts -- digests FASTA, batches equal-length precursors, and uses a
+versioned `.safetensors` artifact from a path or from the copy vendored into the binary. A clean
+clone therefore builds a tool that predicts. It digests FASTA, batches equal-length precursors, and uses a
 bounded worker pool feeding one writer thread. FASTA output streams as either a DIA-NN TSV or an
 mzSpecLib text library, selected by the `--out` suffix and optionally gzipped in that same writer
 thread; precursor CCS is converted to ion mobility in 1/K0. Output row order is intentionally
 unspecified. Every precursor is validated and capped once, before any format sees it, so the two
-serializations cannot disagree about what the library contains -- only about how it is spelled.
-mzSpecLib additionally carries the resolved generation configuration in its header, which is the
+serializations cannot disagree about what the library contains. They differ only in how they spell it.
+mzSpecLib also carries the resolved generation configuration in its header. This is the
 same record the `config.json` sidecar holds.
 
 The DIA-NN adapter has been exercised end to end with `timsseek` against a Bruker timsTOF run.
@@ -90,8 +91,7 @@ rust/cli/              standalone safetensors-to-DIA-NN/mzSpecLib/JSON inference
 
 ## Deliberately deferred
 
-The ONNX export and runtime were removed rather than left to rot: nothing consumed them, and the
-export baked a sequence length into the graph, so it rejected any other length. A dead path that
-looks alive is worse than an absent one. The optimization and integration target is the Rust
+We removed the ONNX export and runtime because nothing used them. The export also baked a sequence
+length into the graph and rejected other lengths. The optimization and integration target is the Rust
 FASTA-to-library-to-search path. Additional search-engine adapters can follow measured consumer
 needs, and a portable export format can be reintroduced when a named consumer requires one.

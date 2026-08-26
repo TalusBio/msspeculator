@@ -1,13 +1,13 @@
-# UNIMOD nuclide masses -- derivative work, NOT unimod.xml.
+# UNIMOD nuclide masses; derivative work, NOT unimod.xml.
 #
 # source       https://www.unimod.org/xml/unimod.xml
 # source-hash  blake2b-256:30c3b621506551f33b7f58ec934406c473299169b1279135afa7295a34c085f7
 # verify       uv run python tools/gen_unimod.py --expect-digest 30c3b621506551f33b7f58ec934406c473299169b1279135afa7295a34c085f7
-# generator    tools/gen_unimod.py -- regenerate rather than hand-edit
+# generator    tools/gen_unimod.py; regenerate rather than hand-edit
 # extracted    40 nuclides from <umod:elements>: each <umod:elem>'s `title` and `mono_mass`, sorted by symbol
 # columns      symbol, mono_mass
 #
-# license      Design Science License (https://www.unimod.org/dsl.txt) -- NO WARRANTY.
+# license      Design Science License (https://www.unimod.org/dsl.txt); NO WARRANTY.
 #              Copyright (C) 2002-2006 Unimod. This file is NOT unimod.xml and is not
 #              affiliated with or endorsed by Unimod; it is a derivative work.
 13C	13.00335483

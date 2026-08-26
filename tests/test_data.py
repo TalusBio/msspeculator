@@ -82,7 +82,7 @@ def _reference_unit_hash(sequence: str, salt: str) -> float:
 
     Production reads the Rust implementation, since the corpus is split here while a library is
     split there during a context fit. If these two ever disagree, a peptide the model trained on
-    can reach a held-out score without anything failing — so the reference stays, in the tests.
+    can reach a held-out score without anything failing, so the reference stays, in the tests.
     """
     import hashlib
 
@@ -277,7 +277,7 @@ def _fake_botocore(monkeypatch, credentials):
 
     What this module owns is the translation from botocore's triple to the keys Polars' object
     store reads. Resolving that triple for real would make the test pass or fail on whether the
-    machine happens to hold a live session -- and an expired one does not return None, it raises
+    machine happens to hold a live session; and an expired one does not return None, it raises
     from inside the refresh, which no skip guard on the return value can catch.
     """
 
@@ -455,7 +455,7 @@ def test_unplaceable_mod_names_are_rejected_where_the_config_is_read():
     raised ``IndexError: list index out of range``, naming neither the mod nor the setting it came
     from. A name with ``@`` that the vocabulary does not know was worse: ``Peptide`` resolves mass
     lazily, so precursors built fine and the error only surfaced once the teacher or encoder asked
-    for a mass. The two causes stay distinguishable, since the fixes differ -- add the residue, or
+    for a mass. The two causes stay distinguishable, since the fixes differ; add the residue, or
     use a mod that exists.
     """
     # A rule with no residue set says nothing about where it goes.

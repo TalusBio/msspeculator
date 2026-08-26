@@ -3,8 +3,8 @@
 Prepared shards store one canonical ProForma string per spectrum, so anything that used to read a
 separate stripped ``sequence`` column now derives it. That derivation is defined once, here.
 
-These are string operations standing in for the real thing. Counting ``[A-Z]`` is wrong -- the
-literal ``UNIMOD`` inside every modification token is uppercase -- so the tokens have to be removed
+These are string operations standing in for the real thing. Counting ``[A-Z]`` is wrong; the
+literal ``UNIMOD`` inside every modification token is uppercase; so the tokens have to be removed
 before the residues can be counted, and doing that with an inline regex at each call site is how
 the same subtly-wrong expression ends up copied around. The authority on this grammar is our own
 parser in ``rust/core/src/proforma.rs``; when it is exposed as a Polars plugin these become calls

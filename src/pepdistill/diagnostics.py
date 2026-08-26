@@ -485,8 +485,8 @@ def plot_spectral_angle_violins(
     invent density near 1.0 where the real distribution is a hard edge.
 
     Each series is annotated with its median, its mean, and the number of spectra behind it. The
-    three series are not measured on the same population size -- the ceiling needs replicates, the
-    teacher and student need one spectrum -- and a violin with no ``n`` invites reading a handful
+    three series are not measured on the same population size; the ceiling needs replicates, the
+    teacher and student need one spectrum; and a violin with no ``n`` invites reading a handful
     of points as a distribution.
 
     Groups wrap onto rows of at most ``groups_per_row``. A corpus with dozens of datasets on one

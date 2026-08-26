@@ -111,8 +111,8 @@ def load_shard_manifests(prefix: str, log: Callable[[str], None] | None = None) 
     """Read every per-shard manifest under a prepared prefix, read-only.
 
     Reads the prefix rather than a :class:`~pepdistill.etl.config.PrepareConfig`, so a corpus can be
-    inspected without the current policy matching the one that built it -- a policy change moves the
-    config fingerprint, which would hide every shard -- and so asking a question about a published
+    inspected without the current policy matching the one that built it; a policy change moves the
+    config fingerprint, which would hide every shard; and so asking a question about a published
     corpus never rewrites its catalog.
 
     A prefix can be rewritten while it is being read: the filesystem caches the ETag it saw when

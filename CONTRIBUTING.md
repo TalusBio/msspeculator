@@ -1,6 +1,6 @@
 # Contributing
 
-pepdistill combines Python and Rust. Install Python 3.11, uv, Cargo, and Task, then create the
+pepdistill uses Python and Rust. Install Python 3.11, uv, Cargo, and Task, then create the
 development environment:
 
 ```bash

@@ -57,7 +57,7 @@ class LabeledBatch:
 def iter_batch_indices(
     n: int, batch_size: int, shuffle: bool, generator: torch.Generator
 ) -> Iterator[list[int]]:
-    """Yield index chunks over ``range(n)`` — shuffled (via ``generator``) or in order. The one
+    """Yield index chunks over ``range(n)``, shuffled (via ``generator``) or in order. The one
     place the epoch's example order and chunking live, shared by every in-memory dataset."""
     order = torch.randperm(n, generator=generator).tolist() if shuffle else list(range(n))
     for start in range(0, n, batch_size):
@@ -99,7 +99,7 @@ def _prefetched(batches: Iterator, depth: int) -> Iterator:
     Worth a thread despite the GIL: Parquet decode, Rust tokenization and the NumPy/Torch
     conversions that make up collation all release it, as do the model's own kernels, so the
     two genuinely overlap. Batch order is untouched, and the producer draws only from the
-    generator it was handed — the global RNG stream the model uses stays in the main thread.
+    generator it was handed, the global RNG stream the model uses stays in the main thread.
     """
     filled: queue.Queue = queue.Queue(maxsize=depth)
     done = object()
@@ -145,7 +145,7 @@ class BatchIterable(IterableDataset):
     """Wrap any object exposing ``batches(batch_size, shuffle, generator)`` as an
     ``IterableDataset``. ``__iter__`` runs once per epoch and re-seeds the generator, so a
     ``DataLoader(batch_size=None)`` reshuffles each epoch while passing each ready-made batch
-    straight through — batching/collation already happened inside ``batches``.
+    straight through, batching/collation already happened inside ``batches``.
     """
 
     # Batches produced ahead of the consumer, in-process. Only used when the DataLoader has no

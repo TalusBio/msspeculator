@@ -1,4 +1,4 @@
-//! Modified peptide — data plus mass/rendering behavior.
+//! Modified peptide. It holds data plus mass/rendering behavior.
 
 use crate::{chem, composition::AtomicComposition};
 
@@ -182,7 +182,7 @@ impl ModSpec {
     /// modified sequence we emit parses back through [`crate::proforma::parse_peptide`].
     ///
     /// A consumer that genuinely requires another notation converts at its own boundary rather
-    /// than changing this — peptdeep needs alphabase `Name@Site` names, and that mapping lives in
+    /// than changing this. Peptdeep needs alphabase `Name@Site` names, and that mapping lives in
     /// the teacher wrapper.
     pub fn render(&self) -> String {
         match self {
@@ -217,7 +217,7 @@ impl Peptide {
     /// choose with. Marking the column "named" would drop the mass-only delta from the model
     /// input while it still moves `mono_mass` and every fragment m/z; folding the delta into
     /// the mass channel instead would drop the named mod's composition. Neither is correct, so
-    /// refuse — the standing rule here is errors over degradation.
+    /// refuse. The standing rule here is errors over degradation.
     ///
     /// Checked on `Site`, not on the residue index `residue_masses` folds onto, so this agrees
     /// exactly with `mod_arrays`' notion of a column: an N-term mod and a `Residue(0)` mod are
@@ -245,7 +245,7 @@ impl Peptide {
     }
 
     /// Per-residue masses with every modification's delta folded in. Terminal mods add to the
-    /// first / last residue for mass purposes — they occupy their own embedding column, but
+    /// first / last residue for mass purposes. They occupy their own embedding column, but
     /// chemically they sit on the peptide's ends.
     ///
     /// Refuses the same mixed-spec sites [`Peptide::validate_mod_specs`] describes: a peptide
@@ -339,7 +339,7 @@ mod tests {
     fn mass_only_eq_ord_hash_agree_on_signed_zero() {
         // -0.0 == 0.0 under IEEE float equality, but they're different bit patterns. PartialEq
         // must agree with Ord/Hash (both to_bits()-based), so they must compare UNEQUAL
-        // everywhere, not just in Ord/Hash — a derived (IEEE) PartialEq would disagree here.
+        // everywhere, including Ord/Hash. A derived (IEEE) PartialEq would disagree here.
         let neg = ModSpec::MassOnly(-0.0);
         let pos = ModSpec::MassOnly(0.0);
         assert_ne!(neg, pos);
@@ -508,7 +508,7 @@ mod tests {
 
     #[test]
     fn parse_places_sites_where_collate_expects_them() {
-        // The round-trip test cannot distinguish CTerm from Residue(last) — both render the
+        // // The round-trip test cannot distinguish CTerm from Residue(last). Both render the
         // same. Pin the documented choice explicitly, because they occupy different embedding
         // columns.
         let p = Peptide::parse("PEK-[UNIMOD:21]").unwrap();

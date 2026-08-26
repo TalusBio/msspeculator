@@ -577,7 +577,7 @@ def test_local_cache_fetches_each_shard_once_and_then_needs_no_source(tmp_path):
     # A partial file left behind would later be accepted as a complete shard.
     assert not list(cache.rglob("*.partial"))
 
-    # With the source removed, only the cache can answer -- so a refetch would raise here rather
+    # With the source removed, only the cache can answer; so a refetch would raise here rather
     # than quietly succeed, which makes this a stronger check than comparing mtimes.
     shutil.rmtree(out)
     again = list(dataset.iter_examples(epoch=0, shuffle=False))
@@ -646,7 +646,7 @@ def test_vendored_manifests_state_their_own_provenance():
 
     JSON takes no comments, so `_source` / `_generator` keys are the in-band equivalent of the
     `#` headers on the vendored TSVs. They are written by the builders rather than hand-added, so
-    a refresh cannot quietly drop them -- which is what had happened: the builders emitted a
+    a refresh cannot quietly drop them; which is what had happened: the builders emitted a
     one-line note while the checked-in files carried a richer one, because neither builder wrote
     to the path its loader reads.
     """

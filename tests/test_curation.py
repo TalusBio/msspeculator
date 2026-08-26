@@ -106,7 +106,7 @@ def test_achievable_ceiling_scores_each_subset_against_its_own_consensus(tmp_pat
 
     Building the consensus from every spectrum in the context and only masking which rows get
     measured scores a policy against the observations it discarded, so the three numbers cannot
-    be compared to each other -- which is what made `selected` land below `within_apex_window`.
+    be compared to each other; which is what made `selected` land below `within_apex_window`.
     Here the two selected spectra agree perfectly with each other and disagree with the rejected
     ones, so a subset-local consensus must report 1.0.
     """
@@ -150,7 +150,7 @@ def test_achievable_ceiling_scores_each_subset_against_its_own_consensus(tmp_pat
     ceiling = analysis.report["achievable_ceiling"]
     assert ceiling["selected"]["mean"] == pytest.approx(1.0)
     assert ceiling["selected"]["mean"] > ceiling["within_apex_window"]["mean"]
-    # The distribution travels with the mean so the ceiling can be drawn, not just annotated,
+    # The distribution travels with the mean so the ceiling can be drawn, rather than merely annotated,
     # and it shares the grid the teacher yardstick and student validation use.
     histogram = ceiling["selected"]["histogram"]
     assert histogram["counted"] == histogram["total"] == ceiling["selected"]["replicates_compared"]
@@ -271,7 +271,7 @@ def test_curation_clamps_an_implausible_run_width(tmp_path):
     assert unclamped.report["selection"]["selected_rows"] == 0
 
     # An over-wide estimate is pulled down to the ceiling, and the ceiling cannot sit below the
-    # floor -- an inverted range is a configuration error, not something to silently reorder.
+    # floor; an inverted range is a configuration error, not something to silently reorder.
     wide = analyze_prepared_curation(
         prepared_path,
         metadata_path,

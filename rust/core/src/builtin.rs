@@ -3,7 +3,7 @@
 //! A clean `git clone` has to build a tool that can predict, so the weights are vendored beside
 //! `unimod.tsv` and embedded the same way. Downloading them during the build was the alternative
 //! and it defeats the requirement: no offline build, a fetch dependency inside `cross`'s
-//! container, a host to keep alive, and a cache to invalidate -- all to avoid committing half a
+//! container, a host to keep alive, and a cache to invalidate; all to avoid committing half a
 //! megabyte.
 //!
 //! Anything too large for version control does not belong here. It would be a *runtime* fetch

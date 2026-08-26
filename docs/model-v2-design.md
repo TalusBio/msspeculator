@@ -1,4 +1,4 @@
-# Student model v2 — factor-conditioned heads (as built)
+# Student model v2: factor-conditioned heads (as built)
 
 The student composes acquisition/chromatography conditioning from **named factors** with a
 single neutral convention (blank = zero). This replaced the old CE-fallback ladder
@@ -9,17 +9,17 @@ a missing factor contributes the zero/neutral value.
 
 | Head | Peptide repr | Charge | MS Context | Chrom Runbook |
 |------|:---:|:---:|:---:|:---:|
-| Fragments `(N,S,W)` | per-residue | yes | yes | — |
-| Mobility / CCS `(N,1)` | pooled | yes | — | — |
-| Retention / RT `(N,1)` | pooled | — | — | yes |
+| Fragments `(N,S,W)` | per-residue | yes | yes | no |
+| Mobility / CCS `(N,1)` | pooled | yes | no | no |
+| Retention / RT `(N,1)` | pooled | no | no | yes |
 
-CCS is single-point for now (mobility distribution deferred). CCS is deliberately peptide+charge
-only — no MS Context.
+CCS is single-point for now. Mobility distributions are deferred. CCS uses only the peptide and
+charge, not MS context.
 
 Beside the factors, `MSContextEncoder` carries a table of **named acquisition setups**: rows
 addressed by name, additive and zero-init like the factor terms. A source that records no factors
-has nothing for them to compose from — a published library reports no instrument and no collision
-energy, and a timsTOF ramps energy with ion mobility — so its offset from the base model is fitted
+has nothing for them to compose from. A published library may report no instrument or collision
+energy. A timsTOF may ramp energy with ion mobility. In either case, its offset from the base model is fitted
 as a row instead (`pepdistill-cli fit-context --save-as NAME`) and addressed with
 `--ms-context NAME`. This does not weaken the neutral convention: a source nobody named uses row
 0 and changes nothing.
@@ -52,10 +52,10 @@ Retention:  (Pooled ⊕ ChromRunbook[dataset])     ─▶ MLP ─▶ base RT
 
 ## Factors
 
-- **MS Context** (MS2 side): `instrument`, `detector`, `fragmentation_type` — categorical, each an
-  embedding with index 0 = "unknown"/blank (zero row). `fragmentation_energy` — continuous NCE
+- **MS Context** (MS2 side): `instrument`, `detector`, and `fragmentation_type` are categorical;
+  each has an embedding with index 0 = "unknown"/blank (zero row). `fragmentation_energy` is a continuous NCE
   fed straight to an `MLP` (`Linear(1,E)→GELU→Linear`); the first `Linear` is the learned affine
-  — a learned normalization, not a fixed center (replaces ce_center=30/ce_scale=10). No BatchNorm:
+  and uses a learned normalization, not a fixed center (replaces ce_center=30/ce_scale=10). No BatchNorm:
   real runs share one NCE per raw_file, so a batch is routinely single-valued and BatchNorm's
   variance normalization would collapse it. Sum of the four → MSContext. Every factor omitted →
   zeros → base.
@@ -82,8 +82,8 @@ defaults, no `resolve_ce`, no fabricated NCE.
   Parameter-efficient context-only fitting can freeze the student backbone.
 - `models/registry.py` persists `MSContextEncoder`, `ChromRunbook`, and `dataset_index` in the
   checkpoint contract; Rust export carries the corresponding tensors and metadata. Both name
-  indices travel with the weights they index — the runbook owns its dataset names, the encoder its
-  setup names — because a row stored apart from its name let a growing corpus renumber one while
+  indices travel with the weights they index. The runbook owns its dataset names, and the encoder
+  owns its setup names. Storing a row apart from its name would let a growing corpus renumber one while
   the other stayed put.
 - Teacher batches carry their fixed acquisition factors and per-row NCE; real-data batches use
   recorded metadata, with missing energy represented as missing rather than imputed.

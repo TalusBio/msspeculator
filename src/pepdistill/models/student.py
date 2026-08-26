@@ -1,6 +1,6 @@
 """Small, hardware-friendly student network.
 
-No recurrence (LSTM/GRU) anywhere — the backbone is either a Transformer encoder or a
+No recurrence (LSTM/GRU) anywhere, the backbone is either a Transformer encoder or a
 dilated 1-D CNN, both of which parallelize well on CPU/GPU and export cleanly to safetensors.
 Three heads share one encoder: MS2 fragment intensities, retention time, and CCS.
 """
@@ -46,7 +46,7 @@ class StudentConfig:
     context_dim: int = 16
 
     # Modification encoding. A mod enters the model through EITHER the compositional encoder
-    # (element counts over C,H,N,O,S,P) or the mass-only encoder — never both. They share one
+    # (element counts over C,H,N,O,S,P) or the mass-only encoder, never both. They share one
     # embedding space, held together by the mod_align loss. n_elements is a frozen input
     # contract; changing it invalidates every checkpoint.
     n_elements: int = 6
@@ -146,7 +146,7 @@ class _TransformerBackbone(nn.Module):
             activation=cfg.act_module(),
         )
         # enable_nested_tensor=False: the eval fast path packs padded batches via
-        # aten::_nested_tensor_from_mask_left_aligned, which is unimplemented on MPS — it
+        # aten::_nested_tensor_from_mask_left_aligned, which is unimplemented on MPS, it
         # crashes the moment a masked batch is run in eval mode (i.e. every validation step
         # of the real-speclib regime). The packing is a throughput optimization only, so
         # disabling it is numerically identical. It was already off for presets with an odd
@@ -185,7 +185,7 @@ class StudentModel(nn.Module):
         else:
             raise ValueError(f"unknown backbone {cfg.backbone!r}")
 
-        # Charge is factored out of the trunk (RT must stay charge-invariant — the RT label is
+        # Charge is factored out of the trunk. RT must stay charge-invariant because its label is
         # id-time, so its charge-dependence is measurement artifact, not signal), so it re-enters
         # only at the heads: concatenated to CCS (in_dim=2d) and added per fragment site to MS2.
         ccs_in = 2 * d
@@ -213,7 +213,7 @@ class StudentModel(nn.Module):
         # rt_mean==0/rt_std==1: those are legitimate values for a standardized frame, and
         # reading "unset" out of them is the sentinel-inference pattern this codebase
         # rejects elsewhere. The rule this exists to enforce: RT/CCS scale is ONE global
-        # affine, set once at cold start, never re-established when a dataset is added —
+        # affine, set once at cold start, never re-established when a dataset is added,
         # per-dataset RT variation belongs to the ChromRunbook.
         self.register_buffer("norm_established", torch.zeros(1, dtype=torch.bool))
 
@@ -232,11 +232,11 @@ class StudentModel(nn.Module):
         unless ``force=True``: re-standardizing mid-curriculum recalibrates an already-trained
         head against a new frame, and per-dataset RT variation is the ChromRunbook's job, not
         the norm's. Refusing loudly beats silently accepting the overwrite or silently
-        ignoring the call — either one leaves the caller believing something that is not true.
+        ignoring the call, either one leaves the caller believing something that is not true.
 
         A regime with no data for a property MUST pass None rather than a placeholder.
         Writing (0.0, 1.0) over a calibration an earlier stage learned does not disable the
-        head — it leaves a trained head whose outputs denormalize to raw standardized values,
+        head, it leaves a trained head whose outputs denormalize to raw standardized values,
         which look like plausible small numbers instead of native units. That is how a
         pretrain->train pipeline silently produced negative CCS.
 
@@ -249,7 +249,7 @@ class StudentModel(nn.Module):
                 "set_norm: the RT affine is already established "
                 f"(mean {float(self.rt_mean):.6g}, std {float(self.rt_std):.6g}); refusing to "
                 f"re-establish it from (mean {rt_mean!r}, std {rt_std!r}). RT/CCS scale is one "
-                "global affine fixed at cold start — per-dataset RT variation belongs to the "
+                "global affine fixed at cold start. Per-dataset RT variation belongs to the "
                 "ChromRunbook. Pass force=True only if you intend to discard the existing "
                 "calibration of an already-trained head."
             )
@@ -297,7 +297,7 @@ class StudentModel(nn.Module):
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Return (routed mod vector, comp-encoder output, mass-encoder output).
 
-        Both encoders always run — the align loss needs both — but only one reaches the
+        Both encoders always run because the align loss needs both. Only one reaches the
         backbone per site. Unmodified positions are zeroed by mod_present, not by encoder
         behavior: the Fourier expansion of a zero mass is not a zero vector.
         """
@@ -335,7 +335,7 @@ class StudentModel(nn.Module):
         """Run the three heads. ms_context (broadcast) shifts the per-fragment features;
         chrom_context shifts the RT head; CCS is peptide + charge only. Charge re-enters here
         (it is factored out of the trunk): added per fragment site for MS2, concatenated for CCS.
-        RT never sees charge — it stays structurally charge-invariant.
+        RT never sees charge, it stays structurally charge-invariant.
 
         chrom_affine is a per-dataset ``(scale, shift)`` applied to the RT head's OUTPUT, in
         standardized space. It exists because chrom_context is an additive bias in feature
@@ -380,7 +380,7 @@ class StudentModel(nn.Module):
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Mask-free forward for same-length batches; returns denormalized (ms2, rt, ccs).
 
-        This is the inference path: no padding, so no masks — attention and pooling
+        This is the inference path: no padding, so no masks, attention and pooling
         run dense. Returns plain tensors (not a dict) so it traces cleanly for export. Takes
         MS context only (RT/CCS need no acquisition context here); bake it as a constant for
         a fixed-instrument export.
@@ -450,10 +450,10 @@ class StudentModel(nn.Module):
     def set_dropout(self, probability: float) -> None:
         """Change every dropout rate in the model, config included.
 
-        Applies to a checkpoint as readily as to a fresh model: dropout carries no weights, so
-        the rate belongs to the run rather than to what was trained. ``nn.MultiheadAttention``
-        keeps its rate as a plain float instead of a child ``Dropout``, so it needs its own case
-        — without it, attention would keep dropping at the rate the preset was built with.
+                Applies to a checkpoint as readily as to a fresh model: dropout carries no weights, so
+                the rate belongs to the run rather than to what was trained. ``nn.MultiheadAttention``
+                keeps its rate as a plain float instead of a child ``Dropout``, so it needs its own case
+        Without it, attention would keep dropping at the rate the preset was built with.
         """
         if not 0.0 <= probability < 1.0:
             raise ValueError(f"dropout must be in [0, 1), got {probability!r}")

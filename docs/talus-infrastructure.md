@@ -24,8 +24,8 @@ offline mode when remote telemetry is unnecessary.
 ## Prepare the corpus
 
 `runs/prepare-full.toml` selects the non-test PROSPECT, TMT, multi-PTM, and TMT-PTM archives. The
-vendored Zenodo catalog and shard index define source identity; S3 is a read-through cache and
-prepared-asset destination, not the source of truth.
+vendored Zenodo catalog and shard index define source identity. S3 is a read-through cache and
+prepared-asset destination.
 
 Stage once, then launch no more than 40 array children:
 

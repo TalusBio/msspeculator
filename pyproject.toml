@@ -21,7 +21,7 @@ dependencies = [
 
 [project.optional-dependencies]
 # Torch and Lightning are an extra rather than a core dependency so the preparation ETL can be
-# installed without them. They resolve to the CUDA wheels -- some 3 GB of nvidia-* packages -- and
+# installed without them. They resolve to CUDA wheels. Those add about 3 GB of nvidia-* packages,
 # a shard worker never touches a tensor, so before this every ETL child paid that download: 12 of
 # 40 children of one array job died on it timing out. Note that keeping torch off the *import*
 # path does not help here; uv installs the declared dependency set, not the imported one.
@@ -55,7 +55,7 @@ pepdistill = "pepdistill.cli:app"
 
 [dependency-groups]
 # Deliberately only the tools, with no reference to the project's own extras. This group is
-# installed by default, so anything named here reaches every `uv run` -- including a preparation
+# installed by default, so anything named here reaches every `uv run`, including a preparation
 # worker asking for `--extra etl`, which would then reinstall the torch it is trying to avoid.
 # Excluding it per-worker is not an option: the flag that does that (`--no-default-groups`) is
 # missing from older uv, and the cloud image has one, so 80 of 80 children died on it. Keeping

@@ -1,7 +1,7 @@
 """Launchpad entrypoint for spectral-library generation.
 
 Drives a **staged** `pepdistill-cli` binary; it does not build one. The launchpad container
-pre-installs nothing -- no Rust toolchain, no `aws`, no `curl` -- so the binary is cross-compiled
+pre-installs nothing; no Rust toolchain, no `aws`, no `curl`; so the binary is cross-compiled
 once locally (`cross build --release --target x86_64-unknown-linux-musl`) and staged alongside the
 FASTA. musl means a static binary that does not care what the image's glibc is, and the binary
 carries its own weights, so only the FASTA has to be staged with it.

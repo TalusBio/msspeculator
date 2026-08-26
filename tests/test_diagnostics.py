@@ -241,7 +241,7 @@ def test_reference_distributions_load_and_panel_uses_them(tmp_path):
     ceiling = SpectralAngleSeries("ceiling", references["ptm"]["ceiling"])
     assert ceiling.total() == 400 and ceiling.mean() == pytest.approx(0.94, abs=0.02)
 
-    # A prefix publishing neither report must not abort a training run -- but it must not be
+    # A prefix publishing neither report must not abort a training run; but it must not be
     # silent either, or a missing panel is indistinguishable from an unconfigured one.
     with pytest.warns(RuntimeWarning, match="publishes no"):
         assert load_reference_distributions(str(tmp_path / "absent")) == {}

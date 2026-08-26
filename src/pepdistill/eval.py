@@ -3,12 +3,12 @@
 Real spectral libraries observe the same precursor many times (repeated scans, multiple
 runs). Averaging a val metric over every observation over-weights abundant peptides, so the
 number tracks sampling depth rather than model quality. We instead report on ONE
-representative per precursor per dataset — the best-quality observation — so every library
+representative per precursor per dataset, the best-quality observation, so every library
 entry counts once.
 
 "Best" defaults to the highest total MS2 intensity (the most fully sampled spectrum). The
 grouping key is (dataset, modified_sequence, charge): a mod-form at charge 2 and charge 3 are
-distinct library entries and both survive. This is deliberately coarse — finer generalization
+distinct library entries and both survive. This is deliberately coarse, finer generalization
 folds (leave-one-run-out, held-out modifications) need a different split key, not this.
 """
 

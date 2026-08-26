@@ -103,7 +103,7 @@ def _resolve_localizations(frame: pl.DataFrame, s: ProspectSchema) -> tuple[pl.D
     )
     if s.andromeda_score in scored.columns:
         # `max` skips nulls, so a group scored entirely by nulls keeps every row and stays
-        # ambiguous -- the same verdict as an explicit tie, which is what an absent score means.
+        # ambiguous; the same verdict as an explicit tie, which is what an absent score means.
         scored = scored.with_columns(pl.col(s.andromeda_score).max().over(group).alias("_best"))
         scored = scored.filter(
             (pl.col(s.andromeda_score) == pl.col("_best")) | pl.col("_best").is_null()

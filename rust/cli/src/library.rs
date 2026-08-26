@@ -430,7 +430,7 @@ fn spectrum_row<'a>(
         );
     }
     // Rank by intensity and keep the strongest `max_fragments`. Validation still runs over every
-    // fragment below, not just the kept ones: a non-physical m/z that happens to rank 16th is a
+    // fragment below, including discarded ones: a non-physical m/z that happens to rank 16th is a
     // model or chemistry fault either way, and letting the cap hide it would make the error
     // depend on how many transitions the caller asked for.
     let mut keep = vec![true; prediction.fragments.mz.len()];
@@ -644,7 +644,7 @@ pub fn write_library(opts: &LibraryOptions<'_>) -> Result<LibraryStats> {
     let writer_file =
         File::create(opts.out).with_context(|| format!("creating library {}", opts.out))?;
     // A `.gz` suffix compresses in the writer thread rather than in a second pass, so the
-    // uncompressed library never exists on disk -- which is the whole point when a shard is
+    // uncompressed library never exists on disk; which is the whole point when a shard is
     // gigabytes and the scratch volume is not.
     let compress = opts.out.ends_with(".gz");
     let writer_handle = thread::spawn(move || -> Result<LibraryStats> {
@@ -769,7 +769,7 @@ fn file_digest(path: &str) -> Result<String> {
 /// Resolve everything that determined the library's bytes.
 ///
 /// The digests of the two inputs and every knob as resolved, not as typed: defaults are recorded
-/// explicitly. Counts are not here -- they are only known once the library is written -- so
+/// explicitly. Counts are not here; they are only known once the library is written; so
 /// [`write_config`] appends them. A library whose provenance lives only in a shell history is one
 /// nobody can regenerate or trust, which is why this value is both embedded (mzSpecLib) and
 /// written beside the library (sidecar) rather than reassembled per format.
@@ -795,7 +795,7 @@ fn resolve_config(
         None => serde_json::Value::Null,
     };
     // What the retention numbers in this library actually are. The normalized value is an index,
-    // not a duration, even though the vocabulary makes us declare it in minutes -- so the file
+    // not a duration, even though the vocabulary makes us declare it in minutes; so the file
     // says so in plain text rather than leaving a reader to infer it from a unit that cannot be
     // right.
     //

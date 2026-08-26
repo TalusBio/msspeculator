@@ -4,8 +4,8 @@ Read-only. MS2 only: a library that has never been trained on has no chromatogra
 retention time is not predictable and is not scored here.
 
 The acquisition context is whatever the checkpoint already knows. For a timsTOF library that is
-usually very little -- the instrument and detector rows are still at their zero init unless
-something has trained them -- so the score is a floor, and the panel says which rows were
+usually very little; the instrument and detector rows are still at their zero init unless
+something has trained them; so the score is a floor, and the panel says which rows were
 actually informed rather than implying the model knew the setup.
 """
 

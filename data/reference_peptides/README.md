@@ -9,7 +9,7 @@ The source table marks every C-terminal lysine or arginine as heavy. The
 `proforma_sequence` column represents heavy lysine (`13C6 15N2`, +8 Da) as
 `[UNIMOD:259]` and heavy arginine (`13C6 15N4`, +10 Da) as `[UNIMOD:267]`.
 These are explicit CV accessions and therefore do not depend on interpreting
-the approximate “+8” and “+10” labels.
+the approximate "+8" and "+10" labels.
 
 `hydrophobicity_factor` preserves the vendor's column name. It is an ordering
 yardstick for this mixture, not a claim that the values use the Biognosys iRT

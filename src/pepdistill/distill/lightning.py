@@ -1,12 +1,12 @@
 """Lightning wrappers for distillation.
 
-Design: the :class:`StudentModel` *is* the shared backbone — a plain ``nn.Module`` holding
+Design: the :class:`StudentModel` *is* the shared backbone. It is a plain ``nn.Module`` holding
 embeds + trunk + heads + norm buffers. Each training *regime* is a thin
 :class:`lightning.LightningModule` that owns a reference to that same StudentModel and
 defines only its loss/data contract. Multiple regimes constructed with the *same* model
 instance share weights, so you can, e.g., pre-train with :class:`DistillModule` (teacher
 soft labels) and then fine-tune the identical backbone with ``RealSpeclibModule``
-(experimental spectra) — "pass the backbone around". :mod:`pepdistill.distill.pipeline`
+(experimental spectra), "pass the backbone around". :mod:`pepdistill.distill.pipeline`
 chains exactly that (pretrain -> real train) from one config.
 """
 
@@ -77,7 +77,7 @@ class DistillModule(L.LightningModule):
         # Optional: condition on acquisition via the shared MSContextEncoder, so the teacher's
         # settings are factors rather than baked into the base. None -> context-free warmup.
         # When set, each batch MUST carry its own ms_factors (instrument/detector/fragmentation
-        # ids + collision energy) — factors are never fabricated; supply them from the data
+        # ids + collision energy), factors are never fabricated; supply them from the data
         # (streaming sweeps energy per-peptide).
         self.context_encoder = context_encoder
         self.lr = lr

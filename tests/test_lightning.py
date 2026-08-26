@@ -62,7 +62,7 @@ def test_regimes_share_backbone():
     model = build_student("small")
     a = DistillModule(model)
     b = DistillModule(model)
-    # Same tensor object, not a copy — a fine-tune regime would train the same weights.
+    # Same tensor object, not a copy, a fine-tune regime would train the same weights.
     assert a.model is b.model
     assert a.model.token_emb.weight is b.model.token_emb.weight
 
