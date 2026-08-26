@@ -111,13 +111,15 @@ impl safetensors::View for F32View<'_> {
     }
 }
 
-fn le_f32(bytes: &[u8]) -> Vec<f32> {
-    bytes
-        .as_chunks::<4>()
-        .0
-        .iter()
-        .map(|b| f32::from_le_bytes(*b))
-        .collect()
+fn le_f32(bytes: &[u8]) -> Result<Vec<f32>> {
+    let (words, remainder) = bytes.as_chunks::<4>();
+    if !remainder.is_empty() {
+        return Err(anyhow!(
+            "f32 tensor has {} bytes, which is not divisible by 4",
+            bytes.len()
+        ));
+    }
+    Ok(words.iter().map(|b| f32::from_le_bytes(*b)).collect())
 }
 
 impl Artifact {
@@ -166,7 +168,8 @@ impl Artifact {
             if view.dtype() != safetensors::Dtype::F32 {
                 return Err(anyhow!("tensor {name} is not f32"));
             }
-            tensors.insert(name.clone(), (view.shape().to_vec(), le_f32(view.data())));
+            let data = le_f32(view.data()).with_context(|| format!("decoding tensor {name}"))?;
+            tensors.insert(name.clone(), (view.shape().to_vec(), data));
         }
         Ok(Self {
             tensors,
@@ -260,6 +263,12 @@ impl Artifact {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn malformed_f32_bytes_are_refused() {
+        let err = le_f32(&[0, 0, 0, 0, 1]).unwrap_err();
+        assert!(err.to_string().contains("not divisible by 4"), "{err}");
+    }
 
     /// The smallest file `load` accepts: the version and backbone gates, and one tensor so the
     /// file is not empty. Named-setup behaviour is about the metadata and one table, so the rest
