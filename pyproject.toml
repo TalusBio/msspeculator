@@ -1,0 +1,106 @@
+[project]
+name = "msspeculator"
+version = "0.1.0"
+description = "Mass-spectrometry data preparation, prediction, training, and spectral-library tools."
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [
+    { name = "J. Sebastian Paez", email = "spaez@talus.bio" }
+]
+requires-python = ">=3.11"
+dependencies = [
+    "fsspec>=2024.0",
+    "numpy>=1.26",
+    "pandas>=2.0",
+    "msspeculator-rs",
+    "pyarrow>=15.0",
+    "safetensors>=0.8.0",
+    "typer>=0.12",
+]
+
+[project.optional-dependencies]
+# Torch and Lightning are an extra rather than a core dependency so the preparation ETL can be
+# installed without them. They resolve to CUDA wheels. Those add about 3 GB of nvidia-* packages,
+# a shard worker never touches a tensor, so before this every ETL child paid that download: 12 of
+# 40 children of one array job died on it timing out. Note that keeping torch off the *import*
+# path does not help here; uv installs the declared dependency set, not the imported one.
+torch = [
+    "lightning>=2.6.5",
+    "torch>=2.2",
+]
+# Same training surface, resolved from PyTorch's CPU wheel index for CI and CPU-only hosts.
+# Keep this separate from `torch`: production Linux training intentionally uses PyPI's CUDA build.
+torch-cpu = [
+    "lightning>=2.6.5",
+    "torch>=2.2",
+]
+# Teacher models (AlphaPeptDeep) live behind an extra so plain inference stays lean.
+teacher = [
+    "peptdeep>=1.2",
+]
+# Polars-based preparation and S3 streaming of immutable, chunked training assets.
+etl = [
+    "polars>=1.0",
+    "s3fs>=2024.0",
+]
+# Optional experiment tracking. Authentication is supplied through WANDB_API_KEY.
+tracking = [
+    "matplotlib>=3.8",
+    "wandb>=0.18",
+]
+
+[project.scripts]
+msspeculator = "msspeculator.cli:app"
+
+[dependency-groups]
+# Deliberately only the tools, with no reference to the project's own extras. This group is
+# installed by default, so anything named here reaches every `uv run`, including a preparation
+# worker asking for `--extra etl`, which would then reinstall the torch it is trying to avoid.
+# Excluding it per-worker is not an option: the flag that does that (`--no-default-groups`) is
+# missing from older uv, and the cloud image has one, so 80 of 80 children died on it. Keeping
+# torch out of this group needs no flag and works on any uv version.
+#
+# The cost is that a development environment has to name its extras; `task sync-rust` does.
+dev = [
+    "ast-grep-cli>=0.45.0",
+    "pre-commit>=4.0",
+    "pytest>=8.0",
+    "pytest-timeout>=2.4",
+    "ruff>=0.6",
+]
+
+[tool.uv.sources]
+msspeculator-rs = { path = "rust", editable = true }
+torch = [
+    { index = "pytorch-cpu", extra = "torch-cpu", marker = "sys_platform == 'linux' and platform_machine == 'x86_64'" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv]
+conflicts = [
+    [
+        { extra = "torch" },
+        { extra = "torch-cpu" },
+    ],
+]
+
+[build-system]
+requires = ["uv_build>=0.11.28,<0.12.0"]
+build-backend = "uv_build"
+
+[tool.ruff]
+line-length = 100
+
+[tool.pytest.ini_options]
+# src is collected so that `--doctest-modules` runs the examples in docstrings. A docstring that
+# shows what a function returns is a claim about behaviour, and an untested one drifts: the round
+# trip guard in data/meta_index.py shipped describing the *pre-fix* parser, printing a site index
+# for a modification the current code puts on a terminus. Written as a doctest, that is a failure
+# rather than prose.
+testpaths = ["tests", "src"]
+addopts = "--doctest-modules"

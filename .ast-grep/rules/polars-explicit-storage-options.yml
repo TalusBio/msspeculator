@@ -1,0 +1,30 @@
+id: polars-explicit-storage-options
+language: python
+severity: error
+message: >-
+  Pass storage_options=parquet_storage_options(<target>) to this Polars read. Polars resolves
+  s3:// credentials from the environment and instance metadata but not from the AWS SSO cache, so
+  a bare call works on a Batch worker and fails on a laptop with a 169.254.169.254 timeout. The
+  failure is environmental, which is why it cannot be caught by review or by CI.
+note: >-
+  pl.read_parquet_schema accepts no storage options at all; use
+  pl.scan_parquet(source, storage_options=...).collect_schema() instead.
+files:
+  - "src/**/*.py"
+  - "tools/**/*.py"
+rule:
+  any:
+    - pattern: pl.read_parquet_schema($$$)
+    - all:
+        - any:
+            - pattern: pl.scan_parquet($$$ARGS)
+            - pattern: pl.read_parquet($$$ARGS)
+        # A keyword argument is its own node kind; `storage_options=$V` as a pattern parses as an
+        # assignment statement and never matches inside a call.
+        - not:
+            has:
+              kind: keyword_argument
+              has:
+                field: name
+                regex: ^storage_options$
+              stopBy: end

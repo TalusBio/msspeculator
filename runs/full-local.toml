@@ -1,0 +1,82 @@
+# Canonical local pretrain -> real-data run.
+#
+# Prepared shards are cached under `local_cache` on first read, so only the first epoch touches
+# S3. Checkpoints and metrics stay under `out`. Run commands are documented in
+# docs/runbook-full-run.md.
+
+out = "runs/full-local-small"
+preset = "small"
+activation = "gelu_tanh"
+# Measured on this box: Metal runs the `small` step 2.3x faster than four CPU threads, and
+# dropout's mask generation was a quarter of that step, 21M training rows against 134k
+# parameters regularize well enough without it.
+device = "mps"
+dropout = 0.0
+seed = 0
+
+[tracking]
+enabled = true
+project = "msspeculator"
+name = "local-small"
+group = "full-v2-local"
+tags = ["full-nontest", "small", "local", "v2", "fast-loader"]
+min_log_interval_seconds = 10.0
+
+[diagnostics]
+enabled = true
+butterflies = 3
+every_n_epochs = 1
+interval_minutes = 60.0
+render_initial = true
+
+[augmentation]
+# Per peptide: mutate one residue and add the exact original-minus-replacement composition.
+residue_substitution_probability = 0.01
+
+[pretrain]
+enabled = true
+teacher = "alphapeptdeep"
+device = "cpu"
+passes = 2
+chunk_size = 10000
+patience = 5
+checkpoint_every_steps = 500
+
+[[pretrain.sources]]
+fasta = "uniprot:UP000000625" # E. coli K-12 reference proteome; cached after first download
+enzyme = "trypsin"
+missed = 2
+min_len = 7
+max_len = 30
+min_charge = 2
+max_charge = 4
+max_var_mods = 1
+fixed_mods = ["C[UNIMOD:4]"]
+# Per-matching-residue rate. The canonical PTMs measured in PROSPECT, minus TMT, which the
+# teacher scores at 0.29-0.34 and so cannot usefully supervise.
+variable_mods = { "M[UNIMOD:35]" = 0.1, "STY[UNIMOD:21]" = 0.001, "K[UNIMOD:1]" = 0.001, "K[UNIMOD:121]" = 0.001 }
+
+[train]
+enabled = true
+prepared_prefix = "s3://terraform-workstations-bucket/jspaezp/pepdistill-prepared/v2"
+local_cache = "runs/prepared-cache-v2"
+in_memory = true
+epochs = 60
+batch_size = 256
+num_workers = 0
+model_threads = 4
+lr = 3e-4
+# Patience counts validation checks, and those now land once per epoch rather than once an hour,
+# so 5 had quietly become ~2.5h of tolerance instead of ~5h. Ten restores the wall-clock leash.
+# The first run under the per-epoch cadence stopped at epoch 8 having peaked at epoch 3.
+early_stop_patience = 10
+early_stop_min_delta = 0.001
+# Halve the rate after 3 flat checks. The stopping counter is not reset by a decay, so the
+# 10-check leash still bounds the run while leaving room for three cuts inside it.
+lr_decay_patience = 3
+lr_decay_factor = 0.5
+# A floor, because the decay fires on a plateau rather than on a schedule: without one the rate
+# halves every few checks toward zero and the run keeps spending epochs at a rate that changes
+# nothing. A thirtieth of the cold-start 3e-4; below this, early stopping should be what ends it.
+lr_decay_min = 1e-6
+validation_interval_minutes = 60.0

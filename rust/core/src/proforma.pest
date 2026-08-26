@@ -1,0 +1,24 @@
+peptide = { SOI ~ n_term? ~ residue+ ~ c_term? ~ EOI }
+n_term = { modification ~ "-" }
+c_term = { "-" ~ modification }
+residue = { amino_acid ~ modification* }
+amino_acid = @{ 'A'..'Z' }
+
+modification_rule = { SOI ~ (n_term_rule | c_term_rule | residue_rule) ~ EOI }
+n_term_rule = { modification ~ "-" }
+c_term_rule = { "-" ~ modification }
+residue_rule = { residue_set ~ modification }
+residue_set = @{ ('A'..'Z')+ }
+
+modification = { "[" ~ descriptor ~ "]" }
+descriptor = _{ unimod | formula | mass_delta }
+unimod = @{ "UNIMOD:" ~ ASCII_DIGIT+ }
+mass_delta = @{ ("+" | "-") ~ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)? }
+
+formula = { "Formula:" ~ formula_atom+ }
+formula_atom = { isotope_atom | natural_atom }
+isotope_atom = { "[" ~ isotope_number ~ element ~ cardinality? ~ "]" }
+natural_atom = { element ~ cardinality? }
+isotope_number = @{ ASCII_DIGIT+ }
+element = @{ 'A'..'Z' ~ ('a'..'z')? }
+cardinality = @{ "-"? ~ ASCII_DIGIT+ }

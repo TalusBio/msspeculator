@@ -1,0 +1,18 @@
+[package]
+name = "msspeculator-cli"
+version = "0.1.0"
+edition = "2021"
+description = "msspeculator Rust inference: FASTA libraries and single-peptide prediction."
+license.workspace = true
+
+[[bin]]
+name = "msspeculator-cli"
+path = "src/main.rs"
+
+[dependencies]
+msspeculator-core = { path = "../core" }
+clap = { version = "4", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+flate2 = "1"
+blake2 = "0.10"

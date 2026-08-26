@@ -1,0 +1,70 @@
+# Resume the local `small` run with learning-rate decay.
+#
+# The first run peaked at epoch 3 (0.7824 mean per-dataset spectral angle) and then oscillated in
+# a 0.4% band for five more checks before early stopping, a converged-at-this-rate signature.
+# This continues from that peak with the rate already halved, because we know 3e-4 is plateaued
+# there and letting the decay rediscover it would spend three validation checks (~1.5h) to reach
+# a rate we can just set.
+#
+# `out` is a NEW directory on purpose: the run writes its own best.ckpt, and the 0.7824 reference
+# has to survive on disk to be compared against. `local_cache` is shared, so no shard is
+# re-downloaded.
+#
+#   WANDB_API_KEY="$(tr -d '\r\n' < WANDB_SECRET)" \
+#     uv run --extra torch --extra teacher --extra etl --extra tracking \
+#     msspeculator run runs/full-local-resume.toml
+
+out = "runs/full-local-decay"
+# Model config, norm, encoder and the 41-row runbook all come from here; `preset` below is
+# ignored on this path and kept only to name what the checkpoint is.
+model_in = "runs/full-local-small/best.ckpt"
+preset = "small"
+device = "mps"
+dropout = 0.0
+seed = 0
+
+[tracking]
+enabled = true
+project = "msspeculator"
+name = "local-small-decay"
+group = "full-v2-local"
+tags = ["full-nontest", "small", "local", "v2", "resume", "lr-decay"]
+min_log_interval_seconds = 10.0
+
+[diagnostics]
+enabled = true
+butterflies = 3
+every_n_epochs = 1
+interval_minutes = 60.0
+render_initial = true
+
+[augmentation]
+residue_substitution_probability = 0.01
+
+[pretrain]
+# The checkpoint already carries the pretrained backbone and its RT affine; the affine is
+# permanent once set, so this stage must not run again.
+enabled = false
+
+[train]
+enabled = true
+prepared_prefix = "s3://terraform-workstations-bucket/jspaezp/pepdistill-prepared/v2"
+local_cache = "runs/prepared-cache-v2"
+in_memory = true
+epochs = 60
+batch_size = 256
+num_workers = 0
+model_threads = 4
+# Half of the 3e-4 the first run plateaued at: one decay applied up front rather than earned.
+lr = 1.5e-4
+early_stop_patience = 10
+early_stop_min_delta = 0.001
+# Three flat checks halves the rate again; the stopping counter is not reset by a cut, so the
+# 10-check leash still bounds the run with room for three cuts inside it.
+lr_decay_patience = 3
+lr_decay_factor = 0.5
+# A floor, because the decay fires on a plateau rather than on a schedule: without one the rate
+# halves every few checks toward zero and the run keeps spending epochs at a rate that changes
+# nothing. A thirtieth of the cold-start 3e-4; below this, early stopping should be what ends it.
+lr_decay_min = 1e-6
+validation_interval_minutes = 60.0

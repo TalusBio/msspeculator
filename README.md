@@ -1,0 +1,281 @@
+# msspeculator
+
+[![CI](https://github.com/jspaezp/distilltest/actions/workflows/ci.yml/badge.svg)](https://github.com/jspaezp/distilltest/actions/workflows/ci.yml)
+
+`msspeculator` is a mass-spectrometry toolkit for turning peptide sequences and
+experimental spectra into usable predictions and spectral libraries. It covers the
+data path, model training, diagnostics, and production inference in Python and Rust.
+
+The current models can learn from an AlphaPeptDeep teacher, prepared experimental
+libraries, or both. The same code can digest FASTA files, prepare and validate sharded
+training data, train context-aware models, export portable artifacts, and generate
+libraries for downstream search.
+
+- **No LSTMs.** The maintained students are Transformer encoders, with a standalone
+  safetensors-based Rust inference implementation for production library generation.
+- **Deterministic splits.** Train/val/test is assigned by hashing the *stripped*
+  sequence, so every mod-form and charge state of a peptide stays in one split
+  (no leakage) and the split is stable across runs and dataset growth.
+- **One config-driven pipeline.** A single `run` command controls optional pretraining, real-
+  spectrum training, export, and benchmark stages. `predict` generates a library from a
+  trained checkpoint.
+- **Experimental context.** Models can fine-tune on real libraries (PROSPECT) with per-run
+  acquisition context:
+  collision energy drives the MS2 context, chromatography drives the RT context.
+
+## Install
+
+```bash
+uv sync                                  # core only: no torch, no Polars
+uv sync --extra etl                      # preparation workers: Polars + S3, no torch
+uv sync --extra torch-cpu --extra etl --extra tracking  # CPU development / CI
+uv sync --extra torch --extra teacher --extra etl --extra tracking  # CUDA / cloud training
+```
+
+Torch and Lightning sit behind explicit extras rather than in the core dependencies. `torch-cpu`
+uses PyTorch's CPU wheel index; `torch` retains the CUDA-capable PyPI build for Linux training.
+A preparation worker never builds a
+tensor, so making them optional takes a worker's resolution from 138 packages to 51. Commands that need
+torch say so and name the extra instead of failing on a missing import.
+
+The `dev` dependency group holds only tools (pytest, ruff, pre-commit) and deliberately does not
+reference these extras. Default groups are installed by every `uv run`, so anything named there
+would reach preparation workers too. Excluding it per worker needs `--no-default-groups`,
+which older uv (including the cloud image's) does not have.
+
+Rust owns chemistry, the `Peptide` type, tokenization, and batch encoding. The code lives in
+(`rust/core`) and is required at runtime. `msspeculator.chem` is a re-export shim over the
+`msspeculator_rs` extension. `msspeculator-rs` is declared as a `[tool.uv.sources]` path
+dependency on `rust/` (build backend: maturin), so a plain `uv sync` compiles and installs
+it automatically. This means **a Rust toolchain (`cargo`) must be on `PATH`** the first time
+you sync; if `uv sync` ever can't drive the build in your environment, build the extension
+manually into the venv instead:
+
+```bash
+uv run maturin develop -m rust/Cargo.toml --release
+```
+
+Repository maintenance is centralized in `Taskfile.yml`:
+
+```bash
+task format       # ruff format, then cargo fmt
+task lint         # ruff check, then workspace clippy
+task check        # format followed by lint
+task sync-rust    # rebuild the editable PyO3 extension after Rust changes
+task test         # sync the extension, then run Python and Rust suites
+uv run pre-commit install
+```
+
+The pre-commit configuration uses local hooks that call `task format` and `task lint`; no remote
+hook repository or independently pinned formatter configuration is involved.
+
+The `fake` teacher is deterministic and has no extra dependencies, so it is always available for
+development and tests. The real `alphapeptdeep` teacher needs the `teacher` extra.
+
+## Documentation
+
+Start with the [documentation index](docs/README.md) for the current design, model details,
+local and Talus runbooks, generated evaluation reports, and roadmap. Changes are described in the
+concise [contribution guide](CONTRIBUTING.md).
+
+## Quick start
+
+Describe the run in a TOML config, then run it:
+
+```toml
+# run.toml
+out = "work"
+preset = "small"
+device = "auto"
+
+[pretrain]                    # online teacher-distill warmup (digests streamed + labeled live)
+enabled = true
+teacher = "alphapeptdeep"     # or "fake"
+nce_min = 20                  # collision-energy sweep (per-peptide) -> learned CE axis
+nce_max = 40
+passes  = 1                   # full enumerations of the digests
+[[pretrain.sources]]
+fasta = "proteome.fasta"
+
+[train]                       # fine-tune on the prepared Parquet manifest
+enabled = true
+prepared_prefix = "s3://bucket/pepdistill-prepared/v2"
+epochs = 60
+num_workers = 0              # Polars decodes in-process with its native thread pool
+model_threads = 4            # intra-op CPU threads used by the model
+
+# [export] and [bench] are optional and off by default.
+```
+
+```bash
+msspeculator run run.toml                 # -> work/{pretrain,latest,best,model}.ckpt + summary.json
+msspeculator run run.toml --no-train      # pretrain only (disable any stage inline)
+```
+
+Real-spectrum training consumes immutable prepared Parquet chunks. The preparation workflow is
+restartable and range-addressable; see [the full-run runbook](docs/runbook-full-run.md). The
+trainer never downloads or extracts annotation archives.
+
+For distillation only, set `[train] enabled = false` or pass `--no-train`. Omitting `[train]`
+does **not** disable it: training is on by default and requires `prepared_prefix`. Any stage can
+be turned off in the config or with its corresponding `--no-*` flag.
+
+### Predict a library
+
+Standalone Python inference from a trained checkpoint:
+
+```bash
+msspeculator predict --model work/model.ckpt  --fasta proteome.fasta -o library.parquet --device auto
+```
+
+Production inference is the Rust path; see `export-rust` below.
+
+Condition MS2 on the run's acquisition context with the torch runtime. The checkpoint must contain
+an `MSContextEncoder`, which means it was trained with `[train]` or `[pretrain]` enabled. Give the
+full factor grammar `INSTRUMENT::DETECTOR::FRAGMENTATION::ENERGY`, or just `--nce` as a
+shorthand for "unknown instrument/detector/fragmentation, only the energy":
+
+```bash
+msspeculator predict --model work/model.ckpt --fasta proteome.fasta -o library.parquet \
+  --ms-context "Lumos::FTMS::HCD::30"
+
+msspeculator predict --model work/model.ckpt --fasta proteome.fasta -o library.parquet --nce 30
+```
+
+`--ms-context` also takes the bare name of an acquisition setup fitted with `msspeculator-cli
+fit-context`, for a library that records no instrument or collision energy to compose a context
+from. The `::` separator is what tells the two forms apart.
+
+RT and CCS are always predicted context-free (RT through the runbook's neutral/iRT row); only
+MS2 fragment intensities move with `--ms-context`/`--nce`.
+
+### Generate a library or predict one peptide in Rust
+
+A pure-Rust inference path mirrors the torch `predict` for a single peptide. Export the trained
+checkpoint to a self-contained `.safetensors` artifact (weights + config/vocab/norm in the
+metadata), then run the standalone binary. FASTA mode digests with trypsin, applies fixed
+`C[UNIMOD:4]` plus up to one variable `M[UNIMOD:35]` by default, predicts charges 2–4, converts
+predicted CCS to Bruker 1/K0, and writes a streaming DIA-NN TSV accepted by `timsseek`:
+
+```bash
+msspeculator export-rust --model work/model.ckpt -o work/model.safetensors
+cargo run -q --release -p msspeculator-cli -- \
+  library --model work/model.safetensors --fasta proteome.fasta --out library.tsv \
+  --ms-context "Lumos::FTMS::HCD::30"
+
+timsseek --raw-inputs sample.d --speclib-uri library.tsv --output-uri search-results
+```
+
+Modification rules use a deliberately limited ProForma-compatible grammar: a residue set plus
+`[UNIMOD:<accession>]`, `[Formula:<chemForma formula>]`, or a signed Dalton delta. Repeat
+`--fixed-mod` / `--variable-mod`; variable placements share one `--max-variable-mods` cap. For
+CysPAT, phosphorylation, and methionine oxidation without fixed carbamidomethylation:
+
+```bash
+cargo run -q --release -p msspeculator-cli -- \
+  library --model work/model.safetensors --fasta proteome.fasta --out library.tsv \
+  --no-fixed-mods \
+  --variable-mod 'C[UNIMOD:2057]' \
+  --variable-mod 'STY[UNIMOD:21]' \
+  --variable-mod 'M[UNIMOD:35]' \
+  --max-variable-mods 3
+```
+
+UniMod and formula atoms use the composition encoder whenever they project into CHNOSP.
+Isotopes keep their exact nuclide masses for precursor/fragment m/z while folding onto their
+parent elements for the embedding. Unsupported parent elements warn and fall back to the exact
+calculated mass encoder. Signed deltas always use the mass encoder.
+
+Single-peptide JSON remains available:
+
+```bash
+cargo run -q --release -p msspeculator-cli -- \
+  predict --model work/model.safetensors --peptide PEPTIDER --charge 2 \
+  --ms-context "Lumos::FTMS::HCD::30"      # or --nce 30, or omit for base MS2
+```
+
+Run the built-in model doctor to predict the vendored 11-peptide Biognosys iRT panel. It
+prints an identity-line scatter in the terminal plus slope, intercept, R², and MAE. The output
+directory receives `irt-scatter.svg`, `report.txt`, and peptide-level `irt-predictions.tsv`:
+
+```bash
+cargo run -q --release -p msspeculator-cli -- \
+  run-doctor --model work/model.safetensors --out work/model-doctor
+```
+
+The source tables for that panel and the Thermo Pierce PRTC panel live in
+`data/reference_peptides/` with source URLs and ProForma labeling notes.
+
+It prints one JSON object containing precursor m/z, RT, CCS, and the fragment table (struct-of-arrays).
+to stdout. Transformer presets only; RT is the context-free iRT base unless `--chrom-context
+NAME` selects a saved dataset. Parity with the torch path is measured by
+`tests/test_rust_parity.py`.
+
+`--peptide` accepts a strict modified sequence, such as `PEPC[UNIMOD:4]IDER`,
+`[UNIMOD:737]-PEPTIDER`, `PEPTIDER-[UNIMOD:2]`, `PEP[Formula:H2O]TIDER`, or a signed Dalton
+delta `PEP[+42.010565]TIDER`. Public input does not accept modification names; prepared training
+data retains its legacy resolver internally. The JSON's `peptide` field echoes the canonical
+parsed identity. Artifacts carry a `format_version` and
+the reader refuses one it does not understand rather than guessing at missing tensors.
+
+## Output
+
+`library.parquet` is a long-format spectral library with one row per retained
+fragment:
+
+| column | meaning |
+|---|---|
+| `modified_sequence`, `stripped_sequence`, `charge` | precursor identity |
+| `precursor_mz`, `rt_pred`, `ccs_pred` | predicted precursor properties |
+| `ion_type`, `fragment_charge`, `fragment_ordinal`, `fragment_mz` | fragment identity |
+| `relative_intensity` | predicted intensity, normalized to the base peak |
+
+## Package layout
+
+```
+msspeculator/
+  chem.py      re-export shim over the Rust ext (msspeculator_rs): masses, m/z, fragment-ion
+               series, and the Peptide class all live in Rust (rust/core); no chemistry
+               logic left in Python
+  data/        FASTA digest, precursor enumeration, deterministic split, tensor encoding,
+               vendored PROSPECT catalog/shard index, prepared-data reader
+  etl/         restartable Polars preparation, shard manifests, and finalization
+  teacher/     Teacher ABC + FakeTeacher + PeptDeepTeacher (behind [teacher] extra)
+  models/      student architectures (no LSTM) + presets + context conditioning + checkpoint I/O
+  distill/     dataset, losses (MS2 cosine / RT+CCS MSE), Lightning regimes (distill +
+               real-speclib context) and the config-driven pipeline
+  predict/     library.py (reference) + fast.py (vectorized)
+  eval.py      val reduction (best example per library entry)
+  util.py      device resolution (auto -> mps/cpu)
+  cli.py       run/predict/export-rust plus prepare/prepare-status/prepare-finalize
+
+rust/
+  core/        chemistry + Peptide + tokenizer + student forward. This is the shared implementation,
+               used by both the Python ext and the CLI
+  cli/         msspeculator-cli: FASTA -> DIA-NN TSV and single-peptide JSON inference
+  src/lib.rs   msspeculator_rs: pyo3 extension exposing core to Python (a hard dependency)
+```
+
+## Student presets & speed
+
+| preset | backbone | parameters |
+|---|---|--:|
+| `flash` | Transformer 1L/1-head/d32 | 23,782 |
+| `small-2h` | Transformer 2L/2-head/d64 | 132,358 |
+| `small` | Transformer 2L/4-head/d64 | 132,358 |
+| `base-4h` | Transformer 4L/4-head/d128 | 898,822 |
+| `base`  | Transformer 4L/8-head/d128 | 898,822 |
+
+Changing only the attention head count does not change the parameter count: it repartitions the
+same model width. The paired presets are intended as controlled architecture sweeps.
+
+The production Rust path is length-bucketed, uses tanh-GELU and optimized matrix
+multiplication, and runs bounded parallel model workers feeding one writer thread. On the
+documented 474,630-precursor / 16,650,774-transition fixture it improved from 168.62 seconds
+single-core to 11.53–12.97 seconds with the worker pool (roughly 36.6k–41.2k precursors/s).
+Treat these as workload-specific measurements, not forward-only model claims; reproduce them
+on target hardware before capacity planning. Output order is unspecified.
+
+## License
+
+Licensed under the [Apache License 2.0](LICENSE).

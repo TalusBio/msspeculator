@@ -1,0 +1,24 @@
+[workspace]
+members = ["core", "cli"]
+resolver = "2"
+
+[workspace.package]
+license = "Apache-2.0"
+
+[package]
+name = "msspeculator_rs"
+version = "0.1.0"
+edition = "2021"
+description = "Rust chemistry + tokenizer/batcher binding over msspeculator-core, exposed to Python as msspeculator_rs."
+license.workspace = true
+
+[lib]
+name = "msspeculator_rs"
+crate-type = ["cdylib"]
+
+[dependencies]
+msspeculator-core = { path = "core" }
+pyo3 = { version = "0.22", features = ["extension-module"] }
+numpy = "0.22"
+ndarray = "0.16"
+anyhow = "1"

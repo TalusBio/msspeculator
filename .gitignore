@@ -1,0 +1,32 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Rust build artifacts
+rust/target/
+
+# Local tooling / caches
+.claude/
+.pytest_cache/
+.ruff_cache/
+
+# Run outputs and local inputs
+runs/*
+!runs/*.toml
+fasta_ignore/
+analysis_ignore/
+WANDB_SECRET
+
+# subagent-driven-development scratch (ledger, briefs, review packages)
+.superpowers/
+
+# Launchpad cloud-job staging bundle (generated locally)
+.launchpad/
+speclib-stage/

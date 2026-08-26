@@ -1,0 +1,386 @@
+//! Deliberately limited, ProForma-compatible modification grammar.
+//!
+//! Public input accepts only UNIMOD accessions, signed Dalton deltas, and `Formula:` elemental
+//! formulas. Historical names remain an internal serialization detail; accepting them here
+//! would make the public syntax depend on a mutable title/alias table.
+
+use std::collections::BTreeSet;
+
+use anyhow::{bail, Context, Result};
+use pest::iterators::Pair;
+use pest::Parser;
+use pest_derive::Parser;
+
+use crate::composition::AtomicComposition;
+use crate::peptide::{EncodingRoute, ModSpec, Peptide, Site};
+
+#[derive(Parser)]
+#[grammar = "proforma.pest"]
+struct ProFormaParser;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModificationTarget {
+    Residues(BTreeSet<char>),
+    PeptideNTerm,
+    PeptideCTerm,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModificationRule {
+    pub target: ModificationTarget,
+    pub spec: ModSpec,
+}
+
+fn positive_u32(pair: Pair<'_, Rule>, what: &str) -> Result<u32> {
+    let value: u32 = pair
+        .as_str()
+        .parse()
+        .with_context(|| format!("invalid {what} {:?}", pair.as_str()))?;
+    if value == 0 {
+        bail!("{what} must be positive, got 0");
+    }
+    Ok(value)
+}
+
+fn cardinality(pair: Option<Pair<'_, Rule>>) -> Result<i32> {
+    let Some(pair) = pair else { return Ok(1) };
+    let value: i32 = pair
+        .as_str()
+        .parse()
+        .with_context(|| format!("invalid formula cardinality {:?}", pair.as_str()))?;
+    if value == 0 {
+        bail!("formula cardinality zero is not supported");
+    }
+    Ok(value)
+}
+
+fn parse_formula(pair: Pair<'_, Rule>) -> Result<(String, AtomicComposition)> {
+    let text = pair
+        .as_str()
+        .strip_prefix("Formula:")
+        .expect("formula grammar lost prefix")
+        .to_string();
+    let mut counts = Vec::new();
+    for atom in pair.into_inner() {
+        debug_assert_eq!(atom.as_rule(), Rule::formula_atom);
+        let atom = atom.into_inner().next().expect("formula atom is empty");
+        match atom.as_rule() {
+            Rule::natural_atom => {
+                let mut fields = atom.into_inner();
+                let element = fields.next().expect("natural atom has no element");
+                let count = cardinality(fields.next())?;
+                counts.push((element.as_str().to_string(), count));
+            }
+            Rule::isotope_atom => {
+                let mut fields = atom.into_inner();
+                let isotope = positive_u32(
+                    fields.next().expect("isotope atom has no isotope number"),
+                    "isotope number",
+                )?;
+                let element = fields.next().expect("isotope atom has no element");
+                let count = cardinality(fields.next())?;
+                counts.push((format!("{isotope}{}", element.as_str()), count));
+            }
+            _ => unreachable!("grammar returned non-atom"),
+        }
+    }
+    Ok((text, AtomicComposition { counts }))
+}
+
+/// Build the spec for a UNIMOD accession, choosing its encoder route.
+///
+/// Shared by the grammar and by the Python binding, so an accession means the same thing however
+/// it arrives: as `[UNIMOD:4]` inside a peptide, or as the string `"UNIMOD:4"` for one site.
+/// Without that sharing the binding produced a `Named("UNIMOD:4")`, whose mass lookup then failed
+/// against a table keyed on titles.
+pub fn unimod_spec(accession: u32) -> Result<ModSpec> {
+    let entry = crate::unimod::by_accession(accession)
+        .with_context(|| format!("unknown UNIMOD accession {accession}"))?;
+    let route = match entry.comp.element_comp() {
+        Ok(_) => EncodingRoute::Composition,
+        Err(reason) => {
+            eprintln!(
+                "warning: UNIMOD:{accession} ({}) cannot use the composition encoder: \
+                 {reason}; using exact {:+.9} Da through the mass encoder",
+                entry.title, entry.mono_mass
+            );
+            EncodingRoute::Mass
+        }
+    };
+    Ok(ModSpec::Unimod { accession, route })
+}
+
+fn parse_modification(pair: Pair<'_, Rule>) -> Result<ModSpec> {
+    debug_assert_eq!(pair.as_rule(), Rule::modification);
+    let descriptor = pair.into_inner().next().expect("modification is empty");
+    match descriptor.as_rule() {
+        Rule::unimod => {
+            let accession: u32 = descriptor
+                .as_str()
+                .strip_prefix("UNIMOD:")
+                .expect("UNIMOD grammar lost prefix")
+                .parse()
+                .context("invalid UNIMOD accession")?;
+            unimod_spec(accession)
+        }
+        Rule::mass_delta => {
+            let mass: f64 = descriptor.as_str().parse().context("invalid mass delta")?;
+            if !mass.is_finite() || mass == 0.0 {
+                bail!("mass delta must be finite and nonzero");
+            }
+            Ok(ModSpec::MassOnly(mass))
+        }
+        Rule::formula => {
+            let (formula, composition) = parse_formula(descriptor)?;
+            let mass = composition
+                .mono_mass(crate::unimod::nuclide_masses())
+                .with_context(|| format!("cannot calculate Formula:{formula} mass"))?;
+            let route = match composition.element_comp() {
+                Ok(_) => EncodingRoute::Composition,
+                Err(reason) => {
+                    eprintln!(
+                        "warning: Formula:{formula} cannot use the composition encoder: \
+                         {reason}; using exact {mass:+.9} Da through the mass encoder"
+                    );
+                    EncodingRoute::Mass
+                }
+            };
+            Ok(ModSpec::Formula {
+                formula,
+                composition,
+                route,
+            })
+        }
+        _ => unreachable!("grammar returned unsupported descriptor"),
+    }
+}
+
+/// Parse one modification descriptor written *without* its ProForma brackets: `"UNIMOD:4"`,
+/// `"Formula:H2O"`, `"+15.994915"`.
+///
+/// This is the site-at-a-time entry point used by the Python `(site, spec)` tuple API, and it goes
+/// through the same grammar rule as a bracketed modification inside a peptide. Sharing the rule is
+/// the point: the two ways a modification can arrive cannot drift into two vocabularies.
+pub fn parse_descriptor(input: &str) -> Result<ModSpec> {
+    let bracketed = format!("[{input}]");
+    let pair = ProFormaParser::parse(Rule::modification, &bracketed)
+        .ok()
+        .and_then(|mut parsed| parsed.next())
+        // A prefix match leaves a tail: pest only anchors at the start without SOI/EOI, so
+        // "UNIMOD:4junk" would otherwise parse as accession 4 with the tail silently dropped.
+        .filter(|pair| pair.as_str().len() == bracketed.len())
+        .with_context(|| {
+            format!(
+                "invalid modification {input:?}: expected a UNIMOD accession (\"UNIMOD:35\"), an \
+                 elemental formula (\"Formula:H2O\"), or a signed mass delta (\"+15.994915\")"
+            )
+        })?;
+    parse_modification(pair)
+}
+
+pub fn parse_peptide(input: &str) -> Result<Peptide> {
+    let mut parsed = ProFormaParser::parse(Rule::peptide, input)
+        .map_err(|err| anyhow::anyhow!("invalid modified peptide {input:?}: {err}"))?;
+    let peptide = parsed.next().expect("successful peptide parse is empty");
+    let mut sequence = String::new();
+    let mut mods = Vec::new();
+    for part in peptide.into_inner() {
+        match part.as_rule() {
+            Rule::n_term => {
+                let modification = part.into_inner().next().expect("empty N-terminal rule");
+                mods.push((Site::NTerm, parse_modification(modification)?));
+            }
+            Rule::c_term => {
+                let modification = part.into_inner().next().expect("empty C-terminal rule");
+                mods.push((Site::CTerm, parse_modification(modification)?));
+            }
+            Rule::residue => {
+                let mut fields = part.into_inner();
+                let aa = fields.next().expect("residue has no amino acid").as_str();
+                let index = sequence.len();
+                sequence.push_str(aa);
+                for modification in fields {
+                    mods.push((Site::Residue(index), parse_modification(modification)?));
+                }
+            }
+            Rule::EOI => {}
+            _ => unreachable!("grammar returned unsupported peptide part"),
+        }
+    }
+    Ok(Peptide::new(sequence, mods))
+}
+
+/// Parse a PROSPECT modified sequence, tolerating the one way PROSPECT departs from ProForma.
+///
+/// PROSPECT writes an N-terminal modification without the separator that ProForma requires:
+/// `[UNIMOD:737]SEQ` rather than `[UNIMOD:737]-SEQ`. Censused over all 2,067,007 distinct
+/// PROSPECT peptidoforms, that is the *only* departure. This covers 133,890 sequences. Specifically absent:
+/// stacked N-terminal modifications, C-terminal modifications in any spelling, lowercase residues,
+/// and non-UNIMOD descriptors. Two modifications on one residue occur (39,574) and are already
+/// legal ProForma, needing no repair.
+///
+/// So the tolerance is one rewrite, applied here and nowhere else, after which the strict parser
+/// does the work. Degenerate input is accepted at this boundary only; everything downstream holds
+/// the canonical form that [`Peptide::modified_sequence`] emits, and anything PROSPECT did not
+/// actually contain stays an error rather than becoming a second dialect to support forever.
+pub fn parse_prospect_peptide(input: &str) -> Result<Peptide> {
+    parse_peptide(&insert_missing_nterm_separator(input))
+        .with_context(|| format!("invalid PROSPECT modified sequence {input:?}"))
+}
+
+/// Insert the ProForma N-terminal separator when a leading modification lacks it.
+///
+/// Deliberately narrow: it fires only for a single leading `[...]` group that is not already
+/// followed by `-`. Stacked leading groups are left alone so the strict parser rejects them, since
+/// PROSPECT does not produce them and guessing which one is terminal would be inventing chemistry.
+fn insert_missing_nterm_separator(input: &str) -> String {
+    let Some(close) = input.find(']') else {
+        return input.to_string();
+    };
+    if !input.starts_with('[') {
+        return input.to_string();
+    }
+    let rest = &input[close + 1..];
+    if rest.starts_with('-') || rest.starts_with('[') {
+        return input.to_string();
+    }
+    format!("{}-{}", &input[..=close], rest)
+}
+
+pub fn parse_modification_rule(input: &str) -> Result<ModificationRule> {
+    let mut parsed = ProFormaParser::parse(Rule::modification_rule, input)
+        .map_err(|err| anyhow::anyhow!("invalid modification rule {input:?}: {err}"))?;
+    let outer = parsed
+        .next()
+        .expect("successful modification rule parse is empty");
+    let rule = outer
+        .into_inner()
+        .next()
+        .expect("modification rule is empty");
+    let (target, modification) = match rule.as_rule() {
+        Rule::n_term_rule => (
+            ModificationTarget::PeptideNTerm,
+            rule.into_inner().next().expect("empty N-terminal rule"),
+        ),
+        Rule::c_term_rule => (
+            ModificationTarget::PeptideCTerm,
+            rule.into_inner().next().expect("empty C-terminal rule"),
+        ),
+        Rule::residue_rule => {
+            let mut fields = rule.into_inner();
+            let residues = fields
+                .next()
+                .expect("residue rule has no targets")
+                .as_str()
+                .chars()
+                .collect();
+            (
+                ModificationTarget::Residues(residues),
+                fields.next().expect("residue rule has no modification"),
+            )
+        }
+        _ => unreachable!("grammar returned unsupported modification rule"),
+    };
+    Ok(ModificationRule {
+        target,
+        spec: parse_modification(modification)?,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prospect_tolerance_is_the_missing_nterm_separator_and_nothing_else() {
+        // The one departure: 133,890 of PROSPECT's 2,067,007 distinct peptidoforms spell an
+        // N-terminal modification without the separator. It must mean the terminus, not residue 0.
+        let loose = parse_prospect_peptide("[UNIMOD:737]NWIQYKETIAK[UNIMOD:737]").unwrap();
+        let strict = parse_peptide("[UNIMOD:737]-NWIQYKETIAK[UNIMOD:737]").unwrap();
+        assert_eq!(loose, strict);
+        assert_eq!(loose.mods[0].0, Site::NTerm);
+        assert_eq!(loose.sequence, "NWIQYKETIAK");
+
+        // Two modifications on one residue are legal ProForma already, and canonically ordered.
+        let stacked = parse_prospect_peptide("[UNIMOD:737]K[UNIMOD:737][UNIMOD:1]LLEEDVK").unwrap();
+        assert_eq!(
+            stacked.modified_sequence(),
+            "[UNIMOD:737]-K[UNIMOD:1][UNIMOD:737]LLEEDVK"
+        );
+
+        // Everything PROSPECT does not contain stays an error rather than a second dialect.
+        // Stacked N-terminal groups: which one is terminal would have to be guessed.
+        assert!(parse_prospect_peptide("[UNIMOD:737][UNIMOD:1]SEQK").is_err());
+        assert!(parse_prospect_peptide("seqk").is_err());
+        assert!(parse_prospect_peptide("SEQ[Phospho]K").is_err());
+
+        // A C-terminal modification is spelled with its separator or not at all. PROSPECT has
+        // none, so tolerating a bare trailing group would silently move it onto the last residue.
+        let cterm = parse_prospect_peptide("SEQK-[UNIMOD:21]").unwrap();
+        assert_eq!(cterm.mods[0].0, Site::CTerm);
+        let on_residue = parse_prospect_peptide("SEQK[UNIMOD:21]").unwrap();
+        assert_eq!(on_residue.mods[0].0, Site::Residue(3));
+        assert_ne!(cterm, on_residue);
+    }
+
+    #[test]
+    fn residue_set_rule_targets_every_listed_residue() {
+        // `STY[UNIMOD:21]` is the variable-modification notation: one rule, three target residues.
+        let rule = parse_modification_rule("STY[UNIMOD:21]").unwrap();
+        match rule.target {
+            ModificationTarget::Residues(residues) => {
+                assert_eq!(residues.into_iter().collect::<String>(), "STY");
+            }
+            other => panic!("expected a residue set, got {other:?}"),
+        }
+        assert_eq!(rule.spec.render(), "UNIMOD:21");
+    }
+
+    #[test]
+    fn parses_unimod_mass_formula_and_unambiguous_termini() {
+        let peptide =
+            parse_peptide("[UNIMOD:737]-AC[UNIMOD:2057]DM[+15.994915]K-[Formula:H-1N-1O]").unwrap();
+        assert_eq!(peptide.sequence, "ACDMK");
+        assert_eq!(peptide.mods[0].0, Site::NTerm);
+        assert_eq!(peptide.mods[1].0, Site::Residue(1));
+        assert_eq!(peptide.mods[2].0, Site::Residue(3));
+        assert_eq!(peptide.mods[3].0, Site::CTerm);
+    }
+
+    #[test]
+    fn isotope_formula_folds_elements_but_keeps_exact_mass() {
+        let rule = parse_modification_rule("C[Formula:[13C2][12C-2]H2N]").unwrap();
+        let ModSpec::Formula {
+            composition, route, ..
+        } = rule.spec
+        else {
+            panic!("expected formula")
+        };
+        assert_eq!(route, EncodingRoute::Composition);
+        assert_eq!(composition.element_comp().unwrap(), [0, 2, 1, 0, 0, 0]);
+        let mass = composition
+            .mono_mass(crate::unimod::nuclide_masses())
+            .unwrap();
+        assert!(mass > 18.0);
+    }
+
+    #[test]
+    fn cyspat_resolves_by_accession_to_composition_and_exact_mass() {
+        let rule = parse_modification_rule("C[UNIMOD:2057]").unwrap();
+        let ModSpec::Unimod { accession, route } = rule.spec else {
+            panic!("expected UniMod modification")
+        };
+        assert_eq!(accession, 2057);
+        assert_eq!(route, EncodingRoute::Composition);
+        let entry = crate::unimod::by_accession(accession).unwrap();
+        assert_eq!(entry.comp.element_comp().unwrap(), [8, 16, 1, 4, 0, 1]);
+        assert!((entry.mono_mass - 221.081_695).abs() < 1e-6);
+    }
+
+    #[test]
+    fn rejects_names_zero_cardinality_and_missing_terminal_hyphens() {
+        assert!(parse_modification_rule("M[Oxidation]").is_err());
+        assert!(parse_modification_rule("M[Formula:C0H2]").is_err());
+        assert!(parse_peptide("[UNIMOD:737]PEPTIDE").is_err());
+    }
+}
