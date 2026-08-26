@@ -116,7 +116,8 @@ fn run() -> anyhow::Result<()> {
 `LibraryOptions` uses the output suffix to choose the writer. `.mzspeclib.txt` and `.mzspeclib`
 select mzSpecLib text; other suffixes select DIA-NN TSV. Add `.gz` to compress either stream.
 Output order is unspecified because workers finish independently. The writer validates and caps
-each precursor before serialization.
+each precursor before serialization. The generated provenance records the package version and
+source commit, along with the resolved model, input FASTA, and settings.
 
 Use the CLI when its FASTA defaults and file formats are sufficient. Use the inference crate when
 the application needs the same throughput with its own model source, paths, or surrounding

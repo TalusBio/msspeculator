@@ -836,6 +836,7 @@ fn resolve_config(
         "generator": {
             "tool": "msspeculator-cli library",
             "version": env!("CARGO_PKG_VERSION"),
+            "commit": env!("MSSPECULATOR_GIT_COMMIT"),
         },
         "inputs": {
             // The spec as asked for, which for a bundled model is a name rather than a path. A

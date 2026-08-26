@@ -316,6 +316,7 @@ mod tests {
     fn rendered(irt: Option<f32>) -> String {
         let mut sink = MzSpecLibSink::new(Vec::new(), "out/lib.mzspeclib.txt.gz");
         sink.header(&serde_json::json!({
+            "generator": {"version": "0.1.0", "commit": "abc123"},
             "inputs": {"model": "m.safetensors", "fasta": null},
             "fragments": {"max_fragments": 15},
             "modifications": {"variable": ["M[UNIMOD:35]"]},
@@ -330,6 +331,8 @@ mod tests {
         let text = rendered(None);
         assert!(text.starts_with("<mzSpecLib>\nMS:1003186|library format version=1.0\n"));
         assert!(text.contains("MS:1003188|library name=lib\n"));
+        assert!(text.contains("msspeculator:generator.commit"));
+        assert!(text.contains("other attribute value=abc123"));
         assert!(text.contains("MS:1003275|other attribute name=msspeculator:inputs.model"));
         assert!(text.contains("MS:1003276|other attribute value=m.safetensors"));
         assert!(text.contains("MS:1003276|other attribute value=15"));

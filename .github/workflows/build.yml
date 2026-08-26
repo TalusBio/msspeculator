@@ -1,0 +1,46 @@
+name: Build executable
+
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Linux release executable
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build release executable
+        env:
+          MSSPECULATOR_GIT_COMMIT: ${{ github.sha }}
+        run: cargo build --release --manifest-path rust/Cargo.toml -p msspeculator-cli
+
+      - name: Smoke-test executable
+        run: rust/target/release/msspeculator-cli --help
+
+      - name: Write build metadata
+        run: |
+          {
+            echo "version=${GITHUB_REF_NAME#v}"
+            echo "commit=${GITHUB_SHA}"
+            echo "target=x86_64-unknown-linux-gnu"
+          } > rust/target/release/msspeculator-cli.build-info.txt
+
+      - name: Upload executable
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: msspeculator-cli-${{ github.ref_name }}-linux-x86_64
+          path: |
+            rust/target/release/msspeculator-cli
+            rust/target/release/msspeculator-cli.build-info.txt
+          if-no-files-found: error
+          retention-days: 30
