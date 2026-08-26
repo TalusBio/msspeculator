@@ -1,0 +1,83 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Quality and tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      CARGO_TERM_COLOR: always
+      PYO3_PYTHON: ${{ github.workspace }}/.venv/bin/python
+      UV_LOCKED: "1"
+      UV_NO_PROGRESS: "1"
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install uv and restore its dependency cache
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.11.28"
+          python-version: "3.11"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+          # Keep heavyweight CPU wheels; re-downloading them costs more than the saved cache space.
+          prune-cache: false
+
+      - name: Install Rust quality components
+        run: rustup component add clippy rustfmt
+
+      - name: Restore Rust build cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: rust
+
+      - name: Smoke-test the core dependency boundary
+        run: |
+          uv sync --no-dev
+          uv run --no-sync python -c "import pepdistill, pepdistill_rs"
+          uv run --no-sync pepdistill --help
+
+      - name: Install locked test environment
+        # Dependency versions and the CPU-only Torch source are defined in pyproject.toml/uv.lock.
+        run: uv sync --extra torch-cpu --extra etl --extra tracking
+
+      - name: Verify installed dependencies
+        run: uv pip check
+
+      - name: Check Python formatting
+        run: uv run --no-sync ruff format --check .
+
+      - name: Lint Python
+        run: uv run --no-sync ruff check .
+
+      - name: Run structural rules
+        run: uv run --no-sync ast-grep scan
+
+      - name: Check Rust formatting
+        run: cargo fmt --manifest-path rust/Cargo.toml --all --check
+
+      - name: Lint Rust
+        run: cargo clippy --manifest-path rust/Cargo.toml --workspace --all-targets -- -D warnings
+
+      - name: Test Python and cross-language parity
+        run: uv run --no-sync pytest -q
+
+      - name: Test Rust workspace
+        run: cargo test --manifest-path rust/Cargo.toml --workspace

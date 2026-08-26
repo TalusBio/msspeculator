@@ -1,5 +1,7 @@
 # pepdistill
 
+[![CI](https://github.com/jspaezp/distilltest/actions/workflows/ci.yml/badge.svg)](https://github.com/jspaezp/distilltest/actions/workflows/ci.yml)
+
 Fast spectral-library generation by **distilling** AlphaPeptDeep into small,
 hardware-friendly student models.
 
@@ -25,11 +27,13 @@ prepared experimental spectral libraries.
 ```bash
 uv sync                                  # core only: no torch, no Polars
 uv sync --extra etl                      # preparation workers: Polars + S3, no torch
-uv sync --extra torch --extra teacher --extra etl --extra tracking  # development / cloud training
+uv sync --extra torch-cpu --extra etl --extra tracking  # CPU development / CI
+uv sync --extra torch --extra teacher --extra etl --extra tracking  # CUDA / cloud training
 ```
 
-Torch and Lightning sit behind the `torch` extra rather than in the core dependencies. They resolve
-to the CUDA wheels — some 3 GB of `nvidia-*` packages — and a preparation worker never builds a
+Torch and Lightning sit behind explicit extras rather than in the core dependencies. `torch-cpu`
+uses PyTorch's CPU wheel index; `torch` retains the CUDA-capable PyPI build for Linux training.
+A preparation worker never builds a
 tensor, so making them optional takes a worker's resolution from 138 packages to 51. Commands that need
 torch say so and name the extra instead of failing on a missing import.
 
@@ -70,7 +74,8 @@ development and tests; the real `alphapeptdeep` teacher needs the `teacher` extr
 ## Documentation
 
 Start with the [documentation index](docs/README.md) for the current design, model details,
-full preparation/training runbook, and roadmap.
+local and Talus runbooks, generated evaluation reports, and roadmap. Changes are described in the
+concise [contribution guide](CONTRIBUTING.md).
 
 ## Quick start
 
@@ -269,3 +274,7 @@ documented 474,630-precursor / 16,650,774-transition fixture it improved from 16
 single-core to 11.53–12.97 seconds with the worker pool (roughly 36.6k–41.2k precursors/s).
 Treat these as workload-specific measurements, not forward-only model claims; reproduce them
 on target hardware before capacity planning. Output order is unspecified.
+
+## License
+
+Licensed under the [Apache License 2.0](LICENSE).

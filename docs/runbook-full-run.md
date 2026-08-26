@@ -1,590 +1,158 @@
-# Runbook — full preparation and training run
+# Local runbook
 
-**Updated 2026-08-11.** A "full run" = `pepdistill run <toml>` over the `RunConfig` stages
-`pretrain → train → export → bench` (each toggleable), then predict. This runbook covers
-pretrain + train (the two on-by-default stages), library generation, and a search-engine smoke
-test.
+This is the public path from a source checkout to a generated spectral library. It requires no
+Talus account or cloud credentials. The production-scale deployment uses the same commands with
+object-store paths and distributed workers; those details live in the
+[Talus infrastructure runbook](talus-infrastructure.md).
 
-## 0. Prerequisites
+## Prerequisites
 
-```bash
-uv sync --extra torch --extra teacher --extra etl --extra tracking  # teacher + ETL + W&B/diagnostics
-```
+- Python 3.11
+- [uv](https://docs.astral.sh/uv/)
+- A Rust toolchain with `cargo`
+- [Task](https://taskfile.dev/) for contributor commands
 
-Reading the S3 prefixes **locally** also needs AWS credentials in the environment, not only in the
-SSO cache. Polars reads `s3://` through its own object store, which consults the environment and
-instance metadata but not `~/.aws/sso`; without this it retries instance metadata and fails with a
-`169.254.169.254` timeout even though `aws s3 ls` works. Cloud workers use an instance role and
-need nothing:
+Install the core package:
 
 ```bash
-aws sso login
-set -a; eval "$(aws configure export-credentials --format env)"; set +a
+uv sync --locked
+uv run pepdistill --help
 ```
 
-Inputs:
-- **Pretrain FASTA** — a proteome to digest and stream. The cloud staging helper downloads and
-  caches the pinned E. coli K-12 reference proteome from UniProt when it is absent.
-- **Prepared PROSPECT catalog** — the vendored Zenodo catalog and compressed shard index define
-  the inputs. The configured S3 cache is only a read-through intermediate: a missing object is
-  fetched from Zenodo and repopulates the cache. Deleting the cache must not change correctness.
-
-## 1. Prepare the real-data assets
-
-`runs/prepare-full.toml` selects all non-test archives from `prospect`, `tmt`, `multi_ptm`, and
-`tmt_ptm`; the separately labelled `test_ptm` record is excluded. First inspect the global shard
-count, then distribute any disjoint half-open ranges:
+Training on a CPU uses the `torch-cpu` extra. The regular `torch` extra intentionally selects the
+CUDA-capable PyPI build on Linux.
 
 ```bash
-pepdistill prepare-status runs/prepare-full.toml --count-only
-pepdistill prepare runs/prepare-full.toml --range 0:518
-pepdistill prepare runs/prepare-full.toml --range 518:1036
-# ...ranges may run on any number of workers...
-pepdistill prepare-status runs/prepare-full.toml
-pepdistill prepare-finalize runs/prepare-full.toml
+uv sync --locked --extra torch-cpu --extra etl --extra tracking
 ```
 
-The current catalog contains 5,174 shards. That number is descriptive, not a partitioning
-contract: use the count reported by the command when scripting ranges. A completed shard is
-skipped unless `--force` is passed. Finalization refuses to publish `manifest.json` until every
-expected shard asset is complete.
+## Fast local smoke run
 
-### Changing what a shard contains
+The fake teacher is deterministic and does not require AlphaPeptDeep. It verifies configuration,
+digestion, training, checkpointing, and export without downloading the experimental corpus.
 
-The skip above is decided by `config_fingerprint`, which hashes the config — so a labelling or
-curation change made *in code* is invisible to it, and the corpus keeps reporting itself complete
-while holding rows the new code would never emit. When you make such a change, bump
-`PREPARE_POLICY_VERSION` in `src/pepdistill/etl/config.py` in the same commit. That moves the
-fingerprint, which restages every shard on the next run; the version is also recorded in each
-manifest, so `tools/prepared_curation_report.py` reports which code built the corpus.
-
-Leave it alone for changes that cannot alter shard contents — a faster expression, an added
-statistic, a log line — because every bump costs a full re-prep. To rebuild without a version
-change, delete the prefix's shards rather than passing `--force`: the remaining assets then
-describe what is actually present, so an interrupted rebuild resumes correctly.
-
-For the Launchpad array wrapper used by this repository:
+Create a small FASTA:
 
 ```bash
-.venv/bin/python tools/prepare_launchpad_full_run.py
-launchpad run tools/launchpad_prospect_etl.py \
-  --stage .launchpad/full-run-stage --array-size 40 \
-  --env PEPDISTILL_PREPARE_ARRAY_SIZE=40
+printf '>example\nMKWVTFISLLLLFSSAYSRGVFRRDTHKSEIAHRFKDLGE\n' > smoke.fasta
 ```
 
-Keep the array at 40 or below. Batch packs several array children onto one host and each child
-installs its own venv, so an 80-way array exhausted the host disk unpacking pyarrow and every
-child died with `No space left on device`. Forty finishes the full corpus in about 20 minutes,
-so the larger array buys little even where it fits.
-
-Each array task derives a contiguous global range from its array index, balancing boundaries by
-the vendored raw Parquet byte sizes rather than shard count. The prepared output is identical
-whether it runs on one worker or thousands. Explicit `--range` remains available for exact retry
-ranges; `pepdistill prepare ... --partition 1/10` exposes the same weighted planner directly.
-
-To retry one interrupted range without launching another array, pass it explicitly through the
-environment:
-
-```bash
-launchpad run tools/launchpad_prospect_etl.py --stage .launchpad/full-run-stage \
-  --env PEPDISTILL_PREPARE_RANGE=517:1034
-```
-
-After all ranges succeed, finalize in the same staged environment:
-
-```bash
-launchpad run tools/launchpad_prepare_finalize.py --stage .launchpad/full-run-stage
-```
-
-## 2. Config — `run.toml`
+Create `smoke.toml`:
 
 ```toml
-out = "runs/full"
-remote_output_prefix = "s3://bucket/pepdistill-training/full-v1/small"
-preset = "small"                 # flash | small-2h | small | base-4h | base
-device = "auto"                  # auto -> mps/cpu; "cuda" -> gpu
+out = "runs/smoke"
+preset = "flash"
+device = "cpu"
 seed = 0
 
-[augmentation]
-residue_substitution_probability = 0.01 # one chemistry-preserving substitution in 1% of peptides
-
-[pretrain]                       # online teacher-distill warmup
+[pretrain]
 enabled = true
-teacher = "alphapeptdeep"        # or "fake" (dependency-free SMOKE only, not a real model)
-nce_min = 20.0                   # per-peptide collision-energy sweep -> learned CE axis
-nce_max = 40.0
-passes  = 1                      # full enumerations of the digests
-chunk_size = 10000               # peptides per teacher call
-checkpoint_every_steps = 500     # periodically mirror an inference-ready warm start
-# instrument/detector/fragmentation default to Lumos/FTMS/HCD (peptdeep's acquisition)
-[[pretrain.sources]]             # one block PER fasta; per-source digestion + charge knobs
-fasta = "proteome.fasta"
-enzyme = "trypsin"               # or "unspecific" -> immunopeptidome windows
-missed = 2
+teacher = "fake"
+passes = 1
+chunk_size = 32
+
+[[pretrain.sources]]
+fasta = "smoke.fasta"
+enzyme = "trypsin"
+missed = 1
 min_len = 7
 max_len = 30
-min_charge = 2                   # <-- charge range lives HERE (per source), not on [pretrain]
-max_charge = 4
-max_var_mods = 1
-fixed_mods = ["C[UNIMOD:4]"]
-# Per-matching-residue rate. The canonical PTMs measured in PROSPECT, minus TMT, which the
-# teacher scores at 0.29-0.34 and so cannot usefully supervise.
-variable_mods = { "M[UNIMOD:35]" = 0.1, "STY[UNIMOD:21]" = 0.001, "K[UNIMOD:1]" = 0.001, "K[UNIMOD:121]" = 0.001 }
+min_charge = 2
+max_charge = 3
 
-[train]                          # fine-tune on the prepared PROSPECT manifest
-enabled = true
-prepared_prefix = "s3://bucket/pepdistill-prepared/v2"
-epochs = 60
-num_workers = 0                 # Polars decodes in-process; avoids unsafe post-init forks
-model_threads = 4               # intra-op threads in the model process
-loss_weights = [1.0, 1.0, 1.0]   # (ms2, iRT, raw_rt)
-validation_interval_minutes = 60.0 # wall-clock cadence; checked after the crossing batch
-early_stop_patience = 10         # flat validation checks before stopping; 0 disables
-lr_decay_patience = 3            # flat checks before halving `lr`; must be below the above
-lr_decay_factor = 0.5
-lr_decay_min = 1e-6              # floor; without one the rate halves toward zero on a plateau
-
-[diagnostics]                    # fixed longitudinal panel; optional
-enabled = true
-butterflies = 3                  # evenly spaced Biognosys iRT standards
-every_n_epochs = 1               # 0 disables epoch snapshots
-interval_minutes = 60.0          # 0 disables wall-clock snapshots
-render_initial = true
-
-# [bench] left off. Production inference is the Rust path; see export-rust.
-```
-
-### What the knobs mean
-- **Pretrain sources**: each `[[pretrain.sources]]` is one FASTA + its own digestion/charge
-  settings (`DigestSource`). That's why `fasta` and `min_charge`/`max_charge` are per-source, not
-  stage-level — you can mix, e.g., a tryptic proteome and an `unspecific` immunopeptidome source.
-- **Preparation ranges**: `--range START:STOP` addresses the flattened global shard catalog.
-  The range is half-open and independent of worker count or scheduling. `prepare-status` reports
-  completion; `prepare-finalize` refuses to write a training manifest while any shard is missing.
-- **Validation set**: not a separate shard. The loaded shards are split train/val/test by a
-  deterministic hash of the *stripped* sequence (`assign_split`), so every mod-form/charge of a
-  peptide stays in one split (no leakage). Val is deduped to best-per-entry; train keeps every
-  observation. Real-data validation metrics are reported separately for every configured
-  dataset. W&B groups telemetry into panel-oriented namespaces: `train_metrics/*`,
-  `train_diagnostics/*`, `val_sa/<dataset>`, `val_irt_mae/<dataset>`,
-  `val_rawrt_mae/<dataset>`, and `val_n/<dataset>` (the number of deduplicated validation
-  entries). The local JSONL and Lightning callback keys retain their internal
-  `val/<dataset>/<metric>` names.
-- **Validation cadence**: real-data validation uses Lightning's wall clock rather than corpus
-  epochs. It starts after the first batch that crosses `validation_interval_minutes` and repeats
-  on that cadence. A final check runs after fitting only when the last optimizer step was not
-  already validated. Early-stop patience therefore counts validation checks, not epochs;
-  metrics JSONL records both `validation_check` and `global_step`.
-- **Learning-rate decay**: the real-data stage has no horizon to schedule against — it ends
-  wherever early stopping lands — so the rate follows the same plateau signal instead. After
-  `lr_decay_patience` checks with no improvement beyond `early_stop_min_delta`, every parameter
-  group's `lr` is multiplied by `lr_decay_factor` and the decay's counter resets. The stopping
-  counter does not reset, so `early_stop_patience` still bounds the run: at 3 and 10 there is
-  room for three cuts inside the same leash. The config refuses a decay patience at or above the
-  stopping patience, which would stop the run before the rate ever moved. `lr-AdamW` in W&B
-  shows the steps. Set `lr_decay_min`: because the trigger is a plateau rather than a schedule,
-  an unfloored rate keeps halving every few checks and the run spends whole epochs at a rate that
-  changes nothing. Measured on the first decayed run — four cuts in 22 epochs took 3e-4 to
-  9.4e-6, still improving, with nothing to stop the fifth.
-- **Checkpoint evidence**: `latest.ckpt`, `best.ckpt`, and the final `model.ckpt` record the
-  global step plus the per-dataset spectral angles and mean used by validation/early stopping
-  under the checkpoint's `training` metadata. Inference loaders ignore this optional metadata.
-- **Residue augmentation**: for each selected peptide, one residue token is replaced and the
-  exact original-minus-replacement C/H/N/O/S/P composition and monoisotopic mass are added at
-  that site. The precursor and fragment chemistry—and thus every target—stay unchanged. Sites
-  carrying mass-only modifications are skipped because those cannot share a model column with
-  a compositional delta.
-- **Diagnostics**: the teacher reference spectra and PCA bases are fixed once per run. The
-  zero-initialized acquisition encoder defers its basis until its first non-degenerate snapshot.
-  Initial,
-  hourly, epoch, and final snapshots therefore share reference targets and coordinate frames.
-  They are written below `out/diagnostics/<stage>-step-.../`, mirrored without flattening when
-  `remote_output_prefix` is set, and logged to the same W&B run when tracking is enabled.
-
-### Evaluate PSM curation on a prepared shard
-
-Before deriving a filtered corpus, compare one prepared shard with its matching source metadata:
-
-```bash
-pepdistill curation-report prepared.parquet source_meta_data.parquet \
-  --out curation-report.json \
-  --annotations-out curation-annotations.parquet \
-  --half-max-fraction 0.5 \
-  --min-in-window-psms 4 \
-  --max-psms-per-context 2 \
-  --width-anchor-min-psms 8
-```
-
-The report estimates one robust width per raw file from sufficiently replicated half-height
-peptidoforms. It centers that width on each peptidoform's own apex and applies the resulting RT
-window unchanged across every charge state and acquisition mode. Peptidoforms with fewer than
-four in-window PSMs are rejected; the remaining rows are capped afterward at the best two per
-charge/acquisition context. The annotation Parquet has an explicit schema and joins back by
-`spectrum_id`; the command does not mutate its input shard. The full preparation config applies
-this policy while building the immutable `v2` corpus.
-
-The estimated width doubles as the acceptance window (`apex_rt ± width/2`), and because it is
-measured from sampled half-height points rather than an integrated peak it is clamped to
-`[--min-run-width-minutes, --max-run-width-minutes]`. Each run records whether the clamp applied,
-so a floored or capped window is never mistaken for a measurement.
-
-### Cache the corpus locally
-
-Shards are fetched once and read from disk after, taking S3 out of the training loop. Shards are
-immutable, so runs can share one cache directory; unset means stream every epoch.
-
-`in_memory` goes one step further and keeps each decoded shard in RAM, so later epochs skip the
-Parquet decode too. The corpus decodes to about five times its on-disk size, so only set it on a
-machine with that memory to spare; the run reports resident shards and GiB as it fills.
-
-```toml
 [train]
-prepared_prefix = "s3://bucket/pepdistill-prepared/v2"
-local_cache = "./prepared-cache"
-in_memory = true
+enabled = false
 ```
 
-### Audit a finished corpus, and the teacher's ceiling on it
-
-Both commands are read-only and regenerate a committed Markdown view beside their JSON, so the
-numbers in `docs/` stay reproducible rather than hand-maintained. The report's `rows retained` and
-the manifest's `split_rows` now count the same population: a row missing an RT label is trained on
-what it does carry, so the loader admits every published row of the split.
+Run it and export the checkpoint for standalone Rust inference:
 
 ```bash
-# Per-source retention, empty shards, unusable intensity, clamped windows.
-.venv/bin/python tools/prepared_curation_report.py \
-  --prepared s3://bucket/pepdistill-prepared/v2 \
-  --out curation-summary.json --markdown docs/prepared-curation.md
-
-# What AlphaPeptDeep itself scores on the same validation winners as student val_sa.
-.venv/bin/python tools/teacher_yardstick.py \
-  --prepared s3://bucket/pepdistill-prepared/v2 \
-  --out teacher-yardstick.json --markdown docs/teacher-yardstick.md
+uv run pepdistill run smoke.toml
+uv run pepdistill export-rust --model runs/smoke/model.ckpt -o runs/smoke/model.safetensors
 ```
 
-`prepared_curation_report.py` reads the policy out of the shard manifests rather than the current
-config, so it describes the corpus as built even after the policy changes. Pass `--render-from` to
-either tool to rebuild the Markdown from a saved JSON without repeating the measurement.
+## Generate a library
 
-## 3. Run pretrain → train
-
-The checked-in local full-run config streams the prepared corpus from S3 while keeping model
-artifacts on the local machine:
-
-```bash
-WANDB_API_KEY="$(tr -d '\r\n' < WANDB_SECRET)" \
-  uv run --extra torch --extra teacher --extra etl --extra tracking \
-  pepdistill run runs/full-local.toml
-```
-
-It defaults to the `small` preset, CPU teacher inference, and automatic student-device selection.
-Its `uniprot:UP000000625` FASTA reference is downloaded once to
-`${PEPDISTILL_CACHE_DIR:-${XDG_CACHE_HOME:-~/.cache}/pepdistill}/fasta/` and reused, so the FASTA
-does not need to be uploaded or committed. Use `--device cuda` to train the student on a CUDA
-GPU. To reuse an existing checkpoint and skip teacher pretraining:
-
-```bash
-WANDB_API_KEY="$(tr -d '\r\n' < WANDB_SECRET)" \
-  uv run --extra torch --extra teacher --extra etl --extra tracking \
-  pepdistill run runs/full-local.toml --no-pretrain --model-in s3://bucket/path/model.ckpt
-```
-
-The local machine needs AWS credentials that can read the prepared prefix. `num_workers = 0` is
-intentional: Polars still performs native threaded decode, while post-initialization DataLoader
-forks can deadlock on Linux.
-
-```bash
-pepdistill run run.toml
-# -> runs/full/model.ckpt   (student + saved MSContextEncoder + ChromRunbook + dataset_index)
-# -> runs/full/summary.json (per-stage metrics)
-```
-
-Pretraining logs loss and learning rate per epoch and saves `pretrain.ckpt` when the stage ends.
-Real-data training saves `latest.ckpt` every epoch and `best.ckpt` whenever mean per-dataset
-spectral agreement improves. Its early-stop line labels this aggregate as spectral agreement;
-higher is better. Historical controlled 60-epoch references reached weighted spectral angles
-0.7075 (exact GELU) and 0.7084 (tanh-GELU); use per-dataset metrics and downstream search results
-for acceptance, not either pooled number alone.
-
-When `remote_output_prefix` is set, `pretrain-latest.ckpt` is mirrored every configured number of
-steps; `pretrain.ckpt`, `train_metrics.jsonl`, `latest.ckpt`, `best.ckpt`, `model.ckpt`, and
-`summary.json` are mirrored whenever they change. An object-store write failure stops the job
-instead of silently leaving it without a durable recovery artifact.
-
-W&B is the experiment index, not the artifact store: it receives configuration, namespaced
-pretrain/train metrics, learning rate, system/console logs, grouping, and each mirrored S3 URI in
-the run summary. Checkpoint/model bytes remain only in S3 (`log_model = false`). Enable it with:
-
-```toml
-[tracking]
-enabled = true
-project = "pepdistill"
-group = "full-v1"
-name = "small"
-tags = ["full-nontest", "small"]
-min_log_interval_seconds = 10.0 # avoid per-step remote telemetry
-max_log_interval_steps = 100    # but never leave a larger optimizer-step gap
-```
-
-Diagnostics use this same ordered logger. This matters at stage boundaries: a direct W&B image
-write could otherwise advance the run step past an older throttled scalar record and make W&B
-discard that scalar as out-of-order.
-
-Install with `uv sync --extra tracking`. Cloud runs use a short-lived, dedicated W&B
-service-account key passed as `WANDB_API_KEY` in Batch job metadata. Revoke the key after every
-job and retry is terminal. Use `mode = "offline"` when no online credential is available.
-
-These checkpoints are **warm starts**, not exact training resumes: they contain model and context
-weights, but not optimizer, scheduler, early-stop, epoch, or streaming-cursor state. Starting from
-one therefore begins the configured stage again with the saved weights.
-
-### Launch the five-preset cloud sweep
-
-The staging helper generates one config and one isolated `full-v2-aug1pct` S3 output prefix for
-each of `flash`, `small-2h`, `small`, `base-4h`, and `base`. Upload the immutable stage once, then
-reuse its S3 prefix for all five jobs:
-
-The training entrypoint requests 4 vCPUs and 16 GB. Its prepared loader stays in-process and the
-model uses four intra-op threads, so requesting additional CPUs does not improve this workload.
-
-```bash
-.venv/bin/python tools/prepare_launchpad_full_run.py
-aws s3 sync .launchpad/full-run-stage "$STAGE_URI"
-for preset in flash small-2h small base-4h base; do
-  launchpad run tools/launchpad_prepared_train.py \
-    --stage "$STAGE_URI" \
-    --env PEPDISTILL_TRAIN_PRESET="$preset" \
-    --env WANDB_API_KEY="$WANDB_API_KEY"
-done
-```
-
-A standalone invocation defaults to `small`; select one explicitly with
-`--env PEPDISTILL_TRAIN_PRESET=base`. To recover a terminated real-training job from its durable
-warm start, skip pretraining and load that preset's latest checkpoint:
-
-```bash
-launchpad run tools/launchpad_prepared_train.py --stage .launchpad/full-run-stage \
-  --env PEPDISTILL_TRAIN_PRESET=base \
-  --env PEPDISTILL_MODEL_IN=s3://terraform-workstations-bucket/jspaezp/pepdistill-training/full-v1/base/latest.ckpt \
-  --env PEPDISTILL_NO_PRETRAIN=1
-```
-
-## 4. Generate a library and search it
-
-The binary carries weights, so a fresh clone predicts with nothing staged:
+The Rust CLI includes a small built-in model, so inference does not require Python training or a
+downloaded checkpoint:
 
 ```bash
 cargo run -q --release -p pepdistill-cli -- \
-  library --fasta proteome.fasta --out library.tsv --ms-context "Lumos::FTMS::HCD::30"
-timsseek --raw-inputs sample.d --speclib-uri library.tsv --output-uri search-results
+  library --fasta smoke.fasta --out library.mzspeclib.txt.gz \
+  --ms-context "Lumos::FTMS::HCD::30"
 ```
 
-`--model` defaults to `builtin:small-v0`, the `small` preset at 0.8054 mean per-dataset spectral
-agreement. The `v0` is deliberate: the preset sweep that picks a production model has not run, so
-this is a working default rather than a blessed release. `--model builtin:NAME` selects another
-bundled artifact and an unknown name lists what the build carries; anything without the
-`builtin:` prefix is read as a path, so your own export still works:
-
-```bash
-pepdistill export-rust --model runs/full/model.ckpt -o runs/full/model.safetensors
-cargo run -q --release -p pepdistill-cli -- \
-  library --model runs/full/model.safetensors --fasta proteome.fasta --out library.tsv
-```
-
-Weights are vendored at `rust/core/data/weights/` and embedded with `include_bytes!`, the same way
-`unimod.tsv` is. A build-time download was the alternative and it defeats the point: no offline
-build, a fetch dependency inside `cross`'s container, and — while this repo is private — a GitHub
-token for every clean clone. Once the repo is public, switching to a release asset is one line here
-plus a `build.rs`. Anything too large for version control belongs in a *runtime* fetch instead,
-which leaves clean-clone builds intact.
-
-Either way the identity is the digest, not the path: a library's provenance records
-`model: builtin:small-v0` with its blake2b, and a test asserts the vendored bytes still hash to the
-value recorded beside them, so weights cannot be swapped silently under a name.
-
-CCS is retained in prediction results; the DIA-NN adapter reports ion mobility as Bruker 1/K0.
-
-#### Output format
-
-The `--out` suffix picks the format; there is no flag that could disagree with it.
+The output suffix selects the format:
 
 | suffix | format |
 | --- | --- |
-| `.mzspeclib.txt`, `.mzspeclib` | mzSpecLib text (HUPO-PSI) |
+| `.mzspeclib.txt`, `.mzspeclib` | HUPO-PSI mzSpecLib text |
 | anything else | DIA-NN TSV |
 
-A trailing `.gz` compresses either one, in the writer thread, so the uncompressed form never
-exists on disk. Prefer `library.mzspeclib.txt.gz` for anything published: mzSpecLib carries the
-whole resolved configuration in its header -- the model and FASTA blake2b digests, every digestion
-and modification setting, the acquisition context -- so the library and its provenance cannot be
-separated by a copy. The `config.json` sidecar still holds the same content for the TSV, which
-carries none of it.
+A trailing `.gz` compresses either format. mzSpecLib is preferred for published libraries because
+its header carries the resolved model, FASTA digests, digestion rules, modifications, acquisition
+context, and fragment settings. TSV output writes the same provenance to a `config.json` sidecar.
 
-#### Retention in mzSpecLib
-
-Without `--chrom-context` there is one retention number, the context-free index, written as
-`MS:1000896|normalized retention time`. With one, there are two — that dataset's gradient time as
-`MS:1000894|retention time` and the index alongside it — because the chromatography context enters
-the RT head's *input*, so neither value can be derived from the other. Costs one extra pass through
-that head, measured at +2.9% on a 1.37M-precursor digest.
-
-Both carry `UO:0000031|minute`, which is wrong for the index and unavoidable: the vocabulary
-constrains `MS:1000896` to second or minute, and `UO:0000186|dimensionless unit` or no unit at all
-are both MUST violations. There is no value-bearing unitless retention term to use instead. The
-index is also negative for ~3% of precursors, since the corpus index extends below zero. So the
-header states what the number is rather than leaving a reader to trust the unit.
-
-The index is not a published table. It is a linear interpolation between two PROCAL standards
-pinned to 0 and 100, which is visible in the source data: `TFAHTESHISK` carries exactly 0 and
-`SILDYVSLVEK` exactly 100 across thousands of PSMs. That makes the scale definable rather than
-merely nameable, and makes "is this artifact on it?" a one-line check — every run predicts the two
-anchors:
-
-```
-pepdistill:retention.normalized.kind                     = dimensionless index, minutes-like
-pepdistill:retention.normalized.scale                    = linear interpolation anchored at
-                                                           TFAHTESHISK = 0 and SILDYVSLVEK = 100
-                                                           (PROCAL standards, PROSPECT convention)
-pepdistill:retention.normalized.anchor_check.on_scale    = true
-pepdistill:retention.normalized.anchor_check.max_abs_error = 0.107
-pepdistill:retention.raw.chrom_context                   = <dataset>   # only when one was named
-```
-
-The current trained model puts them at 0.106 and 100.107, so `max_abs_error` is 0.107 against a
-2.0-unit tolerance; an artifact from another corpus reports `on_scale: false` and its own numbers
-rather than inheriting a claim that is only true of ours. Both anchors are heavily represented in
-training, so passing is partly memorisation — this establishes which output space the model is in,
-not how well it generalises.
-
-Not measured, deliberately: a linear fit against some other vendor's iRT scale. R-squared is
-invariant under any affine map of the predictions, so it cannot tell this index apart from ten
-thousand times this index, and a reference table in another space can only establish that the two
-are affine-related — never that ours is what it claims. Nor is anything reprojected: search engines
-fit their own alignment between library and observed RT, so any affine transform of this column is
-absorbed downstream and converting would change no search result.
-
-Written by hand rather than through `mzannotate`: that crate re-derives every mass from a
-`rustyms` peptidoform, so a modification our chemistry accepts and its ontology does not would
-abort a whole-proteome run. Conformance is checked instead by the reference Python implementation:
-
-```bash
-uv run --with mzspeclib mzspeclib validate library.mzspeclib.txt   # expect no violations
-uv run --with mzspeclib pytest tests/test_rust_parity.py -k mzspeclib
-```
-
-`mzspeclib` is deliberately not a dev dependency: that group is installed by every `uv run`,
-including preparation workers, so the tests skip without it.
-
-### Predict one peptide
-
-The trained `model.ckpt` predicts. For a **single peptide**, use the Rust CLI (the single-peptide
-tool); export the checkpoint to a `.safetensors` artifact first:
+Single-peptide prediction is also available:
 
 ```bash
 cargo run -q --release -p pepdistill-cli -- \
-  predict --model runs/full/model.safetensors --peptide PEPTIDER --charge 2 \
-  --ms-context "Lumos::FTMS::HCD::30"     # or --nce 30, or omit for base MS2
-# -> one JSON object: precursor_mz, rt, ccs, fragments{ion, ord, z, mz, rel}
+  predict --peptide 'PEPC[UNIMOD:4]IDER' --charge 2 --nce 30
 ```
 
-Notes:
-- Transformer presets only.
-- `--peptide` takes a deliberately limited **ProForma sequence**:
-  `PEPC[UNIMOD:4]IDER` (side chain),
-  `[UNIMOD:737]-PEPTIDER` (N-term), `PEPTIDER-[UNIMOD:2]` (C-term), or a bare Dalton delta
-  `PEP[+42.010565]TIDER`. Elemental formulas follow chemForma, for example
-  `PEP[Formula:[13C2][12C-2]H2N]TIDER`. UniMod/formula atoms use the composition encoder;
-  isotopes fold to their parent element there while retaining exact nuclide mass for m/z.
-  Unsupported parent elements warn and fall back to the exact mass encoder. Signed deltas always
-  use the mass encoder. Modification names are not accepted by the public parser.
-- The artifact is versioned: a `.safetensors` exported before the mod-representation-v2 work
-  (`format_version` 1) is **rejected**, not read with defaults. Re-export from the checkpoint.
-- `--ms-context INSTRUMENT::DETECTOR::FRAGMENTATION::ENERGY` conditions MS2; `--chrom-context NAME`
-  routes RT through a saved dataset's runbook row (else RT is the context-free iRT base).
-- `--ms-context` also takes a **bare setup name** for a context fitted with `fit-context` (see
-  below). The `::` separator is what tells the two apart, so a partial factor list is an error
-  rather than a name nobody fitted.
+## Prepare experimental data
 
-### Generate a whole-proteome library in the cloud
-
-`--max-fragments 15` plus gzip output puts a human tryptic CysPAT/Ox/Phospho library at ~10 GB, so
-it is one object on one worker. The CLI compresses in its writer thread, so the uncompressed form
-(~150 GB) never exists on disk.
-
-The launchpad container pre-installs nothing -- no Rust toolchain, no `aws`, no `curl` -- so stage
-a cross-compiled binary next to the model and the FASTA:
+Preparation is range-addressable and restartable. Copy `runs/prepare-full.toml`, replace its
+organization-specific cache and output locations, then inspect the current shard count before
+choosing ranges:
 
 ```bash
-cross build --release --target x86_64-unknown-linux-musl \
-  --manifest-path rust/Cargo.toml -p pepdistill-cli
-mkdir -p speclib-stage
-cp rust/target/x86_64-unknown-linux-musl/release/pepdistill-cli speclib-stage/
-pepdistill export-rust --model runs/full/best.ckpt -o speclib-stage/model.safetensors
-cp ~/fasta/20231030_UP000005640_9606.fasta speclib-stage/proteome.fasta
-aws s3 sync speclib-stage "$STAGE"
-
-launchpad run tools/launchpad_speclib.py --stage "$STAGE" \
-  --env PEPDISTILL_SPECLIB_OUT=s3://bucket/pepdistill-speclib/human-cyspat-v1
+uv run pepdistill prepare-status prepare.toml --count-only
+uv run pepdistill prepare prepare.toml --range 0:100
+uv run pepdistill prepare-status prepare.toml
+uv run pepdistill prepare-finalize prepare.toml
 ```
 
-Notes:
-- The FASTA is staged rather than fetched from UniProt. A release stream is not the same bytes on
-  a re-run, and one that resets mid-body still returns 200 -- so a truncated proteome would be
-  hashed into `config.json` as valid provenance for a silently short library.
-- `--max-variable-mods` defaults to **2**, not the CLI's 1: at 1 a peptide with two cysteines can
-  never be fully CysPAT-labelled, which is not a digest anyone performs.
-- There is no fixed carbamidomethyl rule, because CysPAT *is* the alkylating agent. The CLI
-  refuses a fixed rule overlapping a variable one, so this is enforced rather than assumed.
-- `<name>.tsv.gz.config.json` records the resolved settings and blake2b digests of both inputs.
-  An mzSpecLib output carries the same record inside the file, and writes the sidecar as well.
+Ranges are half-open and independent of worker count. A completed shard is skipped unless
+`--force` is passed, and finalization refuses to publish a manifest until every expected shard is
+present. When code changes what a shard contains, bump `PREPARE_POLICY_VERSION` in
+`src/pepdistill/etl/config.py`; performance-only changes do not require a bump.
 
-### Fit an acquisition context to a published library
+Prepared assets may live on a local filesystem or an fsspec-compatible object store. Object-store
+credentials come from that provider's normal environment or instance identity; pepdistill does
+not manage credentials.
 
-A library reports no instrument and no collision energy, and a timsTOF ramps energy with ion
-mobility anyway, so there are no acquisition factors to compose a context from. Fit one instead:
-the backbone stays frozen and only the context row moves, judged on peptides held out by the
-project's own sequence hash.
+## Train on prepared data
+
+Use the full configuration grammar in the [design document](design.md) and the checked-in run
+configurations as advanced examples. A minimal real-data stage is:
+
+```toml
+out = "runs/full"
+preset = "small"
+device = "cpu"
+seed = 0
+
+[pretrain]
+enabled = false
+
+[train]
+enabled = true
+prepared_prefix = "/path/to/prepared/v2"
+epochs = 60
+num_workers = 0
+model_threads = 4
+```
 
 ```bash
-aws s3 cp s3://.../spectral_library.tsv ./lib.tsv   # local path: the CLI has no S3 client
-cargo run -q --release -p pepdistill-cli -- \
-  fit-context --model runs/full/model.safetensors --library ./lib.tsv \
-  --add-unimod 35 --add-unimod 21 --add-unimod 2057:221.082 \
-  --save-as Evosep60SPD_heron --out runs/full/model-fitted.safetensors
-# -> JSON: library stats, the split, spectral_angle_before/after, the fitted vector, {"saved": ...}
+uv run pepdistill run run.toml
 ```
 
-`--add-unimod ACCESSION[:MASS]` declares a modification the file contains; the optional mass is
-for a shift spelled more coarsely than the automatic 1e-4 tolerance accepts (DIA-NN writes
-6C-CysPAT as `+221.082`). An unexplained mass shift stops the fit rather than being dropped.
+The stage writes `latest.ckpt`, `best.ckpt`, `model.ckpt`, metrics, and `summary.json` below
+`out`. Checkpoints are warm starts rather than exact optimizer resumes. Validation is deduplicated
+and reported per dataset; use those metrics and downstream search results instead of a pooled score
+as the acceptance criterion.
 
-`--save-as NAME` writes the row into `--out`, never in place — the input artifact is the reference
-the fit is judged against. Afterwards `--ms-context NAME` predicts with it, in `predict` and in
-`library`. Refitting an existing name replaces that row and leaves every other one alone.
-
-### Alternative: torch, via a one-line FASTA (whole library, not single-peptide)
-`pepdistill predict` digests a FASTA / reads a precursor table and writes a parquet library — it
-does not take a bare peptide, and it enumerates charges 2–4 by default:
-
-```bash
-printf '>p\nPEPTIDER\n' > one.fasta
-pepdistill predict --model runs/full/model.ckpt --fasta one.fasta -o one.parquet \
-  --ms-context "Lumos::FTMS::HCD::30"     # or a fitted setup name; needs a saved encoder
-```
-
-## Outputs recap
-- `runs/full/model.ckpt` — trained student + context (encoder/runbook/dataset_index).
-- `runs/full/pretrain.ckpt` — snapshot after teacher distillation.
-- `runs/full/latest.ckpt`, `runs/full/best.ckpt` — rolling real-data checkpoints.
-- `runs/full/pretrain-latest.ckpt` — periodic pretrain warm start, when the interval is reached.
-- `runs/full/summary.json` — per-stage metrics.
-- `runs/full/diagnostics/<stage>-step-.../` — fixed-frame PCA, iRT, and butterfly snapshots.
-- `runs/full/model.safetensors` — Rust-loadable artifact (from `export-rust`).
-- Prediction: JSON on stdout (Rust CLI) or `one.parquet` (torch predict).
-
-Render the same production panel for any checkpoint without starting training:
-
-```bash
-pepdistill diagnose --model runs/full/model.ckpt --out runs/full/manual-diagnostics
-```
+For acquisition-context fitting, retention semantics, curation reports, and model internals, see
+the [current design](design.md), [model v2](model-v2-design.md), and generated reports in the
+[documentation index](README.md).

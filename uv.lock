@@ -2,15 +2,19 @@ version = 1
 revision = 3
 requires-python = ">=3.11"
 resolution-markers = [
-    "python_full_version >= '3.14' and platform_machine != 's390x' and sys_platform == 'win32'",
-    "python_full_version >= '3.14' and platform_machine == 's390x' and sys_platform == 'win32'",
-    "python_full_version >= '3.14' and sys_platform == 'emscripten'",
-    "python_full_version >= '3.14' and sys_platform != 'emscripten' and sys_platform != 'win32'",
-    "python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform == 'win32'",
-    "python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform == 'emscripten'",
-    "python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform != 'emscripten' and sys_platform != 'win32'",
-    "python_full_version < '3.12'",
+    "python_full_version >= '3.12' and platform_machine == 'x86_64' and sys_platform == 'linux' and extra != 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu'",
+    "(python_full_version >= '3.12' and platform_machine != 'x86_64' and extra != 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu') or (python_full_version >= '3.12' and sys_platform != 'linux' and extra != 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu')",
+    "python_full_version >= '3.12' and extra == 'extra-10-pepdistill-torch' and extra != 'extra-10-pepdistill-torch-cpu'",
+    "python_full_version >= '3.12' and extra != 'extra-10-pepdistill-torch' and extra != 'extra-10-pepdistill-torch-cpu'",
+    "python_full_version < '3.12' and platform_machine == 'x86_64' and sys_platform == 'linux' and extra != 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu'",
+    "(python_full_version < '3.12' and platform_machine != 'x86_64' and extra != 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu') or (python_full_version < '3.12' and sys_platform != 'linux' and extra != 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu')",
+    "python_full_version < '3.12' and extra == 'extra-10-pepdistill-torch' and extra != 'extra-10-pepdistill-torch-cpu'",
+    "python_full_version < '3.12' and extra != 'extra-10-pepdistill-torch' and extra != 'extra-10-pepdistill-torch-cpu'",
 ]
+conflicts = [[
+    { package = "pepdistill", extra = "torch" },
+    { package = "pepdistill", extra = "torch-cpu" },
+]]
 
 [[package]]
 name = "aiobotocore"
@@ -50,7 +54,7 @@ dependencies = [
     { name = "frozenlist" },
     { name = "multidict" },
     { name = "propcache" },
-    { name = "typing-extensions", marker = "python_full_version < '3.13'" },
+    { name = "typing-extensions", marker = "python_full_version < '3.13' or (extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu')" },
     { name = "yarl" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/1d/cc/58f26f118d8099f84e009ce560b9148a3f803e63fa8473b57feb67241875/aiohttp-3.14.2.tar.gz", hash = "sha256:f96821eb2ae2f12b0dfa799eafbf221f5621a9220b457b4744a269a63a5f3a6c", size = 7969860, upload-time = "2026-07-20T19:53:26.881Z" }
@@ -172,7 +176,7 @@ version = "1.4.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "frozenlist" },
-    { name = "typing-extensions", marker = "python_full_version < '3.13'" },
+    { name = "typing-extensions", marker = "python_full_version < '3.13' or (extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/61/62/06741b579156360248d1ec624842ad0edf697050bbaf7c3e46394e106ad1/aiosignal-1.4.0.tar.gz", hash = "sha256:f47eecd9468083c2029cc99945502cb7708b082c232f9aca65da147157b251c7", size = 25007, upload-time = "2025-07-03T22:54:43.528Z" }
 wheels = [
@@ -218,7 +222,7 @@ dependencies = [
     { name = "pandas" },
     { name = "pyteomics" },
     { name = "pythonnet" },
-    { name = "pywin32", marker = "sys_platform == 'win32'" },
+    { name = "pywin32", marker = "sys_platform == 'win32' or (extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu')" },
     { name = "pyzstd" },
 ]
 wheels = [
@@ -249,11 +253,26 @@ version = "4.14.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "idna" },
-    { name = "typing-extensions", marker = "python_full_version < '3.13'" },
+    { name = "typing-extensions", marker = "python_full_version < '3.13' or (extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/61/cc/a381afa6efea9f496eff839d4a6a1aed3bfafc7b3ab4b0d1b243a12573dd/anyio-4.14.2.tar.gz", hash = "sha256:cfa139f3ed1a23ee8f88a145ddb5ac7605b8bbfd8592baacd7ce3d8bb4313c7f", size = 260176, upload-time = "2026-07-12T20:29:07.082Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/da/35/f2287558c17e29fafc8ef3daf819bb9834061cfa43bff8014f7df7f63bdc/anyio-4.14.2-py3-none-any.whl", hash = "sha256:9f505dda5ac9f0c8309b5e8bd445a8c2bf7246f3ce950121e45ea15bc41d1494", size = 125813, upload-time = "2026-07-12T20:29:05.763Z" },
+]
+
+[[package]]
+name = "ast-grep-cli"
+version = "0.45.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/82/ad/2f00726d90bcdbf821e1f8893a219d531d3a4a3a525c0ea7554c36b44328/ast_grep_cli-0.45.2.tar.gz", hash = "sha256:300bd5161bd7e6db532ea330647137381f461e0e995b72e56e5e3abcd611ebc3", size = 281111, upload-time = "2026-08-23T20:01:21.259Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/97/c3/ef578c61ef91b4cf7429442f3067915ea96e027603591ffcaa5f7fc45929/ast_grep_cli-0.45.2-py3-none-macosx_10_12_x86_64.macosx_11_0_arm64.macosx_10_12_universal2.whl", hash = "sha256:ecc6edefd6e87a53ed41997071802b8b81e9417a6009089887d930968755aa18", size = 15735514, upload-time = "2026-08-23T20:01:08.737Z" },
+    { url = "https://files.pythonhosted.org/packages/e4/82/20718fa8c4b5ea9f471a906022343b25053216249ee508a40dd806cfefbb/ast_grep_cli-0.45.2-py3-none-macosx_10_12_x86_64.whl", hash = "sha256:c4afe7aa52171d8d482b95e5db6289cc97e2678adee15ad15af25a41da036d02", size = 7868453, upload-time = "2026-08-23T20:01:11.033Z" },
+    { url = "https://files.pythonhosted.org/packages/18/10/b5f21447fe303d6409520282ec3a0e516e114d0730ec8f7274c879e8f4a6/ast_grep_cli-0.45.2-py3-none-manylinux_2_28_aarch64.whl", hash = "sha256:cbaf74b65ea2c3918b23e9578e1790aec6951d5aa8070b7d912e5fb79a7afedb", size = 7733082, upload-time = "2026-08-23T20:01:12.499Z" },
+    { url = "https://files.pythonhosted.org/packages/4c/6d/9e9651cad69aa2804621d149067210668fbc7debb3dce93b568b39e1e3ea/ast_grep_cli-0.45.2-py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:bd41060e56fd4c7611050d0dbb3f0741336725b0741ba3eec2ff0d0059042d45", size = 8022169, upload-time = "2026-08-23T20:01:13.82Z" },
+    { url = "https://files.pythonhosted.org/packages/05/48/f956aca058464cb43eb9669f06bfa19d2c5e7613a80277f41e13cd4a854d/ast_grep_cli-0.45.2-py3-none-win32.whl", hash = "sha256:f613a82dcb51527ef0d63b26261f10ea24990ffb0c8b9dda2abbacfa45d1d982", size = 14932502, upload-time = "2026-08-23T20:01:15.341Z" },
+    { url = "https://files.pythonhosted.org/packages/9f/7f/8c573f3e3102debc034adfe3fb9806a89076ada4c767eb1930700d044e4d/ast_grep_cli-0.45.2-py3-none-win_amd64.whl", hash = "sha256:19aab16ad9bc361d1a750c8e5e36b2d746e9c256c9bd83be08925cb1469c6e6b", size = 15842099, upload-time = "2026-08-23T20:01:17.308Z" },
+    { url = "https://files.pythonhosted.org/packages/76/a0/882638f2c1e8ec63500f9a7ae256292e7cdb8177abf6b2e7d5f09266a3f5/ast_grep_cli-0.45.2-py3-none-win_arm64.whl", hash = "sha256:1d5ab9db412f3f95dce9eadc3c3bd4d37d0ae7d1182b148c03fff81a8c6c3f40", size = 15287377, upload-time = "2026-08-23T20:01:19.504Z" },
 ]
 
 [[package]]
@@ -399,7 +418,7 @@ name = "cffi"
 version = "2.1.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "pycparser", marker = "implementation_name != 'PyPy'" },
+    { name = "pycparser", marker = "implementation_name != 'PyPy' or (extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/57/5f/ff100cae70ebe9d8df1c01a00e510e45d9adb5c1fdda84791b199141de97/cffi-2.1.0.tar.gz", hash = "sha256:efc1cdd798b1aaf39b4610bba7aad28c9bea9b910f25c784ccf9ec1fa719d1f9", size = 531036, upload-time = "2026-07-06T21:34:30.382Z" }
 wheels = [
@@ -580,7 +599,7 @@ name = "click"
 version = "8.4.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "colorama", marker = "sys_platform == 'win32'" },
+    { name = "colorama", marker = "sys_platform == 'win32' or (extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/76/d4/81420972a676e8ffea40450d8c8c92943e7218a78fe9b64359836cc9876b/click-8.4.2.tar.gz", hash = "sha256:9a6cea6e60b17ebe0a44c5cc636d94f09bd66142c1cd7d8b4cd731c4917a15f6", size = 338000, upload-time = "2026-06-24T17:45:15.148Z" }
 wheels = [
@@ -704,19 +723,24 @@ name = "cuda-bindings"
 version = "13.3.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "cuda-pathfinder" },
+    { name = "cuda-pathfinder", marker = "platform_machine != 'x86_64' or sys_platform != 'linux' or extra == 'extra-10-pepdistill-torch' or extra != 'extra-10-pepdistill-torch-cpu'" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/51/6b/457ca12dad3ee9bfcc9a545cfd6b64b359ba49de40f776f6e028e678f262/cuda_bindings-13.3.1-cp311-cp311-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:c5879712accf6e14bb01aa5e67440eb84998b8d104b509cc7a6dc0b8f656a474", size = 6053539, upload-time = "2026-05-29T23:11:43.19Z" },
     { url = "https://files.pythonhosted.org/packages/95/7a/c5e3c34a409b148f5c0f5a4ea374158f95d488862c1dffedf9aa5c639df9/cuda_bindings-13.3.1-cp311-cp311-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:04436a9364059c84b8f9636f359eccda1cf814341f5b670c71d80d2f79dbc708", size = 6674166, upload-time = "2026-05-29T23:11:45.478Z" },
+    { url = "https://files.pythonhosted.org/packages/93/f7/0e35987a21914f84068061dcf4b61466ccbce1c62ddc9727596d5ed0c26f/cuda_bindings-13.3.1-cp311-cp311-win_amd64.whl", hash = "sha256:507b0e19e7f934c5e30f30f0244ad70a75812619a7d3a0d742543caae1bd50f1", size = 5664286, upload-time = "2026-05-29T23:11:47.719Z" },
     { url = "https://files.pythonhosted.org/packages/ce/67/5e7dba1ba576dd73da5dee894ca076ca5e959450dfff66d6d510a255d1f7/cuda_bindings-13.3.1-cp312-cp312-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:c7855c4868aabc0cfae28abbe83d56734bdfbd08f08fc234ac1912a12858bf49", size = 6025351, upload-time = "2026-05-29T23:11:49.685Z" },
     { url = "https://files.pythonhosted.org/packages/39/2a/6d2e9047d1fb243dbaa364b01e0297534b9ed7fd27dba1c9f361519cf69b/cuda_bindings-13.3.1-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:e32d08f71ebcdf00f0f41eab2eb37e8da94c8ed411cc9f7f7a019ce6b34abe3a", size = 6657965, upload-time = "2026-05-29T23:11:52.227Z" },
+    { url = "https://files.pythonhosted.org/packages/7c/95/872a0392122f1fb43fcb06869790ef3171f37beee9f7db8f441739113570/cuda_bindings-13.3.1-cp312-cp312-win_amd64.whl", hash = "sha256:b134dd8c5c66ae4c4ad814f7aee88fd215353c077010cbc47e3b55ed35ec9eff", size = 5875099, upload-time = "2026-05-29T23:11:54.635Z" },
     { url = "https://files.pythonhosted.org/packages/cc/6e/2394f8163360f8391f8f1b7e72d300a82724edb81a7b7084c799fbd4c91f/cuda_bindings-13.3.1-cp313-cp313-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:9efb21c1ee64981e184b9e0ba5eb3179e5ba3d4b51665a6cb52b8ef3d01a7cbf", size = 5920504, upload-time = "2026-05-29T23:11:56.883Z" },
     { url = "https://files.pythonhosted.org/packages/34/c2/ef9b6a63f7dc432712a462c816662e662e00d38caa9b861c8c2588195d03/cuda_bindings-13.3.1-cp313-cp313-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:2732904099e0a4d4db774a5fc6d91ee95fae065b4d2ecabb4968c5fe2406c9d7", size = 6476660, upload-time = "2026-05-29T23:11:59.188Z" },
+    { url = "https://files.pythonhosted.org/packages/0c/2f/6a0dd496550c6fafbf6aeb1bf40242eeabb2fd138a43892aabb4be8224c2/cuda_bindings-13.3.1-cp313-cp313-win_amd64.whl", hash = "sha256:18c8c167c8907b8f02531ca810534315c458dabef31f7965095619bf647b9202", size = 5830027, upload-time = "2026-05-29T23:12:01.205Z" },
     { url = "https://files.pythonhosted.org/packages/b1/81/bff68ce829999c1e4209c761bbf903b1c06ec570416ddb25020864ad5907/cuda_bindings-13.3.1-cp314-cp314-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:1ab2f74ed65bfef4163ba07a8db16f1085e0729291db12a2423aff84ee8278b8", size = 6013639, upload-time = "2026-05-29T23:12:03.509Z" },
     { url = "https://files.pythonhosted.org/packages/d4/e0/c8a1f0c8f9ffdea4f5fe6dbab89b326cef4d85caf489dad39e209da89416/cuda_bindings-13.3.1-cp314-cp314-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:efd4c814d311ec08c981f6dded1dbe7d4b371067ee4f6c14cccec4bde9590f80", size = 6534419, upload-time = "2026-05-29T23:12:05.633Z" },
+    { url = "https://files.pythonhosted.org/packages/48/45/2734be44dbc80ac082ec23a86b41c8294992dcb90033645ed1bc50aafe4c/cuda_bindings-13.3.1-cp314-cp314-win_amd64.whl", hash = "sha256:8de12ef60bf40756852cb62bbb40460609269f6ece522903d1cc93d73a3ececb", size = 5961055, upload-time = "2026-05-29T23:12:07.971Z" },
     { url = "https://files.pythonhosted.org/packages/52/b8/83b1f563925b290f2d11a01a77a84013ba56052fe3653a5bef3ccfbb43d6/cuda_bindings-13.3.1-cp314-cp314t-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:c3c772dfff49681541d59630c90f858e173ac926b9c593a2b7123f2a1043cc76", size = 5809771, upload-time = "2026-05-29T23:12:10.422Z" },
     { url = "https://files.pythonhosted.org/packages/12/20/e79b4bfe98f075195afb6343d41c498f9dbd2d161d7021d4d28bceb83581/cuda_bindings-13.3.1-cp314-cp314t-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:36febb7c1079d68a981dbbd8d5a67235b399802b82075c9388624719607e52b9", size = 6358584, upload-time = "2026-05-29T23:12:12.767Z" },
+    { url = "https://files.pythonhosted.org/packages/27/2a/b59bcac016ab9985d6b48a5d05b0d698461a159ca03ee11c4abd54da2ac4/cuda_bindings-13.3.1-cp314-cp314t-win_amd64.whl", hash = "sha256:61120b5e4f4a63f67efd7e7396914cb9ef871bb1f0021e990fb70277be240a4d", size = 6740329, upload-time = "2026-05-29T23:12:15.153Z" },
 ]
 
 [[package]]
@@ -737,43 +761,43 @@ wheels = [
 
 [package.optional-dependencies]
 cublas = [
-    { name = "nvidia-cublas", marker = "platform_machine == 'aarch64' or platform_machine == 'x86_64'" },
-    { name = "nvidia-cuda-nvrtc", marker = "platform_machine == 'aarch64' or platform_machine == 'x86_64'" },
+    { name = "nvidia-cublas", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'extra-10-pepdistill-torch') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra != 'extra-10-pepdistill-torch-cpu') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu') or (sys_platform == 'linux' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu') or (sys_platform == 'win32' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu')" },
+    { name = "nvidia-cuda-nvrtc", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'extra-10-pepdistill-torch') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra != 'extra-10-pepdistill-torch-cpu') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu') or (sys_platform == 'linux' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu') or (sys_platform == 'win32' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu')" },
 ]
 cudart = [
-    { name = "nvidia-cuda-runtime", marker = "platform_machine == 'aarch64' or platform_machine == 'x86_64'" },
+    { name = "nvidia-cuda-runtime", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'extra-10-pepdistill-torch') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra != 'extra-10-pepdistill-torch-cpu') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu') or (sys_platform == 'linux' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu') or (sys_platform == 'win32' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu')" },
 ]
 cufft = [
-    { name = "nvidia-cufft", marker = "platform_machine == 'aarch64' or platform_machine == 'x86_64'" },
-    { name = "nvidia-nvjitlink", marker = "platform_machine == 'aarch64' or platform_machine == 'x86_64'" },
+    { name = "nvidia-cufft", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'extra-10-pepdistill-torch') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra != 'extra-10-pepdistill-torch-cpu') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu') or (sys_platform == 'linux' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu') or (sys_platform == 'win32' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu')" },
+    { name = "nvidia-nvjitlink", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'extra-10-pepdistill-torch') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra != 'extra-10-pepdistill-torch-cpu') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu') or (sys_platform == 'linux' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu') or (sys_platform == 'win32' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu')" },
 ]
 cufile = [
-    { name = "nvidia-cufile", marker = "platform_machine == 'aarch64' or platform_machine == 'x86_64'" },
+    { name = "nvidia-cufile", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'extra-10-pepdistill-torch') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra != 'extra-10-pepdistill-torch-cpu') or (sys_platform != 'linux' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu')" },
 ]
 cupti = [
-    { name = "nvidia-cuda-cupti", marker = "platform_machine == 'aarch64' or platform_machine == 'x86_64'" },
+    { name = "nvidia-cuda-cupti", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'extra-10-pepdistill-torch') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra != 'extra-10-pepdistill-torch-cpu') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu') or (sys_platform == 'linux' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu') or (sys_platform == 'win32' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu')" },
 ]
 curand = [
-    { name = "nvidia-curand", marker = "platform_machine == 'aarch64' or platform_machine == 'x86_64'" },
+    { name = "nvidia-curand", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'extra-10-pepdistill-torch') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra != 'extra-10-pepdistill-torch-cpu') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu') or (sys_platform == 'linux' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu') or (sys_platform == 'win32' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu')" },
 ]
 cusolver = [
-    { name = "nvidia-cublas", marker = "platform_machine == 'aarch64' or platform_machine == 'x86_64'" },
-    { name = "nvidia-cusolver", marker = "platform_machine == 'aarch64' or platform_machine == 'x86_64'" },
-    { name = "nvidia-cusparse", marker = "platform_machine == 'aarch64' or platform_machine == 'x86_64'" },
-    { name = "nvidia-nvjitlink", marker = "platform_machine == 'aarch64' or platform_machine == 'x86_64'" },
+    { name = "nvidia-cublas", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'extra-10-pepdistill-torch') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra != 'extra-10-pepdistill-torch-cpu') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu') or (sys_platform == 'linux' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu') or (sys_platform == 'win32' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu')" },
+    { name = "nvidia-cusolver", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'extra-10-pepdistill-torch') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra != 'extra-10-pepdistill-torch-cpu') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu') or (sys_platform == 'linux' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu') or (sys_platform == 'win32' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu')" },
+    { name = "nvidia-cusparse", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'extra-10-pepdistill-torch') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra != 'extra-10-pepdistill-torch-cpu') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu') or (sys_platform == 'linux' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu') or (sys_platform == 'win32' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu')" },
+    { name = "nvidia-nvjitlink", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'extra-10-pepdistill-torch') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra != 'extra-10-pepdistill-torch-cpu') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu') or (sys_platform == 'linux' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu') or (sys_platform == 'win32' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu')" },
 ]
 cusparse = [
-    { name = "nvidia-cusparse", marker = "platform_machine == 'aarch64' or platform_machine == 'x86_64'" },
-    { name = "nvidia-nvjitlink", marker = "platform_machine == 'aarch64' or platform_machine == 'x86_64'" },
+    { name = "nvidia-cusparse", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'extra-10-pepdistill-torch') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra != 'extra-10-pepdistill-torch-cpu') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu') or (sys_platform == 'linux' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu') or (sys_platform == 'win32' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu')" },
+    { name = "nvidia-nvjitlink", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'extra-10-pepdistill-torch') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra != 'extra-10-pepdistill-torch-cpu') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu') or (sys_platform == 'linux' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu') or (sys_platform == 'win32' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu')" },
 ]
 nvjitlink = [
-    { name = "nvidia-nvjitlink", marker = "platform_machine == 'aarch64' or platform_machine == 'x86_64'" },
+    { name = "nvidia-nvjitlink", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'extra-10-pepdistill-torch') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra != 'extra-10-pepdistill-torch-cpu') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu') or (sys_platform == 'linux' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu') or (sys_platform == 'win32' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu')" },
 ]
 nvrtc = [
-    { name = "nvidia-cuda-nvrtc", marker = "platform_machine == 'aarch64' or platform_machine == 'x86_64'" },
+    { name = "nvidia-cuda-nvrtc", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'extra-10-pepdistill-torch') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra != 'extra-10-pepdistill-torch-cpu') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu') or (sys_platform == 'linux' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu') or (sys_platform == 'win32' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu')" },
 ]
 nvtx = [
-    { name = "nvidia-nvtx", marker = "platform_machine == 'aarch64' or platform_machine == 'x86_64'" },
+    { name = "nvidia-nvtx", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'extra-10-pepdistill-torch') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra != 'extra-10-pepdistill-torch-cpu') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu') or (sys_platform == 'linux' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu') or (sys_platform == 'win32' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu')" },
 ]
 
 [[package]]
@@ -1091,7 +1115,7 @@ dependencies = [
     { name = "click" },
     { name = "filelock" },
     { name = "fsspec" },
-    { name = "hf-xet", marker = "platform_machine == 'AMD64' or platform_machine == 'aarch64' or platform_machine == 'amd64' or platform_machine == 'arm64' or platform_machine == 'x86_64'" },
+    { name = "hf-xet", marker = "platform_machine == 'AMD64' or platform_machine == 'aarch64' or platform_machine == 'amd64' or platform_machine == 'arm64' or platform_machine == 'x86_64' or (extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu')" },
     { name = "httpx" },
     { name = "packaging" },
     { name = "pyyaml" },
@@ -1271,12 +1295,13 @@ name = "lightning"
 version = "2.6.5"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "fsspec", extra = ["http"] },
+    { name = "fsspec", extra = ["http"], marker = "extra == 'extra-10-pepdistill-torch' or extra == 'extra-10-pepdistill-torch-cpu'" },
     { name = "lightning-utilities" },
     { name = "packaging" },
     { name = "pytorch-lightning" },
     { name = "pyyaml" },
-    { name = "torch" },
+    { name = "torch", version = "2.13.0", source = { registry = "https://pypi.org/simple" }, marker = "(platform_machine != 'x86_64' and extra == 'extra-10-pepdistill-torch-cpu') or (sys_platform != 'linux' and extra == 'extra-10-pepdistill-torch-cpu') or extra == 'extra-10-pepdistill-torch'" },
+    { name = "torch", version = "2.13.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'extra-10-pepdistill-torch-cpu') or (platform_machine != 'x86_64' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu') or (sys_platform != 'linux' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu')" },
     { name = "torchmetrics" },
     { name = "tqdm" },
     { name = "typing-extensions" },
@@ -1802,11 +1827,12 @@ name = "nvidia-cublas"
 version = "13.1.1.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-cuda-nvrtc" },
+    { name = "nvidia-cuda-nvrtc", marker = "platform_machine != 'x86_64' or sys_platform != 'linux' or extra == 'extra-10-pepdistill-torch' or extra != 'extra-10-pepdistill-torch-cpu'" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/a7/a1/0bd24ee8c8d03adac032fd2909426a00c88f8c57961b1277ded97f91119f/nvidia_cublas-13.1.1.3-py3-none-manylinux_2_27_aarch64.whl", hash = "sha256:b7a210458267ac818974c53038fbec2e969d5c99f305ab15c72522fa9f001dd5", size = 542848918, upload-time = "2026-04-08T18:46:22.985Z" },
     { url = "https://files.pythonhosted.org/packages/3b/cd/154ca20c38269e05eff77c1464e6c1da89f50a6390b565e9d82e06bc11e1/nvidia_cublas-13.1.1.3-py3-none-manylinux_2_27_x86_64.whl", hash = "sha256:37936a16db8fe4ac1f065c2139360608a543a09275cb1a1af612e08cfa065436", size = 423138758, upload-time = "2026-04-08T18:46:58.655Z" },
+    { url = "https://files.pythonhosted.org/packages/45/9e/2f562daf80eb8f7a685fb7bea4fda71f6048e4f359d6fdd1b6e70206cb2f/nvidia_cublas-13.1.1.3-py3-none-win_amd64.whl", hash = "sha256:b6cdce694e47ff6aadf0a69df1cab6628d696f5ff56e8d16af50309d855fa20f", size = 404358158, upload-time = "2026-04-08T18:47:26.987Z" },
 ]
 
 [[package]]
@@ -1816,6 +1842,7 @@ source = { registry = "https://pypi.org/simple" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/2a/2a/80353b103fc20ce05ef51e928daed4b6015db4aaa9162ed0997090fe2250/nvidia_cuda_cupti-13.0.85-py3-none-manylinux_2_25_aarch64.whl", hash = "sha256:796bd679890ee55fb14a94629b698b6db54bcfd833d391d5e94017dd9d7d3151", size = 10310827, upload-time = "2025-09-04T08:26:42.012Z" },
     { url = "https://files.pythonhosted.org/packages/33/6d/737d164b4837a9bbd202f5ae3078975f0525a55730fe871d8ed4e3b952b0/nvidia_cuda_cupti-13.0.85-py3-none-manylinux_2_25_x86_64.whl", hash = "sha256:4eb01c08e859bf924d222250d2e8f8b8ff6d3db4721288cf35d14252a4d933c8", size = 10715597, upload-time = "2025-09-04T08:26:51.312Z" },
+    { url = "https://files.pythonhosted.org/packages/ad/df/b74b10025c1205695c5676373f2edd3e87a7202cc62ead0dfbc373b0f6ea/nvidia_cuda_cupti-13.0.85-py3-none-win_amd64.whl", hash = "sha256:683f58d301548deeefcb8f6fac1b8d907691b9d8b18eccab417f51e362102f00", size = 7736776, upload-time = "2025-09-04T08:38:08.38Z" },
 ]
 
 [[package]]
@@ -1825,6 +1852,7 @@ source = { registry = "https://pypi.org/simple" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/c3/68/483a78f5e8f31b08fb1bb671559968c0ca3a065ac7acabfc7cee55214fd6/nvidia_cuda_nvrtc-13.0.88-py3-none-manylinux2010_x86_64.manylinux_2_12_x86_64.whl", hash = "sha256:ad9b6d2ead2435f11cbb6868809d2adeeee302e9bb94bcf0539c7a40d80e8575", size = 90215200, upload-time = "2025-09-04T08:28:44.204Z" },
     { url = "https://files.pythonhosted.org/packages/b7/dc/6bb80850e0b7edd6588d560758f17e0550893a1feaf436807d64d2da040f/nvidia_cuda_nvrtc-13.0.88-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:d27f20a0ca67a4bb34268a5e951033496c5b74870b868bacd046b1b8e0c3267b", size = 43015449, upload-time = "2025-09-04T08:28:20.239Z" },
+    { url = "https://files.pythonhosted.org/packages/4a/af/345fedb9f4c76c84ab4fa445b36bd4048a4d9db60e6bc76b4f913ff4b852/nvidia_cuda_nvrtc-13.0.88-py3-none-win_amd64.whl", hash = "sha256:6bcd4e7f8e205cbe644f5a98f2f799bef9556fefc89dd786e79a16312ce49872", size = 76807835, upload-time = "2025-09-04T08:39:15.274Z" },
 ]
 
 [[package]]
@@ -1834,6 +1862,7 @@ source = { registry = "https://pypi.org/simple" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/87/4f/17d7b9b8e285199c58ce28e31b5c5bbaa4d8271af06a89b6405258245de2/nvidia_cuda_runtime-13.0.96-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:ef9bcbe90493a2b9d810e43d249adb3d02e98dd30200d86607d8d02687c43f55", size = 2261060, upload-time = "2025-10-09T08:55:15.78Z" },
     { url = "https://files.pythonhosted.org/packages/2e/24/d1558f3b68b1d26e706813b1d10aa1d785e4698c425af8db8edc3dced472/nvidia_cuda_runtime-13.0.96-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:7f82250d7782aa23b6cfe765ecc7db554bd3c2870c43f3d1821f1d18aebf0548", size = 2243632, upload-time = "2025-10-09T08:55:36.117Z" },
+    { url = "https://files.pythonhosted.org/packages/b7/94/6b867483bec07da24ffa32736c79fabb94ef3a7af4d787a9d4a974868576/nvidia_cuda_runtime-13.0.96-py3-none-win_amd64.whl", hash = "sha256:f79298c8a098cec150a597c8eba58ecdab96e3bdc4b9bc4f9983635031740492", size = 2927037, upload-time = "2025-10-09T09:04:23.782Z" },
 ]
 
 [[package]]
@@ -1841,11 +1870,12 @@ name = "nvidia-cudnn-cu13"
 version = "9.20.0.48"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-cublas" },
+    { name = "nvidia-cublas", marker = "platform_machine != 'x86_64' or sys_platform != 'linux' or extra == 'extra-10-pepdistill-torch' or extra != 'extra-10-pepdistill-torch-cpu'" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/56/c5/83384d846b2fd17c44bd499b36c75a45ed4f095fbbb2252294e89cea5c5c/nvidia_cudnn_cu13-9.20.0.48-py3-none-manylinux_2_27_aarch64.whl", hash = "sha256:e31454ae00094b0c55319d9d15b6fa2fc50a9e1c0f5c8c80fb75258234e731e1", size = 444574296, upload-time = "2026-03-09T19:28:27.751Z" },
     { url = "https://files.pythonhosted.org/packages/6e/5e/edb9c0ae051602c3ccaffe424256463636d639e27d7f302dde9975ef9e7a/nvidia_cudnn_cu13-9.20.0.48-py3-none-manylinux_2_27_x86_64.whl", hash = "sha256:0c45dd8eeb50b603f07995b1b300c62ffe6a1980482b82b3bcf94a4ca9d49304", size = 366173588, upload-time = "2026-03-09T19:29:34.474Z" },
+    { url = "https://files.pythonhosted.org/packages/78/39/21507455b1bca8b5702a9e9fc6ce73735f216f558dac2c9ede58e4d456b8/nvidia_cudnn_cu13-9.20.0.48-py3-none-win_amd64.whl", hash = "sha256:af8139732b99c0118be65ea5aac97f0d46018f8c552889e49d2fb0c6261a4a24", size = 350712614, upload-time = "2026-03-09T19:31:11.398Z" },
 ]
 
 [[package]]
@@ -1853,11 +1883,12 @@ name = "nvidia-cufft"
 version = "12.0.0.61"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-nvjitlink" },
+    { name = "nvidia-nvjitlink", marker = "platform_machine != 'x86_64' or sys_platform != 'linux' or extra == 'extra-10-pepdistill-torch' or extra != 'extra-10-pepdistill-torch-cpu'" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/8b/ae/f417a75c0259e85c1d2f83ca4e960289a5f814ed0cea74d18c353d3e989d/nvidia_cufft-12.0.0.61-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:2708c852ef8cd89d1d2068bdbece0aa188813a0c934db3779b9b1faa8442e5f5", size = 214053554, upload-time = "2025-09-04T08:31:38.196Z" },
     { url = "https://files.pythonhosted.org/packages/a8/2f/7b57e29836ea8714f81e9898409196f47d772d5ddedddf1592eadb8ab743/nvidia_cufft-12.0.0.61-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:6c44f692dce8fd5ffd3e3df134b6cdb9c2f72d99cf40b62c32dde45eea9ddad3", size = 214085489, upload-time = "2025-09-04T08:31:56.044Z" },
+    { url = "https://files.pythonhosted.org/packages/85/b2/f8af21a2ed1beed337a6a02c5a28aeb85441f4d578ec3d529543c775ea4b/nvidia_cufft-12.0.0.61-py3-none-win_amd64.whl", hash = "sha256:2abce5b39d2f5ae12730fb7e5db6696533e36c26e2d3e8fd1750bdd2853364eb", size = 213342123, upload-time = "2025-09-04T08:40:51.145Z" },
 ]
 
 [[package]]
@@ -1876,6 +1907,7 @@ source = { registry = "https://pypi.org/simple" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/1e/72/7c2ae24fb6b63a32e6ae5d241cc65263ea18d08802aaae087d9f013335a2/nvidia_curand-10.4.0.35-py3-none-manylinux_2_27_aarch64.whl", hash = "sha256:133df5a7509c3e292aaa2b477afd0194f06ce4ea24d714d616ff36439cee349a", size = 61962106, upload-time = "2025-08-04T10:21:41.128Z" },
     { url = "https://files.pythonhosted.org/packages/a5/9f/be0a41ca4a4917abf5cb9ae0daff1a6060cc5de950aec0396de9f3b52bc5/nvidia_curand-10.4.0.35-py3-none-manylinux_2_27_x86_64.whl", hash = "sha256:1aee33a5da6e1db083fe2b90082def8915f30f3248d5896bcec36a579d941bfc", size = 59544258, upload-time = "2025-08-04T10:22:03.992Z" },
+    { url = "https://files.pythonhosted.org/packages/99/27/72103153b1ffc00e09fdc40ac970235343dcd1ea8bd762e84d2d73219ffa/nvidia_curand-10.4.0.35-py3-none-win_amd64.whl", hash = "sha256:65b1710aa6961d326b411e314b374290904c5ddf41dc3f766ebc3f1d7d4ca69f", size = 55242481, upload-time = "2025-08-04T10:30:41.831Z" },
 ]
 
 [[package]]
@@ -1883,13 +1915,14 @@ name = "nvidia-cusolver"
 version = "12.0.4.66"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-cublas" },
-    { name = "nvidia-cusparse" },
-    { name = "nvidia-nvjitlink" },
+    { name = "nvidia-cublas", marker = "platform_machine != 'x86_64' or sys_platform != 'linux' or extra == 'extra-10-pepdistill-torch' or extra != 'extra-10-pepdistill-torch-cpu'" },
+    { name = "nvidia-cusparse", marker = "platform_machine != 'x86_64' or sys_platform != 'linux' or extra == 'extra-10-pepdistill-torch' or extra != 'extra-10-pepdistill-torch-cpu'" },
+    { name = "nvidia-nvjitlink", marker = "platform_machine != 'x86_64' or sys_platform != 'linux' or extra == 'extra-10-pepdistill-torch' or extra != 'extra-10-pepdistill-torch-cpu'" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/c8/c3/b30c9e935fc01e3da443ec0116ed1b2a009bb867f5324d3f2d7e533e776b/nvidia_cusolver-12.0.4.66-py3-none-manylinux_2_27_aarch64.whl", hash = "sha256:02c2457eaa9e39de20f880f4bd8820e6a1cfb9f9a34f820eb12a155aa5bc92d2", size = 223467760, upload-time = "2025-09-04T08:33:04.222Z" },
     { url = "https://files.pythonhosted.org/packages/5f/67/cba3777620cdacb99102da4042883709c41c709f4b6323c10781a9c3aa34/nvidia_cusolver-12.0.4.66-py3-none-manylinux_2_27_x86_64.whl", hash = "sha256:0a759da5dea5c0ea10fd307de75cdeb59e7ea4fcb8add0924859b944babf1112", size = 200941980, upload-time = "2025-09-04T08:33:22.767Z" },
+    { url = "https://files.pythonhosted.org/packages/99/ef/332a0101260ca78a1daef046bf0b06199e8ed4dac1d2aa698289c358169c/nvidia_cusolver-12.0.4.66-py3-none-win_amd64.whl", hash = "sha256:16515bd33a8e76bb54d024cfa068fa68d30e80fc34b9e1090813ea9362e0cb65", size = 193551444, upload-time = "2025-09-04T08:41:46.813Z" },
 ]
 
 [[package]]
@@ -1897,11 +1930,12 @@ name = "nvidia-cusparse"
 version = "12.6.3.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-nvjitlink" },
+    { name = "nvidia-nvjitlink", marker = "platform_machine != 'x86_64' or sys_platform != 'linux' or extra == 'extra-10-pepdistill-torch' or extra != 'extra-10-pepdistill-torch-cpu'" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/f8/94/5c26f33738ae35276672f12615a64bd008ed5be6d1ebcb23579285d960a9/nvidia_cusparse-12.6.3.3-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:80bcc4662f23f1054ee334a15c72b8940402975e0eab63178fc7e670aa59472c", size = 162155568, upload-time = "2025-09-04T08:33:42.864Z" },
     { url = "https://files.pythonhosted.org/packages/fa/18/623c77619c31d62efd55302939756966f3ecc8d724a14dab2b75f1508850/nvidia_cusparse-12.6.3.3-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:2b3c89c88d01ee0e477cb7f82ef60a11a4bcd57b6b87c33f789350b59759360b", size = 145942937, upload-time = "2025-09-04T08:33:58.029Z" },
+    { url = "https://files.pythonhosted.org/packages/02/b0/b043d6f3480f102f885cf87fc3ffd3edcb5e23b855025a50e2ef4d059185/nvidia_cusparse-12.6.3.3-py3-none-win_amd64.whl", hash = "sha256:cbcf42feb737bd7ec15b4c0a63e62351886bd3f975027b8815d7f720a2b5ea79", size = 143783033, upload-time = "2025-09-04T08:42:12.391Z" },
 ]
 
 [[package]]
@@ -1911,6 +1945,7 @@ source = { registry = "https://pypi.org/simple" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/46/e1/cdc1797eadf82d3a9a575a19b33fdc871a97edbec42c00b5b5e914f4aff4/nvidia_cusparselt_cu13-0.8.1-py3-none-manylinux2014_aarch64.whl", hash = "sha256:4dca476c50bf4780d46cd0bfbd82e2bc10a08e4fef7950917ce8d7578d22a23f", size = 221051344, upload-time = "2025-09-05T18:49:51.289Z" },
     { url = "https://files.pythonhosted.org/packages/34/7d/2661f2fb3ac4302f3a246f5fc030213ac60c1fe0bce84f9783dbd831dbb7/nvidia_cusparselt_cu13-0.8.1-py3-none-manylinux2014_x86_64.whl", hash = "sha256:786ce87568c303fadb5afcc7102d454cd3040d75f6f8626f5db460d1871f4dd0", size = 170148586, upload-time = "2025-09-05T18:50:50.248Z" },
+    { url = "https://files.pythonhosted.org/packages/31/83/f3647ce26916c94a6ca4ff1810623e2c405cff2dea6e78d29516b2514df9/nvidia_cusparselt_cu13-0.8.1-py3-none-win_amd64.whl", hash = "sha256:dccbd362f91a7b9024d1f55ee9f548ac065027ff15d8c8b0db889ab3a8f31215", size = 156885108, upload-time = "2025-09-05T18:51:35.958Z" },
 ]
 
 [[package]]
@@ -1929,6 +1964,7 @@ source = { registry = "https://pypi.org/simple" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/f0/ee/580ca6f29dcab0221db8706badca1bbbb084f1975c4d4e83329c3a7e31f0/nvidia_nvjitlink-13.3.33-py3-none-manylinux2010_x86_64.manylinux_2_12_x86_64.whl", hash = "sha256:26a6de7fb4c8fdaa7703d3dad720d6d427ddfea5c48a528fd97c11733ad830e5", size = 40742423, upload-time = "2026-05-26T16:54:51.613Z" },
     { url = "https://files.pythonhosted.org/packages/69/30/45414e35ff2eee7db3da037e5707037ccf9d2b5218ffbdb055ea4d5aa98a/nvidia_nvjitlink-13.3.33-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:ce48b37dfeb3cb1eae4cf85adacb47d7a6539ea2272870c9a3628ce275c2037e", size = 39168635, upload-time = "2026-05-26T16:54:13.906Z" },
+    { url = "https://files.pythonhosted.org/packages/67/f2/ec9c05a108095828dfc58840978c627b3c313fdf2a567c6de9ffbbb46901/nvidia_nvjitlink-13.3.33-py3-none-win_amd64.whl", hash = "sha256:4297ee49639b4f2e07255a1d69b3acc7ab2d011bb892b403e91ac98368962e3b", size = 37766359, upload-time = "2026-05-26T17:11:28.96Z" },
 ]
 
 [[package]]
@@ -1947,6 +1983,7 @@ source = { registry = "https://pypi.org/simple" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/c2/f3/d86c845465a2723ad7e1e5c36dcd75ddb82898b3f53be47ebd429fb2fa5d/nvidia_nvtx-13.0.85-py3-none-manylinux1_x86_64.manylinux_2_5_x86_64.whl", hash = "sha256:4936d1d6780fbe68db454f5e72a42ff64d1fd6397df9f363ae786930fd5c1cd4", size = 148047, upload-time = "2025-09-04T08:29:01.761Z" },
     { url = "https://files.pythonhosted.org/packages/a8/64/3708a90d1ebe202ffdeb7185f878a3c84d15c2b2c31858da2ce0583e2def/nvidia_nvtx-13.0.85-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:cb7780edb6b14107373c835bf8b72e7a178bac7367e23da7acb108f973f157a6", size = 148878, upload-time = "2025-09-04T08:28:53.627Z" },
+    { url = "https://files.pythonhosted.org/packages/d2/50/0e2220f8620a177de994211186ffc5bfa9f2ce1e1282797f8f90096f9f88/nvidia_nvtx-13.0.85-py3-none-win_amd64.whl", hash = "sha256:d66ea44254dd3c6eacc300047af6e1288d2269dd072b417e0adffbf479e18519", size = 137066, upload-time = "2025-09-04T08:39:25.649Z" },
 ]
 
 [[package]]
@@ -2036,7 +2073,12 @@ teacher = [
 ]
 torch = [
     { name = "lightning" },
-    { name = "torch" },
+    { name = "torch", version = "2.13.0", source = { registry = "https://pypi.org/simple" } },
+]
+torch-cpu = [
+    { name = "lightning" },
+    { name = "torch", version = "2.13.0", source = { registry = "https://pypi.org/simple" }, marker = "(platform_machine != 'x86_64' and extra == 'extra-10-pepdistill-torch-cpu') or (sys_platform != 'linux' and extra == 'extra-10-pepdistill-torch-cpu') or (extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu')" },
+    { name = "torch", version = "2.13.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'extra-10-pepdistill-torch-cpu') or (platform_machine != 'x86_64' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu') or (sys_platform != 'linux' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu')" },
 ]
 tracking = [
     { name = "matplotlib" },
@@ -2045,6 +2087,7 @@ tracking = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "ast-grep-cli" },
     { name = "pre-commit" },
     { name = "pytest" },
     { name = "ruff" },
@@ -2054,6 +2097,7 @@ dev = [
 requires-dist = [
     { name = "fsspec", specifier = ">=2024.0" },
     { name = "lightning", marker = "extra == 'torch'", specifier = ">=2.6.5" },
+    { name = "lightning", marker = "extra == 'torch-cpu'", specifier = ">=2.6.5" },
     { name = "matplotlib", marker = "extra == 'tracking'", specifier = ">=3.8" },
     { name = "numpy", specifier = ">=1.26" },
     { name = "pandas", specifier = ">=2.0" },
@@ -2063,14 +2107,17 @@ requires-dist = [
     { name = "pyarrow", specifier = ">=15.0" },
     { name = "s3fs", marker = "extra == 'etl'", specifier = ">=2024.0" },
     { name = "safetensors", specifier = ">=0.8.0" },
+    { name = "torch", marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'torch-cpu'", specifier = ">=2.2", index = "https://download.pytorch.org/whl/cpu", conflict = { package = "pepdistill", extra = "torch-cpu" } },
+    { name = "torch", marker = "(platform_machine != 'x86_64' and extra == 'torch-cpu') or (sys_platform != 'linux' and extra == 'torch-cpu')", specifier = ">=2.2" },
     { name = "torch", marker = "extra == 'torch'", specifier = ">=2.2" },
     { name = "typer", specifier = ">=0.12" },
     { name = "wandb", marker = "extra == 'tracking'", specifier = ">=0.18" },
 ]
-provides-extras = ["torch", "teacher", "etl", "tracking"]
+provides-extras = ["torch", "torch-cpu", "teacher", "etl", "tracking"]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "ast-grep-cli", specifier = ">=0.45.0" },
     { name = "pre-commit", specifier = ">=4.0" },
     { name = "pytest", specifier = ">=8.0" },
     { name = "ruff", specifier = ">=0.6" },
@@ -2095,10 +2142,11 @@ dependencies = [
     { name = "pandas" },
     { name = "psutil" },
     { name = "pyteomics" },
-    { name = "pythonnet", marker = "sys_platform == 'win32'" },
-    { name = "pywin32", marker = "sys_platform == 'win32'" },
+    { name = "pythonnet", marker = "sys_platform == 'win32' or (extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu')" },
+    { name = "pywin32", marker = "sys_platform == 'win32' or (extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu')" },
     { name = "scikit-learn" },
-    { name = "torch" },
+    { name = "torch", version = "2.13.0", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine != 'x86_64' or sys_platform != 'linux' or extra == 'extra-10-pepdistill-torch' or extra != 'extra-10-pepdistill-torch-cpu'" },
+    { name = "torch", version = "2.13.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'extra-10-pepdistill-torch-cpu') or (platform_machine != 'x86_64' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu') or (sys_platform != 'linux' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu')" },
     { name = "tqdm" },
     { name = "transformers" },
 ]
@@ -2644,7 +2692,7 @@ name = "pytest"
 version = "9.1.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "colorama", marker = "sys_platform == 'win32'" },
+    { name = "colorama", marker = "sys_platform == 'win32' or (extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu')" },
     { name = "iniconfig" },
     { name = "packaging" },
     { name = "pluggy" },
@@ -2697,11 +2745,12 @@ name = "pytorch-lightning"
 version = "2.6.5"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "fsspec", extra = ["http"] },
+    { name = "fsspec", extra = ["http"], marker = "extra == 'extra-10-pepdistill-torch' or extra == 'extra-10-pepdistill-torch-cpu'" },
     { name = "lightning-utilities" },
     { name = "packaging" },
     { name = "pyyaml" },
-    { name = "torch" },
+    { name = "torch", version = "2.13.0", source = { registry = "https://pypi.org/simple" }, marker = "(platform_machine != 'x86_64' and extra == 'extra-10-pepdistill-torch-cpu') or (sys_platform != 'linux' and extra == 'extra-10-pepdistill-torch-cpu') or extra == 'extra-10-pepdistill-torch'" },
+    { name = "torch", version = "2.13.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'extra-10-pepdistill-torch-cpu') or (platform_machine != 'x86_64' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu') or (sys_platform != 'linux' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu')" },
     { name = "torchmetrics" },
     { name = "tqdm" },
     { name = "typing-extensions" },
@@ -2802,8 +2851,8 @@ name = "pyzstd"
 version = "0.19.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "backports-zstd", marker = "python_full_version < '3.14'" },
-    { name = "typing-extensions", marker = "python_full_version < '3.13'" },
+    { name = "backports-zstd", marker = "python_full_version < '3.14' or (extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu')" },
+    { name = "typing-extensions", marker = "python_full_version < '3.13' or (extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/4c/66/59fed71d0d2065e02974b40296f836a237c364c8bbe07295f2d0dc33c278/pyzstd-0.19.1.tar.gz", hash = "sha256:36723d3c915b3981de9198d0a2c82b2f5fe3eaa36e4d8d586937830a8afc7d72", size = 69531, upload-time = "2025-12-13T08:15:33.455Z" }
 wheels = [
@@ -3239,21 +3288,29 @@ wheels = [
 name = "torch"
 version = "2.13.0"
 source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "(python_full_version >= '3.12' and platform_machine != 'x86_64' and extra != 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu') or (python_full_version >= '3.12' and sys_platform != 'linux' and extra != 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu')",
+    "python_full_version >= '3.12' and extra == 'extra-10-pepdistill-torch' and extra != 'extra-10-pepdistill-torch-cpu'",
+    "python_full_version >= '3.12' and extra != 'extra-10-pepdistill-torch' and extra != 'extra-10-pepdistill-torch-cpu'",
+    "(python_full_version < '3.12' and platform_machine != 'x86_64' and extra != 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu') or (python_full_version < '3.12' and sys_platform != 'linux' and extra != 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu')",
+    "python_full_version < '3.12' and extra == 'extra-10-pepdistill-torch' and extra != 'extra-10-pepdistill-torch-cpu'",
+    "python_full_version < '3.12' and extra != 'extra-10-pepdistill-torch' and extra != 'extra-10-pepdistill-torch-cpu'",
+]
 dependencies = [
-    { name = "cuda-bindings", marker = "python_full_version < '3.15' and sys_platform == 'linux'" },
-    { name = "cuda-toolkit", extra = ["cublas", "cudart", "cufft", "cufile", "cupti", "curand", "cusolver", "cusparse", "nvjitlink", "nvrtc", "nvtx"], marker = "sys_platform == 'linux'" },
-    { name = "filelock" },
-    { name = "fsspec" },
-    { name = "jinja2" },
-    { name = "networkx" },
-    { name = "nvidia-cudnn-cu13", marker = "sys_platform == 'linux'" },
-    { name = "nvidia-cusparselt-cu13", marker = "sys_platform == 'linux'" },
-    { name = "nvidia-nccl-cu13", marker = "sys_platform == 'linux'" },
-    { name = "nvidia-nvshmem-cu13", marker = "sys_platform == 'linux'" },
-    { name = "setuptools" },
-    { name = "sympy" },
-    { name = "triton", marker = "python_full_version < '3.15' and sys_platform == 'linux'" },
-    { name = "typing-extensions" },
+    { name = "cuda-bindings", marker = "(python_full_version < '3.15' and platform_machine != 'x86_64' and sys_platform == 'linux') or (python_full_version < '3.15' and sys_platform == 'linux' and extra == 'extra-10-pepdistill-torch') or (python_full_version < '3.15' and sys_platform == 'linux' and extra != 'extra-10-pepdistill-torch-cpu') or (python_full_version >= '3.15' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu') or (sys_platform != 'linux' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu')" },
+    { name = "cuda-toolkit", extra = ["cublas", "cudart", "cufft", "cufile", "cupti", "curand", "cusolver", "cusparse", "nvjitlink", "nvrtc", "nvtx"], marker = "(platform_machine != 'x86_64' and sys_platform == 'linux') or (sys_platform == 'linux' and extra == 'extra-10-pepdistill-torch') or (sys_platform == 'linux' and extra != 'extra-10-pepdistill-torch-cpu') or (sys_platform != 'linux' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu')" },
+    { name = "filelock", marker = "platform_machine != 'x86_64' or sys_platform != 'linux' or extra == 'extra-10-pepdistill-torch' or extra != 'extra-10-pepdistill-torch-cpu'" },
+    { name = "fsspec", marker = "platform_machine != 'x86_64' or sys_platform != 'linux' or extra == 'extra-10-pepdistill-torch' or extra != 'extra-10-pepdistill-torch-cpu'" },
+    { name = "jinja2", marker = "platform_machine != 'x86_64' or sys_platform != 'linux' or extra == 'extra-10-pepdistill-torch' or extra != 'extra-10-pepdistill-torch-cpu'" },
+    { name = "networkx", marker = "platform_machine != 'x86_64' or sys_platform != 'linux' or extra == 'extra-10-pepdistill-torch' or extra != 'extra-10-pepdistill-torch-cpu'" },
+    { name = "nvidia-cudnn-cu13", marker = "(platform_machine != 'x86_64' and sys_platform == 'linux') or (sys_platform == 'linux' and extra == 'extra-10-pepdistill-torch') or (sys_platform == 'linux' and extra != 'extra-10-pepdistill-torch-cpu') or (sys_platform != 'linux' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu')" },
+    { name = "nvidia-cusparselt-cu13", marker = "(platform_machine != 'x86_64' and sys_platform == 'linux') or (sys_platform == 'linux' and extra == 'extra-10-pepdistill-torch') or (sys_platform == 'linux' and extra != 'extra-10-pepdistill-torch-cpu') or (sys_platform != 'linux' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu')" },
+    { name = "nvidia-nccl-cu13", marker = "(platform_machine != 'x86_64' and sys_platform == 'linux') or (sys_platform == 'linux' and extra == 'extra-10-pepdistill-torch') or (sys_platform == 'linux' and extra != 'extra-10-pepdistill-torch-cpu') or (sys_platform != 'linux' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu')" },
+    { name = "nvidia-nvshmem-cu13", marker = "(platform_machine != 'x86_64' and sys_platform == 'linux') or (sys_platform == 'linux' and extra == 'extra-10-pepdistill-torch') or (sys_platform == 'linux' and extra != 'extra-10-pepdistill-torch-cpu') or (sys_platform != 'linux' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu')" },
+    { name = "setuptools", marker = "platform_machine != 'x86_64' or sys_platform != 'linux' or extra == 'extra-10-pepdistill-torch' or extra != 'extra-10-pepdistill-torch-cpu'" },
+    { name = "sympy", marker = "platform_machine != 'x86_64' or sys_platform != 'linux' or extra == 'extra-10-pepdistill-torch' or extra != 'extra-10-pepdistill-torch-cpu'" },
+    { name = "triton", marker = "(python_full_version < '3.15' and platform_machine != 'x86_64' and sys_platform == 'linux') or (python_full_version < '3.15' and sys_platform == 'linux' and extra == 'extra-10-pepdistill-torch') or (python_full_version < '3.15' and sys_platform == 'linux' and extra != 'extra-10-pepdistill-torch-cpu') or (python_full_version >= '3.15' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu') or (sys_platform != 'linux' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu')" },
+    { name = "typing-extensions", marker = "platform_machine != 'x86_64' or sys_platform != 'linux' or extra == 'extra-10-pepdistill-torch' or extra != 'extra-10-pepdistill-torch-cpu'" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/5b/fe/cba54dc58523434919b66f13a667e36e436deddd77ca519e96553617d4ec/torch-2.13.0-cp311-cp311-macosx_14_0_arm64.whl", hash = "sha256:e76f9bcecc52b8ff711239a2f7547d5353df95878ab232f0773c1d95928b92f8", size = 111187938, upload-time = "2026-07-08T16:05:17.065Z" },
@@ -3279,6 +3336,53 @@ wheels = [
 ]
 
 [[package]]
+name = "torch"
+version = "2.13.0+cpu"
+source = { registry = "https://download.pytorch.org/whl/cpu" }
+resolution-markers = [
+    "python_full_version >= '3.12' and platform_machine == 'x86_64' and sys_platform == 'linux'",
+    "python_full_version < '3.12' and platform_machine == 'x86_64' and sys_platform == 'linux'",
+]
+dependencies = [
+    { name = "filelock", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'extra-10-pepdistill-torch-cpu') or (platform_machine != 'x86_64' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu') or (sys_platform != 'linux' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu')" },
+    { name = "fsspec", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'extra-10-pepdistill-torch-cpu') or (platform_machine != 'x86_64' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu') or (sys_platform != 'linux' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu')" },
+    { name = "jinja2", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'extra-10-pepdistill-torch-cpu') or (platform_machine != 'x86_64' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu') or (sys_platform != 'linux' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu')" },
+    { name = "networkx", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'extra-10-pepdistill-torch-cpu') or (platform_machine != 'x86_64' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu') or (sys_platform != 'linux' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu')" },
+    { name = "setuptools", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'extra-10-pepdistill-torch-cpu') or (platform_machine != 'x86_64' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu') or (sys_platform != 'linux' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu')" },
+    { name = "sympy", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'extra-10-pepdistill-torch-cpu') or (platform_machine != 'x86_64' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu') or (sys_platform != 'linux' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu')" },
+    { name = "typing-extensions", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'extra-10-pepdistill-torch-cpu') or (platform_machine != 'x86_64' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu') or (sys_platform != 'linux' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu')" },
+]
+wheels = [
+    { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.13.0%2Bcpu-cp311-cp311-linux_s390x.whl", hash = "sha256:6e9817dbdf5ea76789babd46e457eac5bf14ff566cf85f8addbfdff2d56601ce", upload-time = "2026-07-08T19:27:52Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.13.0%2Bcpu-cp311-cp311-manylinux_2_28_aarch64.whl", hash = "sha256:84453b69508ec79902f899c5ed9495acb9e2bbe9fda5f1d5d6f19e3c3842e1a7", upload-time = "2026-07-08T19:28:03Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.13.0%2Bcpu-cp311-cp311-manylinux_2_28_x86_64.whl", hash = "sha256:6746dbcbeb526eb61330b76b41ff1b4eb848951103a892eeb080dfa2b264667b", upload-time = "2026-07-08T19:28:16Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.13.0%2Bcpu-cp311-cp311-win_amd64.whl", hash = "sha256:10717d8b3b67c45a4788bf7ffc0bab1ea1e5ebbedd24466be6100102d141fac1", upload-time = "2026-07-08T19:28:27Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.13.0%2Bcpu-cp311-cp311-win_arm64.whl", hash = "sha256:2b3d093abd919ad934c43d47e73ba63ceba7cbd7269fc2e9c1e4fc29e8fe45fa", upload-time = "2026-07-08T19:28:33Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.13.0%2Bcpu-cp312-cp312-linux_s390x.whl", hash = "sha256:ffadde149901c8afa138daa38d898264003cfcf1a3336ca5cd964b5af227d867", upload-time = "2026-07-08T19:28:41Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.13.0%2Bcpu-cp312-cp312-manylinux_2_28_aarch64.whl", hash = "sha256:6f307c2c32d764ffc6ff6893b801fad6d4752f3e67966cb8abf1843427c02604", upload-time = "2026-07-08T19:28:51Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.13.0%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:4ca4a9394b0c771238a4f73590fdbbc4debad85ed0fa63d026ae1b085da7d6e2", upload-time = "2026-07-08T19:29:03Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.13.0%2Bcpu-cp312-cp312-win_amd64.whl", hash = "sha256:a8b450c1e58e5800e5b4691dac412f8d2d65a1dc3298166f91596603a3531e6f", upload-time = "2026-07-08T19:29:15Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.13.0%2Bcpu-cp312-cp312-win_arm64.whl", hash = "sha256:fa0762705b933624d59f6823db9ce7ec2e35b3e1e9c319c9db51fbeecfc3e319", upload-time = "2026-07-08T19:29:21Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.13.0%2Bcpu-cp313-cp313-linux_s390x.whl", hash = "sha256:966d020354f465672dc7dd10d3a5c6cd17d7eb48620aa1d265b48a1f78f06898", upload-time = "2026-07-08T19:29:30Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.13.0%2Bcpu-cp313-cp313-manylinux_2_28_aarch64.whl", hash = "sha256:0b8f7d0423027ae8b90c7977c627f3379f325363a08224dffad9b4b2d684a83d", upload-time = "2026-07-08T19:29:40Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.13.0%2Bcpu-cp313-cp313-manylinux_2_28_x86_64.whl", hash = "sha256:3fbf9c9d1f3c10c2d59d04aca426dee9ccc6ceb32d255c61e93acc3b4f75fae6", upload-time = "2026-07-08T19:29:54Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.13.0%2Bcpu-cp313-cp313-win_amd64.whl", hash = "sha256:a17ff48608634db245e17e8bb00a9558554a49aeb1e4f5fe6cd039af2a10515b", upload-time = "2026-07-08T19:30:05Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.13.0%2Bcpu-cp313-cp313-win_arm64.whl", hash = "sha256:ac7aaf322be4777765a53bed7264a214dd81b3a1d276b93150515a3c5f75e4b0", upload-time = "2026-07-08T19:30:12Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.13.0%2Bcpu-cp314-cp314-linux_s390x.whl", hash = "sha256:dec241fef3984c0d1edadd1f58708e218d4eae881ceef7bc10cf9964d41b68b9", upload-time = "2026-07-08T19:30:20Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.13.0%2Bcpu-cp314-cp314-manylinux_2_28_aarch64.whl", hash = "sha256:ca021f9eb2f8345c83fa03e3a04587308afb8df71bd472670b3ece00df58621c", upload-time = "2026-07-08T19:30:32Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.13.0%2Bcpu-cp314-cp314-manylinux_2_28_x86_64.whl", hash = "sha256:d20fa53ee744502fa4c69818a720b05ca0d37abd055d4f6e66cae155114bc691", upload-time = "2026-07-08T19:30:45Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.13.0%2Bcpu-cp314-cp314-win_amd64.whl", hash = "sha256:e2e5134decf00e218da62318f3dc5df156231d367871918e91eba95ab0ad43ab", upload-time = "2026-07-08T19:30:58Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.13.0%2Bcpu-cp314-cp314t-linux_s390x.whl", hash = "sha256:991cc14b39e751122c01f017be6448533989868731cb5eecd1006893d26787c2", upload-time = "2026-07-08T19:31:09Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.13.0%2Bcpu-cp314-cp314t-manylinux_2_28_aarch64.whl", hash = "sha256:7b8d26e29bceafbdaa8d63bfe7612f23875b5af2cc07e13f809c3ed890bbe1d8", upload-time = "2026-07-08T19:31:21Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.13.0%2Bcpu-cp314-cp314t-manylinux_2_28_x86_64.whl", hash = "sha256:b222c15a0fc2ce207d1c1a59700b46c8fa6748df1f447ad11e5c870dde0933d9", upload-time = "2026-07-08T19:31:35Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.13.0%2Bcpu-cp314-cp314t-win_amd64.whl", hash = "sha256:a43376bd094124ef626bfdd3d4c2c62eacb0b5ddc99776f4a32d4fd16f1f3420", upload-time = "2026-07-08T19:31:48Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.13.0%2Bcpu-cp315-cp315-manylinux_2_28_aarch64.whl", hash = "sha256:8eb5002ca81af00ae69b57540f615b58b8ae922b6d4848176b366a52bd2196e6", upload-time = "2026-07-08T19:32:00Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.13.0%2Bcpu-cp315-cp315-manylinux_2_28_x86_64.whl", hash = "sha256:1a3a35229fdc13446b4eab50e7fcf9399ff941e89a3b761497786297a5d8dde5", upload-time = "2026-07-08T19:32:16Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.13.0%2Bcpu-cp315-cp315t-manylinux_2_28_aarch64.whl", hash = "sha256:8e109528e6bab044815daebaf71770fbaace3a66ef1c816cb55c875350f78a60", upload-time = "2026-07-08T19:32:30Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.13.0%2Bcpu-cp315-cp315t-manylinux_2_28_x86_64.whl", hash = "sha256:222a6681467cc7f6f05cd3068dfbc603def3a1e46d1d4620c1c8cdf6178bd563", upload-time = "2026-07-08T19:32:44Z" },
+]
+
+[[package]]
 name = "torchmetrics"
 version = "1.9.0"
 source = { registry = "https://pypi.org/simple" }
@@ -3286,7 +3390,8 @@ dependencies = [
     { name = "lightning-utilities" },
     { name = "numpy" },
     { name = "packaging" },
-    { name = "torch" },
+    { name = "torch", version = "2.13.0", source = { registry = "https://pypi.org/simple" }, marker = "(platform_machine != 'x86_64' and extra == 'extra-10-pepdistill-torch-cpu') or (sys_platform != 'linux' and extra == 'extra-10-pepdistill-torch-cpu') or extra == 'extra-10-pepdistill-torch'" },
+    { name = "torch", version = "2.13.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'extra-10-pepdistill-torch-cpu') or (platform_machine != 'x86_64' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu') or (sys_platform != 'linux' and extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/81/34/39b8b749333db56c0585d7a11fa62a283c087bb1dfc897d69fb8cedbefb1/torchmetrics-1.9.0.tar.gz", hash = "sha256:a488609948600df52d3db4fcdab02e62aab2a85ef34da67037dc3e65b8512faa", size = 581765, upload-time = "2026-03-09T17:41:22.443Z" }
 wheels = [
@@ -3298,7 +3403,7 @@ name = "tqdm"
 version = "4.69.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "colorama", marker = "sys_platform == 'win32'" },
+    { name = "colorama", marker = "sys_platform == 'win32' or (extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/8c/69/40407dfc835517f058b603dbf37a6df094d8582b015a51eddc988febbcb7/tqdm-4.69.0.tar.gz", hash = "sha256:700c5e85dcd5f009dd6222588a29180a193a748247a5d855b4d67db93d79a53b", size = 792569, upload-time = "2026-07-17T18:09:06.2Z" }
 wheels = [
@@ -3348,7 +3453,7 @@ version = "0.27.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "annotated-doc" },
-    { name = "colorama", marker = "sys_platform == 'win32'" },
+    { name = "colorama", marker = "sys_platform == 'win32' or (extra == 'extra-10-pepdistill-torch' and extra == 'extra-10-pepdistill-torch-cpu')" },
     { name = "rich" },
     { name = "shellingham" },
 ]

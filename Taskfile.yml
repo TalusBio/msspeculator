@@ -20,7 +20,7 @@ tasks:
     cmds:
       - uv run python -m ruff check .
       # Structural rules ruff cannot express; see .ast-grep/rules/.
-      - ast-grep scan
+      - uv run --no-sync ast-grep scan
       - PYO3_PYTHON="{{.VENV_PYTHON}}" cargo clippy --manifest-path rust/Cargo.toml --workspace --all-targets -- -D warnings
 
   check:
@@ -34,7 +34,7 @@ tasks:
     cmds:
       # Extras are named explicitly: the dev group deliberately does not reference them, so that a
       # preparation worker asking for `--extra etl` does not inherit torch through it.
-      - uv sync --extra torch --extra teacher --extra etl --extra tracking --reinstall-package pepdistill-rs
+      - uv sync --locked --extra torch-cpu --extra teacher --extra etl --extra tracking --reinstall-package pepdistill-rs
 
   test:
     desc: Run the Python and Rust test suites

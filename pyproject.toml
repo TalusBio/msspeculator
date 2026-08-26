@@ -3,6 +3,8 @@ name = "pepdistill"
 version = "0.1.0"
 description = "Fast spectral-library generation by distilling AlphaPeptDeep into small, hardware-friendly student models."
 readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 authors = [
     { name = "J. Sebastian Paez", email = "spaez@talus.bio" }
 ]
@@ -24,6 +26,12 @@ dependencies = [
 # 40 children of one array job died on it timing out. Note that keeping torch off the *import*
 # path does not help here; uv installs the declared dependency set, not the imported one.
 torch = [
+    "lightning>=2.6.5",
+    "torch>=2.2",
+]
+# Same training surface, resolved from PyTorch's CPU wheel index for CI and CPU-only hosts.
+# Keep this separate from `torch`: production Linux training intentionally uses PyPI's CUDA build.
+torch-cpu = [
     "lightning>=2.6.5",
     "torch>=2.2",
 ]
@@ -55,6 +63,7 @@ pepdistill = "pepdistill.cli:app"
 #
 # The cost is that a development environment has to name its extras; `task sync-rust` does.
 dev = [
+    "ast-grep-cli>=0.45.0",
     "pre-commit>=4.0",
     "pytest>=8.0",
     "ruff>=0.6",
@@ -62,6 +71,22 @@ dev = [
 
 [tool.uv.sources]
 pepdistill-rs = { path = "rust", editable = true }
+torch = [
+    { index = "pytorch-cpu", extra = "torch-cpu", marker = "sys_platform == 'linux' and platform_machine == 'x86_64'" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv]
+conflicts = [
+    [
+        { extra = "torch" },
+        { extra = "torch-cpu" },
+    ],
+]
 
 [build-system]
 requires = ["uv_build>=0.11.28,<0.12.0"]

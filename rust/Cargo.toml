@@ -2,11 +2,15 @@
 members = ["core", "cli"]
 resolver = "2"
 
+[workspace.package]
+license = "Apache-2.0"
+
 [package]
 name = "pepdistill_rs"
 version = "0.1.0"
 edition = "2021"
 description = "Rust chemistry + tokenizer/batcher binding over pepdistill-core, exposed to Python as pepdistill_rs."
+license.workspace = true
 
 [lib]
 name = "pepdistill_rs"

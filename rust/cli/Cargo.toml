@@ -3,6 +3,7 @@ name = "pepdistill-cli"
 version = "0.1.0"
 edition = "2021"
 description = "pepdistill Rust inference: FASTA libraries and single-peptide prediction."
+license.workspace = true
 
 [[bin]]
 name = "pepdistill-cli"
