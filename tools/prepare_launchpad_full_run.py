@@ -96,7 +96,7 @@ seed = 0
 
 [tracking]
 enabled = true
-project = "pepdistill"
+project = "msspeculator"
 name = "{run_name}"
 group = "{run_group}"
 tags = ["full-nontest", "aug1pct-peptides", "{model_preset}", "{run_name}", "{run_group}"]

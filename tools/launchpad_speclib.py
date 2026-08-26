@@ -1,6 +1,6 @@
 """Launchpad entrypoint for spectral-library generation.
 
-Drives a **staged** `pepdistill-cli` binary; it does not build one. The launchpad container
+Drives a **staged** `msspeculator-cli` binary; it does not build one. The launchpad container
 pre-installs nothing; no Rust toolchain, no `aws`, no `curl`; so the binary is cross-compiled
 once locally (`cross build --release --target x86_64-unknown-linux-musl`) and staged alongside the
 FASTA. musl means a static binary that does not care what the image's glibc is, and the binary
@@ -60,7 +60,7 @@ def s3_upload(path: Path, uri: str) -> None:
 def staged(source: str, target: Path) -> Path:
     """Resolve `source` to a local file: a staged path, or an S3 object to download.
 
-    Absolute on return: `Path("./pepdistill-cli")` stringifies to a bare name, and subprocess
+    Absolute on return: `Path("./msspeculator-cli")` stringifies to a bare name, and subprocess
     resolves a name with no directory component through PATH rather than the working directory.
     """
     if not source.startswith("s3://"):
@@ -83,7 +83,7 @@ def staged(source: str, target: Path) -> Path:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     env = os.environ.get
-    parser.add_argument("--binary", default=env("PEPDISTILL_SPECLIB_BINARY", "./pepdistill-cli"))
+    parser.add_argument("--binary", default=env("PEPDISTILL_SPECLIB_BINARY", "./msspeculator-cli"))
     # The binary carries its weights, so there is nothing to stage unless a different model is
     # wanted. A `builtin:` spec is passed through untouched; anything else is staged or downloaded.
     parser.add_argument("--model", default=env("PEPDISTILL_SPECLIB_MODEL", "builtin:small-v0"))
@@ -143,7 +143,7 @@ def main() -> None:
 
     work = Path("speclib-work")
     work.mkdir(exist_ok=True)
-    binary = staged(args.binary, work / "pepdistill-cli")
+    binary = staged(args.binary, work / "msspeculator-cli")
     binary.chmod(0o755)
     model = (
         args.model

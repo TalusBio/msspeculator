@@ -12,7 +12,7 @@ choice changes the resulting assets.
 # [tool.launchpad]
 # vcpus = 8
 # memory = 30000
-# job_name = "pepdistill-etl"
+# job_name = "msspeculator-etl"
 # ///
 
 from __future__ import annotations
@@ -52,7 +52,7 @@ def main() -> None:
         ".",
         "--extra",
         "etl",
-        "pepdistill",
+        "msspeculator",
         "prepare",
         str(args.config),
     ]

@@ -1,6 +1,6 @@
 # Talus infrastructure runbook
 
-This page records how the public pepdistill workflow is deployed on Talus infrastructure. It is
+This page records how the public msspeculator workflow is deployed on Talus infrastructure. It is
 for maintainers with access to the relevant AWS account, object-store prefixes, Launchpad, and W&B
 project. Public users should follow the [local runbook](runbook-full-run.md).
 
@@ -107,10 +107,10 @@ the immutable binary, model, and exact FASTA bytes:
 
 ```bash
 cross build --release --target x86_64-unknown-linux-musl \
-  --manifest-path rust/Cargo.toml -p pepdistill-cli
+  --manifest-path rust/Cargo.toml -p msspeculator-cli
 mkdir -p speclib-stage
-cp rust/target/x86_64-unknown-linux-musl/release/pepdistill-cli speclib-stage/
-uv run pepdistill export-rust --model runs/full/best.ckpt \
+cp rust/target/x86_64-unknown-linux-musl/release/msspeculator-cli speclib-stage/
+uv run msspeculator export-rust --model runs/full/best.ckpt \
   -o speclib-stage/model.safetensors
 cp /path/to/pinned-proteome.fasta speclib-stage/proteome.fasta
 aws s3 sync speclib-stage "$SPECLIB_STAGE_URI"

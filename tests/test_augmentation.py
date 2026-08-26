@@ -3,10 +3,10 @@
 import pytest
 import torch
 
-from pepdistill.chem import RESIDUE_COMP, RESIDUE_MASS, Peptide
-from pepdistill.data.augmentation import substitute_residues
-from pepdistill.data.encode import AA_OFFSET, collate
-from pepdistill.data.precursors import Precursor
+from msspeculator.chem import RESIDUE_COMP, RESIDUE_MASS, Peptide
+from msspeculator.data.augmentation import substitute_residues
+from msspeculator.data.encode import AA_OFFSET, collate
+from msspeculator.data.precursors import Precursor
 
 
 def _batch(sequence: str, mods=()):

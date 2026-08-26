@@ -16,15 +16,15 @@ pytest.importorskip("polars")
 
 import polars as pl
 
-from pepdistill.data.prepared import PreparedChunk, PreparedManifest, PreparedStreamingDataset
-from pepdistill.data.prepared_schema import (
+from msspeculator.data.prepared import PreparedChunk, PreparedManifest, PreparedStreamingDataset
+from msspeculator.data.prepared_schema import (
     PREPARED_SPECTRA_SCHEMA,
     VALIDATION_WINNER_SCHEMA,
 )
-from pepdistill.distill.context_regime import MSContextEncoder
-from pepdistill.distill.dataset import BatchIterable
-from pepdistill.etl.config import PrepareConfig, PrepareCuration, PrepareGroup, PrepareSource
-from pepdistill.etl.prospect import (
+from msspeculator.distill.context_regime import MSContextEncoder
+from msspeculator.distill.dataset import BatchIterable
+from msspeculator.etl.config import PrepareConfig, PrepareCuration, PrepareGroup, PrepareSource
+from msspeculator.etl.prospect import (
     balanced_partition_range,
     catalog_status,
     discover_catalog,
@@ -290,7 +290,7 @@ def test_prepare_shard_skips_complete_manifest(tmp_path, monkeypatch):
     def unexpected_decode(*args, **kwargs):
         raise AssertionError("a complete matching manifest should skip shard decoding")
 
-    monkeypatch.setattr("pepdistill.etl.prospect._rows_for_shard", unexpected_decode)
+    monkeypatch.setattr("msspeculator.etl.prospect._rows_for_shard", unexpected_decode)
     second = prepare_range(config, log=logs.append)[0]
     assert second.pop("_skipped") is True
     assert second == first
@@ -408,7 +408,7 @@ def test_catalog_status_and_finalize_do_not_head_each_data_object(tmp_path, monk
     def unexpected_head(*args, **kwargs):
         raise AssertionError("catalog validation should use the prefix inventory")
 
-    monkeypatch.setattr("pepdistill.etl.prospect._uri_exists", unexpected_head)
+    monkeypatch.setattr("msspeculator.etl.prospect._uri_exists", unexpected_head)
     assert catalog_status(config) == {"complete": 1, "missing": 0, "total": 1}
     assert len(finalize_catalog(config, log=None)["chunks"]) == 1
 
@@ -482,8 +482,8 @@ def test_policy_version_bump_restages_published_shards(tmp_path, monkeypatch):
     # Version 1 is encoded as the absence of the field, so it reproduces fingerprints computed
     # before the field existed. Asserted by pinning the version rather than by reading today's,
     # which has since moved on.
-    monkeypatch.setattr("pepdistill.etl.config.PREPARE_POLICY_VERSION", 1)
-    monkeypatch.setattr("pepdistill.etl.prospect.PREPARE_POLICY_VERSION", 1)
+    monkeypatch.setattr("msspeculator.etl.config.PREPARE_POLICY_VERSION", 1)
+    monkeypatch.setattr("msspeculator.etl.prospect.PREPARE_POLICY_VERSION", 1)
     assert "policy_version" not in config.canonical()
     version_one = config.fingerprint
 
@@ -492,8 +492,8 @@ def test_policy_version_bump_restages_published_shards(tmp_path, monkeypatch):
     # Unchanged policy: the shard is complete and stays that way.
     assert [entry.get("_skipped") for entry in prepare_range(config, log=None)] == [True]
 
-    monkeypatch.setattr("pepdistill.etl.config.PREPARE_POLICY_VERSION", 2)
-    monkeypatch.setattr("pepdistill.etl.prospect.PREPARE_POLICY_VERSION", 2)
+    monkeypatch.setattr("msspeculator.etl.config.PREPARE_POLICY_VERSION", 2)
+    monkeypatch.setattr("msspeculator.etl.prospect.PREPARE_POLICY_VERSION", 2)
     assert config.canonical()["policy_version"] == 2
     assert config.fingerprint != version_one
 
@@ -510,7 +510,7 @@ def test_balanced_partition_uses_vendored_raw_bytes(monkeypatch):
         "tasks": [{"record": "r", "archive": "a", "shard_index": index} for index in range(4)]
     }
     monkeypatch.setattr(
-        "pepdistill.etl.prospect.load_shard_index",
+        "msspeculator.etl.prospect.load_shard_index",
         lambda: {
             "records": {"r": {"a.zip": [["0", 1, 10], ["1", 1, 10], ["2", 1, 70], ["3", 1, 10]]}}
         },
@@ -526,7 +526,7 @@ def test_load_shard_manifests_reads_a_prefix_without_a_config(tmp_path):
     shard of an older corpus; and answering a question about a published prefix must not rewrite
     its catalog as a side effect. So this reads the prefix directly.
     """
-    from pepdistill.data.prepared import load_shard_manifests
+    from msspeculator.data.prepared import load_shard_manifests
 
     root, stem = _source(tmp_path)
     out = tmp_path / "prepared-manifests"
@@ -650,10 +650,10 @@ def test_vendored_manifests_state_their_own_provenance():
     one-line note while the checked-in files carried a richer one, because neither builder wrote
     to the path its loader reads.
     """
-    from pepdistill.data.prospect_catalog import load_catalog, load_shard_index
+    from msspeculator.data.prospect_catalog import load_catalog, load_shard_index
 
     for name, manifest in (("catalog", load_catalog()), ("shards", load_shard_index())):
-        assert "pepdistill.data.prospect_catalog:build_" in manifest["_generator"], name
+        assert "msspeculator.data.prospect_catalog:build_" in manifest["_generator"], name
         assert manifest["_source"], name
         assert manifest["records"], name
 
@@ -667,7 +667,7 @@ def test_a_rebuilt_manifest_lands_where_its_loader_reads(tmp_path: Path):
     the two halves impossible to separate; asserting on the vendored files alone would pass even
     if the writer put its output somewhere else entirely.
     """
-    from pepdistill.data import prospect_catalog as pc
+    from msspeculator.data import prospect_catalog as pc
 
     for asset in (pc._CATALOG_ASSET, pc._SHARDS_ASSET):
         payload = {"_source": "test", "_generator": "test", "records": {"r": [1, 2]}}

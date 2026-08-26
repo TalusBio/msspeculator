@@ -114,5 +114,12 @@ def export_safetensors(ckpt_path: str | Path, out_path: str | Path) -> Path:
         meta["dataset_index"] = index
 
     out_path = Path(out_path)
-    save_file(tensors, str(out_path), metadata={"pepdistill": json.dumps(meta)})
+    # Write both keys during the rename. New readers use msspeculator; old artifacts and tools
+    # still look for pepdistill.
+    encoded_meta = json.dumps(meta)
+    save_file(
+        tensors,
+        str(out_path),
+        metadata={"msspeculator": encoded_meta, "pepdistill": encoded_meta},
+    )
     return out_path

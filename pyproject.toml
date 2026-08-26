@@ -1,7 +1,7 @@
 [project]
-name = "pepdistill"
+name = "msspeculator"
 version = "0.1.0"
-description = "Fast spectral-library generation by distilling AlphaPeptDeep into small, hardware-friendly student models."
+description = "Mass-spectrometry data preparation, prediction, training, and spectral-library tools."
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
@@ -13,7 +13,7 @@ dependencies = [
     "fsspec>=2024.0",
     "numpy>=1.26",
     "pandas>=2.0",
-    "pepdistill-rs",
+    "msspeculator-rs",
     "pyarrow>=15.0",
     "safetensors>=0.8.0",
     "typer>=0.12",
@@ -51,7 +51,7 @@ tracking = [
 ]
 
 [project.scripts]
-pepdistill = "pepdistill.cli:app"
+msspeculator = "msspeculator.cli:app"
 
 [dependency-groups]
 # Deliberately only the tools, with no reference to the project's own extras. This group is
@@ -71,7 +71,7 @@ dev = [
 ]
 
 [tool.uv.sources]
-pepdistill-rs = { path = "rust", editable = true }
+msspeculator-rs = { path = "rust", editable = true }
 torch = [
     { index = "pytorch-cpu", extra = "torch-cpu", marker = "sys_platform == 'linux' and platform_machine == 'x86_64'" },
 ]

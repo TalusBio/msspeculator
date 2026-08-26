@@ -2,7 +2,7 @@ import math
 import numpy as np
 import pytest
 
-rs = pytest.importorskip("pepdistill_rs")
+rs = pytest.importorskip("msspeculator_rs")
 
 
 def test_peptide_via_ext():

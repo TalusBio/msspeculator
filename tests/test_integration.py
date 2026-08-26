@@ -8,8 +8,8 @@ import pytest
 import torch
 from typer.testing import CliRunner
 
-from pepdistill.cli import app
-from pepdistill.distill.pipeline import (
+from msspeculator.cli import app
+from msspeculator.distill.pipeline import (
     RunConfig,
     TrackingCfg,
     _final_training_metadata,
@@ -17,7 +17,7 @@ from pepdistill.distill.pipeline import (
     _wandb_metric_namespaces,
     run_pipeline,
 )
-from pepdistill.models.registry import load_checkpoint
+from msspeculator.models.registry import load_checkpoint
 
 FASTA = """>sp|TEST1|
 MKWVTFISLLFLFSSAYSRDTHKSEIAHRFKDLGEEHFKGLVLIAFSQYLQQCPF
@@ -103,7 +103,7 @@ def test_pipeline_mirrors_durable_outputs(tmp_path: Path):
 
 
 def test_artifact_mirror_preserves_run_relative_paths(tmp_path: Path):
-    from pepdistill.distill.pipeline import _artifact_mirror
+    from msspeculator.distill.pipeline import _artifact_mirror
 
     local = tmp_path / "out"
     remote = tmp_path / "remote"
@@ -149,7 +149,7 @@ def test_wandb_stage_loggers_share_one_run(tmp_path: Path, monkeypatch):
     cfg = RunConfig(
         out=str(tmp_path),
         preset="flash",
-        tracking=TrackingCfg(enabled=True, project="pepdistill-tests", mode="offline"),
+        tracking=TrackingCfg(enabled=True, project="msspeculator-tests", mode="offline"),
     )
     root, pretrain, train = _wandb_loggers(cfg, tmp_path)
     assert pretrain.experiment is root.experiment
@@ -159,7 +159,7 @@ def test_wandb_stage_loggers_share_one_run(tmp_path: Path, monkeypatch):
     assert initialized["mode"] == "offline"
 
     ticks = iter((0.0, 1.0, 2.0, 11.0, 12.0))
-    monkeypatch.setattr("pepdistill.distill.pipeline.time.monotonic", lambda: next(ticks))
+    monkeypatch.setattr("msspeculator.distill.pipeline.time.monotonic", lambda: next(ticks))
     train.log_metrics({"train_ms2": 0.3}, step=1)
     train.log_metrics({"train_ms2": 0.2}, step=2)
     train.log_metrics({"val/data/spectral_angle": 0.6}, step=3)
@@ -180,8 +180,8 @@ def test_run_summary_survives_the_wandb_encoder():
     on disk while the summary update at the very end of every tracked run raised, after training
     had finished and the checkpoints were already written.
     """
-    from pepdistill.distill.pipeline import _energy_curve
-    from pepdistill.models.context import MSContextEncoder
+    from msspeculator.distill.pipeline import _energy_curve
+    from msspeculator.models.context import MSContextEncoder
 
     curve = _energy_curve(MSContextEncoder(context_dim=8), 20.0, 40.0)
     assert curve, "the curve should not be empty"
@@ -198,7 +198,7 @@ def test_rate_limit_thins_batches_but_never_drops_an_epoch_boundary():
     due, and the next training batch used to overwrite it, silently costing a whole run every
     diagnostics image and scalar after step 0, while the per-batch losses looked fine.
     """
-    from pepdistill.distill.pipeline import _RemoteLogThrottle
+    from msspeculator.distill.pipeline import _RemoteLogThrottle
 
     sent: list[tuple[dict, int | None]] = []
     throttle = _RemoteLogThrottle(
@@ -306,11 +306,11 @@ def test_wandb_throttle_merges_metric_families_at_the_same_step(tmp_path: Path, 
     cfg = RunConfig(
         out=str(tmp_path),
         preset="flash",
-        tracking=TrackingCfg(enabled=True, project="pepdistill-tests", mode="offline"),
+        tracking=TrackingCfg(enabled=True, project="msspeculator-tests", mode="offline"),
     )
     _, pretrain, _ = _wandb_loggers(cfg, tmp_path)
     ticks = iter((0.0, 0.1, 11.0, 11.1, 12.0))
-    monkeypatch.setattr("pepdistill.distill.pipeline.time.monotonic", lambda: next(ticks))
+    monkeypatch.setattr("msspeculator.distill.pipeline.time.monotonic", lambda: next(ticks))
 
     pretrain.log_metrics({"lr-AdamW": 1e-3}, step=50)
     pretrain.log_metrics({"train_ms2": 0.5, "train_total": 0.8}, step=50)
@@ -363,14 +363,14 @@ def test_wandb_throttle_bounds_fast_stage_step_gaps(tmp_path: Path, monkeypatch)
         preset="flash",
         tracking=TrackingCfg(
             enabled=True,
-            project="pepdistill-tests",
+            project="msspeculator-tests",
             mode="offline",
             min_log_interval_seconds=10.0,
             max_log_interval_steps=3,
         ),
     )
     _, pretrain, _ = _wandb_loggers(cfg, tmp_path)
-    monkeypatch.setattr("pepdistill.distill.pipeline.time.monotonic", lambda: 0.0)
+    monkeypatch.setattr("msspeculator.distill.pipeline.time.monotonic", lambda: 0.0)
 
     for step in range(8):
         pretrain.log_metrics({"lr-AdamW": step / 10}, step=step)

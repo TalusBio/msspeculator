@@ -7,7 +7,7 @@
 # [tool.launchpad]
 # vcpus = 8
 # memory = 16000
-# job_name = "pepdistill-etl-finalize"
+# job_name = "msspeculator-etl-finalize"
 # ///
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ def main() -> None:
             # See launchpad_prospect_etl: `etl` only, and no group-exclusion flag.
             "--extra",
             "etl",
-            "pepdistill",
+            "msspeculator",
             "prepare-finalize",
             str(args.config),
         ],

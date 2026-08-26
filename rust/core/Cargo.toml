@@ -1,8 +1,8 @@
 [package]
-name = "pepdistill-core"
+name = "msspeculator-core"
 version = "0.1.0"
 edition = "2021"
-description = "Pure-Rust pepdistill inference: artifact loading, chem m/z, student forward."
+description = "Pure-Rust msspeculator inference: artifact loading, chem m/z, student forward."
 license.workspace = true
 
 [dependencies]

@@ -3,13 +3,13 @@
 import pytest
 import torch
 
-from pepdistill.chem import Peptide
-from pepdistill.distill.dataset import DistillDataset, MSFactors, collate_with_labels
-from pepdistill.distill.lightning import DistillModule, fit_distill
-from pepdistill.data.precursors import Precursor
-from pepdistill.models.context import MSContextEncoder
-from pepdistill.models.registry import build_student
-from pepdistill.teacher.fake import FakeTeacher
+from msspeculator.chem import Peptide
+from msspeculator.distill.dataset import DistillDataset, MSFactors, collate_with_labels
+from msspeculator.distill.lightning import DistillModule, fit_distill
+from msspeculator.data.precursors import Precursor
+from msspeculator.models.context import MSContextEncoder
+from msspeculator.models.registry import build_student
+from msspeculator.teacher.fake import FakeTeacher
 
 
 def _tiny_labeled_batch(ms_factors=None):

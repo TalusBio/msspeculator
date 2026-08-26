@@ -1,5 +1,5 @@
 //! Batched, length-bucketed tokenizer + fragment m/z. This is a pure-Rust port of
-//! `pepdistill.predict.fast._bucket_arrays` / `_fragment_mz`.
+//! `msspeculator.predict.fast._bucket_arrays` / `_fragment_mz`.
 //!
 //! All precursors passed to one call share `length` (the bucketing key), so tokens and
 //! residue masses pack into dense rectangular arrays with no per-fragment Python/loop

@@ -1,25 +1,26 @@
-# pepdistill
+# msspeculator
 
 [![CI](https://github.com/jspaezp/distilltest/actions/workflows/ci.yml/badge.svg)](https://github.com/jspaezp/distilltest/actions/workflows/ci.yml)
 
-Fast spectral-library generation by **distilling** AlphaPeptDeep into small,
-hardware-friendly student models.
+`msspeculator` is a mass-spectrometry toolkit for turning peptide sequences and
+experimental spectra into usable predictions and spectral libraries. It covers the
+data path, model training, diagnostics, and production inference in Python and Rust.
 
-The teacher models (AlphaPeptDeep) are accurate but heavy. `pepdistill` trains a
-compact student to mimic the teacher's MS2 fragment intensities, retention time, and
-CCS. A FASTA is sufficient for teacher distillation; an optional second stage fine-tunes on
-prepared experimental spectral libraries.
+The current models can learn from an AlphaPeptDeep teacher, prepared experimental
+libraries, or both. The same code can digest FASTA files, prepare and validate sharded
+training data, train context-aware models, export portable artifacts, and generate
+libraries for downstream search.
 
 - **No LSTMs.** The maintained students are Transformer encoders, with a standalone
   safetensors-based Rust inference implementation for production library generation.
 - **Deterministic splits.** Train/val/test is assigned by hashing the *stripped*
   sequence, so every mod-form and charge state of a peptide stays in one split
   (no leakage) and the split is stable across runs and dataset growth.
-- **One config-driven pipeline.** A single `run` command walks these optional Lightning stages:
-  `pretrain` (teacher distill), `train` (real spectra), `export`, and `bench`. One
-  TOML config. `predict` (library generation) is the separate inference command.
-- **Learns from real spectra too.** Beyond teacher distillation, the student can fine-tune on
-  real experimental libraries (PROSPECT) with per-run acquisition **context conditioning**:
+- **One config-driven pipeline.** A single `run` command controls optional pretraining, real-
+  spectrum training, export, and benchmark stages. `predict` generates a library from a
+  trained checkpoint.
+- **Experimental context.** Models can fine-tune on real libraries (PROSPECT) with per-run
+  acquisition context:
   collision energy drives the MS2 context, chromatography drives the RT context.
 
 ## Install
@@ -43,8 +44,8 @@ would reach preparation workers too. Excluding it per worker needs `--no-default
 which older uv (including the cloud image's) does not have.
 
 Rust owns chemistry, the `Peptide` type, tokenization, and batch encoding. The code lives in
-(`rust/core`) and is required at runtime. `pepdistill.chem` is a re-export shim over the
-`pepdistill_rs` extension. `pepdistill-rs` is declared as a `[tool.uv.sources]` path
+(`rust/core`) and is required at runtime. `msspeculator.chem` is a re-export shim over the
+`msspeculator_rs` extension. `msspeculator-rs` is declared as a `[tool.uv.sources]` path
 dependency on `rust/` (build backend: maturin), so a plain `uv sync` compiles and installs
 it automatically. This means **a Rust toolchain (`cargo`) must be on `PATH`** the first time
 you sync; if `uv sync` ever can't drive the build in your environment, build the extension
@@ -107,8 +108,8 @@ model_threads = 4            # intra-op CPU threads used by the model
 ```
 
 ```bash
-pepdistill run run.toml                 # -> work/{pretrain,latest,best,model}.ckpt + summary.json
-pepdistill run run.toml --no-train      # pretrain only (disable any stage inline)
+msspeculator run run.toml                 # -> work/{pretrain,latest,best,model}.ckpt + summary.json
+msspeculator run run.toml --no-train      # pretrain only (disable any stage inline)
 ```
 
 Real-spectrum training consumes immutable prepared Parquet chunks. The preparation workflow is
@@ -124,7 +125,7 @@ be turned off in the config or with its corresponding `--no-*` flag.
 Standalone Python inference from a trained checkpoint:
 
 ```bash
-pepdistill predict --model work/model.ckpt  --fasta proteome.fasta -o library.parquet --device auto
+msspeculator predict --model work/model.ckpt  --fasta proteome.fasta -o library.parquet --device auto
 ```
 
 Production inference is the Rust path; see `export-rust` below.
@@ -135,13 +136,13 @@ full factor grammar `INSTRUMENT::DETECTOR::FRAGMENTATION::ENERGY`, or just `--nc
 shorthand for "unknown instrument/detector/fragmentation, only the energy":
 
 ```bash
-pepdistill predict --model work/model.ckpt --fasta proteome.fasta -o library.parquet \
+msspeculator predict --model work/model.ckpt --fasta proteome.fasta -o library.parquet \
   --ms-context "Lumos::FTMS::HCD::30"
 
-pepdistill predict --model work/model.ckpt --fasta proteome.fasta -o library.parquet --nce 30
+msspeculator predict --model work/model.ckpt --fasta proteome.fasta -o library.parquet --nce 30
 ```
 
-`--ms-context` also takes the bare name of an acquisition setup fitted with `pepdistill-cli
+`--ms-context` also takes the bare name of an acquisition setup fitted with `msspeculator-cli
 fit-context`, for a library that records no instrument or collision energy to compose a context
 from. The `::` separator is what tells the two forms apart.
 
@@ -157,8 +158,8 @@ metadata), then run the standalone binary. FASTA mode digests with trypsin, appl
 predicted CCS to Bruker 1/K0, and writes a streaming DIA-NN TSV accepted by `timsseek`:
 
 ```bash
-pepdistill export-rust --model work/model.ckpt -o work/model.safetensors
-cargo run -q --release -p pepdistill-cli -- \
+msspeculator export-rust --model work/model.ckpt -o work/model.safetensors
+cargo run -q --release -p msspeculator-cli -- \
   library --model work/model.safetensors --fasta proteome.fasta --out library.tsv \
   --ms-context "Lumos::FTMS::HCD::30"
 
@@ -171,7 +172,7 @@ Modification rules use a deliberately limited ProForma-compatible grammar: a res
 CysPAT, phosphorylation, and methionine oxidation without fixed carbamidomethylation:
 
 ```bash
-cargo run -q --release -p pepdistill-cli -- \
+cargo run -q --release -p msspeculator-cli -- \
   library --model work/model.safetensors --fasta proteome.fasta --out library.tsv \
   --no-fixed-mods \
   --variable-mod 'C[UNIMOD:2057]' \
@@ -188,7 +189,7 @@ calculated mass encoder. Signed deltas always use the mass encoder.
 Single-peptide JSON remains available:
 
 ```bash
-cargo run -q --release -p pepdistill-cli -- \
+cargo run -q --release -p msspeculator-cli -- \
   predict --model work/model.safetensors --peptide PEPTIDER --charge 2 \
   --ms-context "Lumos::FTMS::HCD::30"      # or --nce 30, or omit for base MS2
 ```
@@ -198,7 +199,7 @@ prints an identity-line scatter in the terminal plus slope, intercept, R², and 
 directory receives `irt-scatter.svg`, `report.txt`, and peptide-level `irt-predictions.tsv`:
 
 ```bash
-cargo run -q --release -p pepdistill-cli -- \
+cargo run -q --release -p msspeculator-cli -- \
   run-doctor --model work/model.safetensors --out work/model-doctor
 ```
 
@@ -232,8 +233,8 @@ fragment:
 ## Package layout
 
 ```
-pepdistill/
-  chem.py      re-export shim over the Rust ext (pepdistill_rs): masses, m/z, fragment-ion
+msspeculator/
+  chem.py      re-export shim over the Rust ext (msspeculator_rs): masses, m/z, fragment-ion
                series, and the Peptide class all live in Rust (rust/core); no chemistry
                logic left in Python
   data/        FASTA digest, precursor enumeration, deterministic split, tensor encoding,
@@ -251,8 +252,8 @@ pepdistill/
 rust/
   core/        chemistry + Peptide + tokenizer + student forward. This is the shared implementation,
                used by both the Python ext and the CLI
-  cli/         pepdistill-cli: FASTA -> DIA-NN TSV and single-peptide JSON inference
-  src/lib.rs   pepdistill_rs: pyo3 extension exposing core to Python (a hard dependency)
+  cli/         msspeculator-cli: FASTA -> DIA-NN TSV and single-peptide JSON inference
+  src/lib.rs   msspeculator_rs: pyo3 extension exposing core to Python (a hard dependency)
 ```
 
 ## Student presets & speed

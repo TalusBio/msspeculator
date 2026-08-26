@@ -1,4 +1,4 @@
-//! Load a pepdistill `.safetensors` artifact: f32 tensors by name + the JSON metadata blob.
+//! Load a msspeculator `.safetensors` artifact: f32 tensors by name + the JSON metadata blob.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -138,12 +138,13 @@ impl Artifact {
             .as_ref()
             .ok_or_else(|| anyhow!("artifact has no __metadata__"))?;
         let blob = map
-            .get("pepdistill")
-            .ok_or_else(|| anyhow!("__metadata__ missing 'pepdistill' key"))?;
+            .get("msspeculator")
+            .or_else(|| map.get("pepdistill"))
+            .ok_or_else(|| anyhow!("__metadata__ missing 'msspeculator' key"))?;
         let raw_meta: serde_json::Value =
-            serde_json::from_str(blob).context("parsing pepdistill metadata JSON")?;
+            serde_json::from_str(blob).context("parsing msspeculator metadata JSON")?;
         let meta: Meta =
-            serde_json::from_value(raw_meta.clone()).context("reading pepdistill metadata")?;
+            serde_json::from_value(raw_meta.clone()).context("reading msspeculator metadata")?;
         if meta.format_version != FORMAT_VERSION {
             return Err(anyhow!(
                 "artifact format_version {} is not supported (this build reads {}); \
@@ -185,7 +186,7 @@ impl Artifact {
             .iter()
             .map(|(name, (shape, data))| (name, F32View { shape, data }))
             .collect();
-        let info = HashMap::from([("pepdistill".to_string(), self.raw_meta.to_string())]);
+        let info = HashMap::from([("msspeculator".to_string(), self.raw_meta.to_string())]);
         safetensors::serialize_to_file(views, &Some(info), path.as_ref())
             .with_context(|| format!("writing {}", path.as_ref().display()))
     }
@@ -274,7 +275,7 @@ mod tests {
     /// file is not empty. Named-setup behaviour is about the metadata and one table, so the rest
     /// of a real artifact would only be noise here.
     fn minimal(name: &str) -> std::path::PathBuf {
-        let path = std::env::temp_dir().join(format!("pepdistill-{name}.safetensors"));
+        let path = std::env::temp_dir().join(format!("msspeculator-{name}.safetensors"));
         let meta = serde_json::json!({
             "format_version": FORMAT_VERSION,
             "config": {"backbone": "transformer", "d_model": 4, "n_layers": 1, "n_heads": 1,
@@ -284,7 +285,7 @@ mod tests {
             // A key this build does not model, to prove a write does not drop it.
             "provenance": "test",
         });
-        let info = HashMap::from([("pepdistill".to_string(), meta.to_string())]);
+        let info = HashMap::from([("msspeculator".to_string(), meta.to_string())]);
         let data = vec![0.0f32; 4];
         let view = F32View {
             shape: &[4],
@@ -305,7 +306,7 @@ mod tests {
             1
         );
 
-        let out = std::env::temp_dir().join("pepdistill-named-setup-out.safetensors");
+        let out = std::env::temp_dir().join("msspeculator-named-setup-out.safetensors");
         art.save(&out).expect("writing");
         let reloaded = Artifact::load(&out).expect("reloading");
 

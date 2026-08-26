@@ -18,8 +18,8 @@ from typing import Any
 import fsspec
 import numpy as np
 
-from pepdistill.data.prepared import load_shard_manifests
-from pepdistill.diagnostics import SA_HISTOGRAM_BINS, SA_HISTOGRAM_EDGES, SpectralAngleSeries
+from msspeculator.data.prepared import load_shard_manifests
+from msspeculator.diagnostics import SA_HISTOGRAM_BINS, SA_HISTOGRAM_EDGES, SpectralAngleSeries
 
 
 def collect(prefix: str) -> dict[str, Any]:

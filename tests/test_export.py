@@ -6,9 +6,9 @@ from pathlib import Path
 import torch
 from safetensors import safe_open
 
-from pepdistill.export import export_safetensors
-from pepdistill.models.context import ChromRunbook, MSContextEncoder
-from pepdistill.models.registry import build_student, save_checkpoint
+from msspeculator.export import export_safetensors
+from msspeculator.models.context import ChromRunbook, MSContextEncoder
+from msspeculator.models.registry import build_student, save_checkpoint
 
 
 def test_export_safetensors_roundtrip(tmp_path: Path):

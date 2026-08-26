@@ -1,5 +1,5 @@
 {
- "_generator": "pepdistill.data.prospect_catalog:build_catalog",
+ "_generator": "msspeculator.data.prospect_catalog:build_catalog",
  "_source": "Zenodo record metadata API for records 11472525, 11474099, 11477731, 6602020, 8221499",
  "records": {
   "multi_ptm": {

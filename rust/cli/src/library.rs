@@ -6,9 +6,9 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 
 use anyhow::{bail, Context, Result};
-use pepdistill_core::peptide::{ModSpec, Peptide, Site};
-use pepdistill_core::proforma::{parse_modification_rule, ModificationRule, ModificationTarget};
-use pepdistill_core::{
+use msspeculator_core::peptide::{ModSpec, Peptide, Site};
+use msspeculator_core::proforma::{parse_modification_rule, ModificationRule, ModificationTarget};
+use msspeculator_core::{
     predict_peptide_batch_charges_prepared, Artifact, MsContext, Prediction, PreparedContext,
 };
 
@@ -488,7 +488,7 @@ fn spectrum_row<'a>(
         proforma: prediction.peptide.as_str(),
         charge,
         precursor_mz: prediction.precursor_mz,
-        neutral_mass: (prediction.precursor_mz - pepdistill_core::chem::PROTON) * charge as f64,
+        neutral_mass: (prediction.precursor_mz - msspeculator_core::chem::PROTON) * charge as f64,
         rt: prediction.rt,
         irt: prediction.irt,
         mobility,
@@ -603,7 +603,7 @@ pub fn write_library(opts: &LibraryOptions<'_>) -> Result<LibraryStats> {
     if peptides.is_empty() {
         bail!("FASTA digest produced no peptides");
     }
-    let model = pepdistill_core::builtin::load_model(opts.model)?;
+    let model = msspeculator_core::builtin::load_model(opts.model)?;
     let mut artifact = model.artifact;
     apply_activation_override(&mut artifact, opts.activation)?;
     let context = PreparedContext::new(&artifact, opts.ms_context, opts.chrom_context)?;
@@ -780,8 +780,8 @@ fn resolve_config(
     model_digest: &str,
 ) -> Result<serde_json::Value> {
     let ms_context = match opts.ms_context {
-        Some(pepdistill_core::MsContext::Named(name)) => serde_json::json!({"setup": name}),
-        Some(pepdistill_core::MsContext::Factors {
+        Some(msspeculator_core::MsContext::Named(name)) => serde_json::json!({"setup": name}),
+        Some(msspeculator_core::MsContext::Factors {
             instrument,
             detector,
             fragmentation,
@@ -803,11 +803,11 @@ fn resolve_config(
     // convention that defines it and then checked: predicting the two anchors says whether this
     // artifact is on that scale. An artifact from another corpus reports `on_scale: false` and its
     // own numbers rather than inheriting a claim that happens to be true of ours.
-    let anchors = pepdistill_core::landmarks::check_retention_scale(artifact)?;
+    let anchors = msspeculator_core::landmarks::check_retention_scale(artifact)?;
     let normalized_retention = serde_json::json!({
         "term": "MS:1000896|normalized retention time",
         "kind": "dimensionless index, minutes-like",
-        "scale": pepdistill_core::landmarks::SCALE_DESCRIPTION,
+        "scale": msspeculator_core::landmarks::SCALE_DESCRIPTION,
         "anchor_check": {
             "on_scale": anchors.on_scale(),
             "max_abs_error": anchors.max_abs_error,
@@ -832,7 +832,7 @@ fn resolve_config(
     };
     Ok(serde_json::json!({
         "generator": {
-            "tool": "pepdistill-cli library",
+            "tool": "msspeculator-cli library",
             "version": env!("CARGO_PKG_VERSION"),
         },
         "inputs": {

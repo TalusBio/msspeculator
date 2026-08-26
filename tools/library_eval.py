@@ -19,17 +19,17 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from pepdistill.chem import Peptide
-from pepdistill.data.encode import FRAG_OFFSET, collate
-from pepdistill.data.precursors import Precursor
-from pepdistill.diagnostics import sa_histogram
-from pepdistill.models.registry import load_checkpoint, load_context
+from msspeculator.chem import Peptide
+from msspeculator.data.encode import FRAG_OFFSET, collate
+from msspeculator.data.precursors import Precursor
+from msspeculator.diagnostics import sa_histogram
+from msspeculator.models.registry import load_checkpoint, load_context
 
 ION_COLUMNS = 4
 
 
 def read_library(path: str, aliases: list[dict], context: str) -> dict:
-    import pepdistill_rs as rs
+    import msspeculator_rs as rs
 
     return rs.read_speclib(
         path,
@@ -77,7 +77,7 @@ def sum_norm_l2(a: np.ndarray, b: np.ndarray) -> float:
 
 
 def modification_facet(peptide: Peptide) -> str:
-    from pepdistill.chem import unimod_title
+    from msspeculator.chem import unimod_title
 
     titles = sorted(
         {

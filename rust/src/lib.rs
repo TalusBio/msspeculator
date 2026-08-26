@@ -1,4 +1,4 @@
-//! pyo3 bindings: thin shell exposing pepdistill-core to Python as `pepdistill_rs`.
+//! pyo3 bindings: thin shell exposing msspeculator-core to Python as `msspeculator_rs`.
 
 // The `#[pyfunction]`/`#[pymethods]` macros generate wrapper code that converts the user's
 // `PyResult<T>` into itself via `Into`; clippy flags that macro-generated no-op conversion at
@@ -14,10 +14,10 @@ use pyo3::types::{PyDict, PyList};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
-use pepdistill_core::chem;
-use pepdistill_core::peptide::{ModSpec, Peptide as CorePeptide, Site};
-use pepdistill_core::split as speclib_split;
-use pepdistill_core::{bucket, proforma, speclib, tokenize, unimod};
+use msspeculator_core::chem;
+use msspeculator_core::peptide::{ModSpec, Peptide as CorePeptide, Site};
+use msspeculator_core::split as speclib_split;
+use msspeculator_core::{bucket, proforma, speclib, tokenize, unimod};
 
 fn to_pyerr(e: anyhow::Error) -> PyErr {
     pyo3::exceptions::PyValueError::new_err(e.to_string())
@@ -222,7 +222,7 @@ fn mod_delta(descriptor: &str) -> PyResult<f64> {
 /// `composition::ELEMENTS` order. Raises `ValueError` for a descriptor with no composition,
 /// a bare mass delta, or one whose elements fall outside that basis.
 #[pyfunction]
-fn mod_composition(descriptor: &str) -> PyResult<[i8; pepdistill_core::composition::N_ELEMENTS]> {
+fn mod_composition(descriptor: &str) -> PyResult<[i8; msspeculator_core::composition::N_ELEMENTS]> {
     let spec = proforma::parse_descriptor(descriptor).map_err(to_pyerr)?;
     spec.element_comp().map_err(to_pyerr)?.ok_or_else(|| {
         pyo3::exceptions::PyValueError::new_err(format!(
@@ -338,7 +338,7 @@ fn bucket_fragment_mz<'py>(
     Ok((mz.into_pyarray_bound(py), pmz.into_pyarray_bound(py)))
 }
 
-/// Assign a bare sequence to a split, from the Rust port of `pepdistill.data.split`.
+/// Assign a bare sequence to a split, from the Rust port of `msspeculator.data.split`.
 ///
 /// Exposed so the two implementations can be compared directly. They have to agree exactly: the
 /// corpus is split in Python and a library is split in Rust, and a disagreement would put a
@@ -476,7 +476,7 @@ fn read_speclib<'py>(
 }
 
 #[pymodule]
-fn pepdistill_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn msspeculator_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Peptide>()?;
     m.add_function(wrap_pyfunction!(fragment_mz, m)?)?;
     m.add_function(wrap_pyfunction!(fragment_mz_matrix, m)?)?;

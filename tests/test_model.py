@@ -1,10 +1,10 @@
 import torch
 
-from pepdistill.chem import ION_TYPES, Peptide
-from pepdistill.data.encode import collate
-from pepdistill.data.precursors import Precursor
-from pepdistill.distill.losses import ms2_cosine_loss, spectral_angle
-from pepdistill.models.registry import PRESETS, build_student
+from msspeculator.chem import ION_TYPES, Peptide
+from msspeculator.data.encode import collate
+from msspeculator.data.precursors import Precursor
+from msspeculator.distill.losses import ms2_cosine_loss, spectral_angle
+from msspeculator.models.registry import PRESETS, build_student
 
 
 def _precs():
@@ -42,7 +42,7 @@ def test_collate_always_wraps_termini():
 
 
 def test_termini_toggle_is_gone():
-    import pepdistill.data.encode as enc
+    import msspeculator.data.encode as enc
 
     for name in ("use_termini", "set_termini", "frag_offset", "_USE_TERMINI"):
         assert not hasattr(enc, name), f"{name} should have been deleted"
@@ -179,8 +179,8 @@ def test_norm_established_flag_is_not_exported():
 
     from safetensors import safe_open
 
-    from pepdistill.export import export_safetensors
-    from pepdistill.models.registry import save_checkpoint
+    from msspeculator.export import export_safetensors
+    from msspeculator.models.registry import save_checkpoint
 
     import tempfile
     from pathlib import Path
@@ -193,5 +193,5 @@ def test_norm_established_flag_is_not_exported():
         export_safetensors(ckpt, art)
         with safe_open(str(art), framework="pt") as f:
             assert not [k for k in f.keys() if "norm_established" in k]
-            meta = json.loads(f.metadata()["pepdistill"])
+            meta = json.loads(f.metadata()["msspeculator"])
     assert meta["norm"]["ccs_mean"] == 400.0

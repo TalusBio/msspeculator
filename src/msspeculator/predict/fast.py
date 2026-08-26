@@ -78,7 +78,7 @@ def _bucket_arrays(precs: list[Precursor], length: int):
     Tokens are wrapped with N/C-term ids -> shape (B, length+2). ``residue_mass`` stays
     (B, length): termini carry no mass and never enter m/z.
     """
-    import pepdistill_rs as _rs
+    import msspeculator_rs as _rs
 
     peptides = [p.peptide for p in precs]
     charges = [int(p.charge) for p in precs]
@@ -99,7 +99,7 @@ def _fragment_mz(residue_mass: np.ndarray, charge: np.ndarray) -> tuple[np.ndarr
 
     Returns (mz (B, L-1, n_ion), precursor_mz (B,)).
     """
-    import pepdistill_rs as _rs
+    import msspeculator_rs as _rs
 
     return _rs.bucket_fragment_mz(residue_mass, charge)
 

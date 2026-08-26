@@ -6,7 +6,7 @@ import math
 
 import torch
 
-from pepdistill.distill.losses import labeled_mse
+from msspeculator.distill.losses import labeled_mse
 
 
 def test_an_unlabeled_row_cannot_poison_the_gradient():

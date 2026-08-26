@@ -1,5 +1,5 @@
-//! Monoisotopic mass and m/z arithmetic. This is the single source of truth for pepdistill's
-//! chemistry constants; `pepdistill.chem` (Python) is now a thin shim over this module.
+//! Monoisotopic mass and m/z arithmetic. This is the single source of truth for msspeculator's
+//! chemistry constants; `msspeculator.chem` (Python) is now a thin shim over this module.
 //!
 //! Supports the 20 standard amino acids; modification chemistry lives on `ModSpec`, resolved
 //! against the vendored UNIMOD table. Fragment ordering matches `chem.ION_TYPES` =

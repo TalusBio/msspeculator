@@ -2,10 +2,10 @@
 
 import torch
 
-from pepdistill.chem import Peptide
-from pepdistill.data.encode import collate
-from pepdistill.data.precursors import Precursor
-from pepdistill.models.registry import build_student
+from msspeculator.chem import Peptide
+from msspeculator.data.encode import collate
+from msspeculator.data.precursors import Precursor
+from msspeculator.models.registry import build_student
 
 
 def _batch():
@@ -18,7 +18,7 @@ def _batch():
 
 
 def test_fourier_features_shape_and_range():
-    from pepdistill.models.student import FourierFeatures
+    from msspeculator.models.student import FourierFeatures
 
     ff = FourierFeatures(16)
     out = ff(torch.tensor([[0.0, 229.16, -18.01]]))
@@ -102,7 +102,7 @@ def test_forward_exposes_both_mod_vectors():
 
 
 def test_mod_align_is_zero_with_no_named_sites():
-    from pepdistill.distill.losses import mod_align_loss
+    from msspeculator.distill.losses import mod_align_loss
 
     g = torch.randn(2, 5, 8)
     m = torch.randn(2, 5, 8)
@@ -111,7 +111,7 @@ def test_mod_align_is_zero_with_no_named_sites():
 
 
 def test_mod_align_ignores_unnamed_sites():
-    from pepdistill.distill.losses import mod_align_loss
+    from msspeculator.distill.losses import mod_align_loss
 
     g = torch.zeros(1, 3, 4)
     m = torch.zeros(1, 3, 4)
@@ -121,7 +121,7 @@ def test_mod_align_ignores_unnamed_sites():
 
 
 def test_mod_align_measures_named_site_error():
-    from pepdistill.distill.losses import mod_align_loss
+    from msspeculator.distill.losses import mod_align_loss
 
     g = torch.zeros(1, 2, 4)
     m = torch.full((1, 2, 4), 3.0)
@@ -131,7 +131,7 @@ def test_mod_align_measures_named_site_error():
 
 def test_mod_align_does_not_train_the_comp_encoder():
     """g is the teacher: the align term must leave comp_enc's gradients untouched."""
-    from pepdistill.distill.losses import mod_align_loss
+    from msspeculator.distill.losses import mod_align_loss
 
     model = build_student("flash").train()
     b = _batch()
@@ -144,7 +144,7 @@ def test_mod_align_does_not_train_the_comp_encoder():
 
 
 def test_mod_align_decreases_when_fitted():
-    from pepdistill.distill.losses import mod_align_loss
+    from msspeculator.distill.losses import mod_align_loss
 
     torch.manual_seed(0)
     model = build_student("flash").train()

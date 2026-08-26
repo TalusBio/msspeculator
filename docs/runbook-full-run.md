@@ -16,7 +16,7 @@ Install the core package:
 
 ```bash
 uv sync --locked
-uv run pepdistill --help
+uv run msspeculator --help
 ```
 
 Training on a CPU uses the `torch-cpu` extra. The regular `torch` extra intentionally selects the
@@ -67,8 +67,8 @@ enabled = false
 Run it and export the checkpoint for standalone Rust inference:
 
 ```bash
-uv run pepdistill run smoke.toml
-uv run pepdistill export-rust --model runs/smoke/model.ckpt -o runs/smoke/model.safetensors
+uv run msspeculator run smoke.toml
+uv run msspeculator export-rust --model runs/smoke/model.ckpt -o runs/smoke/model.safetensors
 ```
 
 ## Generate a library
@@ -77,7 +77,7 @@ The Rust CLI includes a small built-in model, so inference does not require Pyth
 downloaded checkpoint:
 
 ```bash
-cargo run -q --release -p pepdistill-cli -- \
+cargo run -q --release -p msspeculator-cli -- \
   library --fasta smoke.fasta --out library.mzspeclib.txt.gz \
   --ms-context "Lumos::FTMS::HCD::30"
 ```
@@ -96,7 +96,7 @@ context, and fragment settings. TSV output writes the same provenance to a `conf
 Single-peptide prediction is also available:
 
 ```bash
-cargo run -q --release -p pepdistill-cli -- \
+cargo run -q --release -p msspeculator-cli -- \
   predict --peptide 'PEPC[UNIMOD:4]IDER' --charge 2 --nce 30
 ```
 
@@ -107,19 +107,19 @@ organization-specific cache and output locations, then inspect the current shard
 choosing ranges:
 
 ```bash
-uv run pepdistill prepare-status prepare.toml --count-only
-uv run pepdistill prepare prepare.toml --range 0:100
-uv run pepdistill prepare-status prepare.toml
-uv run pepdistill prepare-finalize prepare.toml
+uv run msspeculator prepare-status prepare.toml --count-only
+uv run msspeculator prepare prepare.toml --range 0:100
+uv run msspeculator prepare-status prepare.toml
+uv run msspeculator prepare-finalize prepare.toml
 ```
 
 Ranges are half-open and independent of worker count. A completed shard is skipped unless
 `--force` is passed, and finalization refuses to publish a manifest until every expected shard is
 present. When code changes what a shard contains, bump `PREPARE_POLICY_VERSION` in
-`src/pepdistill/etl/config.py`; performance-only changes do not require a bump.
+`src/msspeculator/etl/config.py`; performance-only changes do not require a bump.
 
 Prepared assets may live on a local filesystem or an fsspec-compatible object store. Object-store
-credentials come from that provider's normal environment or instance identity; pepdistill does
+credentials come from that provider's normal environment or instance identity; msspeculator does
 not manage credentials.
 
 ## Train on prepared data
@@ -145,7 +145,7 @@ model_threads = 4
 ```
 
 ```bash
-uv run pepdistill run run.toml
+uv run msspeculator run run.toml
 ```
 
 The stage writes `latest.ckpt`, `best.ckpt`, `model.ckpt`, metrics, and `summary.json` below

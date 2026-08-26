@@ -23,7 +23,7 @@ use crate::library::{LibrarySink, SpectrumRow};
 const FORMAT_VERSION: &str = "1.0";
 
 /// Prefix on every provenance key, so a reader can tell our attributes from a converter's.
-const ATTRIBUTE_PREFIX: &str = "pepdistill:";
+const ATTRIBUTE_PREFIX: &str = "msspeculator:";
 
 /// Spelled as `MS:1003200|software version` in the header, so it is not repeated as one of the
 /// generic provenance pairs.
@@ -179,7 +179,7 @@ impl<W: Write> LibrarySink for MzSpecLibSink<W> {
         // the unit are MUST violations. There is no value-bearing unitless retention term to
         // switch to (`MS:1002005` names a calibration standard, `MS:4000149` is a formula), so the
         // alternative is no CV retention term at all, which hides the RT from every reader. The
-        // header says what the index really is; `pepdistill:retention.normalized.kind` spells it.
+        // header says what the index really is; `msspeculator:retention.normalized.kind` spells it.
         //
         // With a chromatography context both quantities exist and both are reported, in separate
         // groups: the gradient time under the term whose unit claim is simply true, and the index
@@ -330,7 +330,7 @@ mod tests {
         let text = rendered(None);
         assert!(text.starts_with("<mzSpecLib>\nMS:1003186|library format version=1.0\n"));
         assert!(text.contains("MS:1003188|library name=lib\n"));
-        assert!(text.contains("MS:1003275|other attribute name=pepdistill:inputs.model"));
+        assert!(text.contains("MS:1003275|other attribute name=msspeculator:inputs.model"));
         assert!(text.contains("MS:1003276|other attribute value=m.safetensors"));
         assert!(text.contains("MS:1003276|other attribute value=15"));
         assert!(text.contains(r#"MS:1003276|other attribute value=["M[UNIMOD:35]"]"#));

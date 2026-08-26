@@ -6,18 +6,18 @@ resolver = "2"
 license = "Apache-2.0"
 
 [package]
-name = "pepdistill_rs"
+name = "msspeculator_rs"
 version = "0.1.0"
 edition = "2021"
-description = "Rust chemistry + tokenizer/batcher binding over pepdistill-core, exposed to Python as pepdistill_rs."
+description = "Rust chemistry + tokenizer/batcher binding over msspeculator-core, exposed to Python as msspeculator_rs."
 license.workspace = true
 
 [lib]
-name = "pepdistill_rs"
+name = "msspeculator_rs"
 crate-type = ["cdylib"]
 
 [dependencies]
-pepdistill-core = { path = "core" }
+msspeculator-core = { path = "core" }
 pyo3 = { version = "0.22", features = ["extension-module"] }
 numpy = "0.22"
 ndarray = "0.16"

@@ -26,7 +26,7 @@ from itertools import combinations
 
 import numpy as np
 
-import pepdistill_rs as _rs
+import msspeculator_rs as _rs
 
 
 @dataclass(frozen=True, slots=True)

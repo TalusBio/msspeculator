@@ -2,10 +2,10 @@ from pathlib import Path
 
 import torch
 
-from pepdistill.models.context import MSContextEncoder
-from pepdistill.models.registry import build_student
-from pepdistill.teacher.fake import FakeTeacher
-from pepdistill.training_diagnostics import TrainingDiagnosticRenderer
+from msspeculator.models.context import MSContextEncoder
+from msspeculator.models.registry import build_student
+from msspeculator.teacher.fake import FakeTeacher
+from msspeculator.training_diagnostics import TrainingDiagnosticRenderer
 
 
 def test_training_renderer_writes_fixed_panel_and_preserves_module_modes(tmp_path: Path):

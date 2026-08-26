@@ -30,12 +30,12 @@ RECORDS = {
 #: away from what the builders emit without anything failing.
 _CATALOG_ASSET = ("prospect_catalog.json", False)
 _SHARDS_ASSET = ("prospect_shards.json", True)
-_VENDOR_DIR = "src/pepdistill/data"
+_VENDOR_DIR = "src/msspeculator/data"
 
 
 def _read_asset(asset: tuple[str, bool]) -> dict:
     name, gzipped = asset
-    path = _pkg_files("pepdistill.data").joinpath(name + (".gz" if gzipped else ""))
+    path = _pkg_files("msspeculator.data").joinpath(name + (".gz" if gzipped else ""))
     if not gzipped:
         return json.loads(path.read_text())
     with path.open("rb") as stream:
@@ -77,7 +77,7 @@ def build_catalog(out_dir: str = _VENDOR_DIR) -> dict:
     result: dict = {
         **_provenance(
             f"Zenodo record metadata API for records {', '.join(sorted(RECORDS.values()))}",
-            "pepdistill.data.prospect_catalog:build_catalog",
+            "msspeculator.data.prospect_catalog:build_catalog",
         ),
         "records": {},
     }
@@ -113,7 +113,7 @@ def build_shard_index(out_dir: str = _VENDOR_DIR, delay_s: float = 2.0) -> dict:
             "ZIP central directories of the PROSPECT annotation archives, read by range request "
             "through fsspec; no archive is downloaded. Entries are "
             "[name, packed_bytes, raw_bytes].",
-            "pepdistill.data.prospect_catalog:build_shard_index",
+            "msspeculator.data.prospect_catalog:build_shard_index",
             "Zenodo rate-limits; a throttled response surfaces as FileNotFoundError, so a failure "
             "recorded here may mean 'try again', not 'gone'.",
         ),

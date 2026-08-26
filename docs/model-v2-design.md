@@ -20,7 +20,7 @@ Beside the factors, `MSContextEncoder` carries a table of **named acquisition se
 addressed by name, additive and zero-init like the factor terms. A source that records no factors
 has nothing for them to compose from. A published library may report no instrument or collision
 energy. A timsTOF may ramp energy with ion mobility. In either case, its offset from the base model is fitted
-as a row instead (`pepdistill-cli fit-context --save-as NAME`) and addressed with
+as a row instead (`msspeculator-cli fit-context --save-as NAME`) and addressed with
 `--ms-context NAME`. This does not weaken the neutral convention: a source nobody named uses row
 0 and changes nothing.
 

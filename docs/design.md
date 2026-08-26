@@ -1,4 +1,4 @@
-# pepdistill: current design
+# msspeculator: current design
 
 ## Goal
 
@@ -17,7 +17,7 @@ Zenodo ──prepare shards──> immutable Parquet + manifest ──train─�
                        export-rust ──> safetensors ──> DIA-NN TSV / mzSpecLib ──> search
 ```
 
-`pepdistill run` controls the `pretrain`, `train`, `export`, and `bench` stages from one TOML
+`msspeculator run` controls the `pretrain`, `train`, `export`, and `bench` stages from one TOML
 file. Pretraining streams teacher labels instead of materializing a label cache. Its OneCycle
 learning-rate schedule is on by default. Real-data training reads only prepared Parquet assets;
 it does not extract PROSPECT archives in the training process.
@@ -39,7 +39,7 @@ transformer padding/masks and allowing Parquet decode and tensor collation to ov
 
 - Rust (`rust/core`) owns peptide parsing, chemistry, tokenization,
   fragment m/z, tensor packing, and the standalone student forward pass. Python imports these
-  contracts through `pepdistill_rs`.
+  contracts through `msspeculator_rs`.
 
 Training can apply chemistry-preserving residue substitution augmentation after collation. A
 residue token is replaced while its original-minus-replacement elemental composition and mass
@@ -79,12 +79,12 @@ Single-peptide JSON prediction remains available for parity checks and inspectio
 ## Package boundaries
 
 ```text
-pepdistill/data/       digest, precursor enumeration, split, encoding, prepared-data reader
-pepdistill/etl/        catalog discovery, archive conversion, shard manifests, finalization
-pepdistill/teacher/    AlphaPeptDeep and deterministic fake teachers
-pepdistill/models/     student architectures, presets, context encoders, checkpoint contracts
-pepdistill/distill/    pretrain/train loops, validation, early stopping, pipeline configuration
-pepdistill/predict/    reference and vectorized Python library generation
+msspeculator/data/       digest, precursor enumeration, split, encoding, prepared-data reader
+msspeculator/etl/        catalog discovery, archive conversion, shard manifests, finalization
+msspeculator/teacher/    AlphaPeptDeep and deterministic fake teachers
+msspeculator/models/     student architectures, presets, context encoders, checkpoint contracts
+msspeculator/distill/    pretrain/train loops, validation, early stopping, pipeline configuration
+msspeculator/predict/    reference and vectorized Python library generation
 rust/core/             shared chemistry, encoding, artifact reader, and student inference
 rust/cli/              standalone safetensors-to-DIA-NN/mzSpecLib/JSON inference
 ```

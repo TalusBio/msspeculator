@@ -3,11 +3,11 @@
 import numpy as np
 import torch
 
-from pepdistill.chem import Peptide
-from pepdistill.data.precursors import Precursor
-from pepdistill.models.registry import build_student
-from pepdistill.predict.fast import TorchRunner, predict_library_fast
-from pepdistill.predict.library import predict_library
+from msspeculator.chem import Peptide
+from msspeculator.data.precursors import Precursor
+from msspeculator.models.registry import build_student
+from msspeculator.predict.fast import TorchRunner, predict_library_fast
+from msspeculator.predict.library import predict_library
 
 KEY = ["modified_sequence", "charge", "ion_type", "fragment_charge", "fragment_ordinal"]
 
@@ -46,7 +46,7 @@ def test_fast_empty_on_high_threshold():
 
 
 def test_torch_runner_stores_ms_context(tmp_path):
-    from pepdistill.models.context import MSContextEncoder
+    from msspeculator.models.context import MSContextEncoder
 
     m = build_student("small")
     enc = MSContextEncoder(context_dim=m.cfg.context_dim)
@@ -68,8 +68,8 @@ def test_torch_runner_stores_ms_context(tmp_path):
 def _checkpoint_with_a_named_setup(tmp_path):
     """A checkpoint carrying one fitted acquisition setup, weights randomized so the row is not
     the neutral one."""
-    from pepdistill.models.context import ChromRunbook, MSContextEncoder
-    from pepdistill.models.registry import save_checkpoint
+    from msspeculator.models.context import ChromRunbook, MSContextEncoder
+    from msspeculator.models.registry import save_checkpoint
 
     torch.manual_seed(0)
     model = build_student("flash")
@@ -93,7 +93,7 @@ def test_predict_takes_a_named_setup_as_ms_context(tmp_path):
     disagree about what the same flag means."""
     from typer.testing import CliRunner
 
-    from pepdistill.cli import app
+    from msspeculator.cli import app
 
     path, _ = _checkpoint_with_a_named_setup(tmp_path)
     fasta = tmp_path / "one.fasta"
@@ -122,7 +122,7 @@ def test_predict_takes_a_named_setup_as_ms_context(tmp_path):
 def test_predict_refuses_a_setup_the_checkpoint_has_no_row_for(tmp_path):
     from typer.testing import CliRunner
 
-    from pepdistill.cli import app
+    from msspeculator.cli import app
 
     path, _ = _checkpoint_with_a_named_setup(tmp_path)
     fasta = tmp_path / "one.fasta"

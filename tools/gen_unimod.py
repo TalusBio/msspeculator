@@ -11,7 +11,7 @@ the redistributed and compiled artifact:
   elements.tsv  symbol \t mono_mass          (from <umod:elem>)
   unimod.tsv    accession \t title \t composition \t mono_mass   (from <umod:mod>)
 
-The mono_mass column of unimod.tsv is a TEST FIXTURE, not a source of truth: pepdistill
+The mono_mass column of unimod.tsv is a TEST FIXTURE, not a source of truth: msspeculator
 computes mass from the composition and asserts agreement across every row, so a bad element
 mass or a parser bug fails loudly instead of hiding in one unused modification.
 

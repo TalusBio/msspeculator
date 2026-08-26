@@ -3,10 +3,10 @@
 import numpy as np
 import pytest
 
-from pepdistill.chem import Peptide
-from pepdistill.data.precursors import Precursor
-from pepdistill.eval import best_examples, best_per_key, precursor_key
-from pepdistill.teacher.base import PrecursorLabels
+from msspeculator.chem import Peptide
+from msspeculator.data.precursors import Precursor
+from msspeculator.eval import best_examples, best_per_key, precursor_key
+from msspeculator.teacher.base import PrecursorLabels
 
 
 def _lab(total):

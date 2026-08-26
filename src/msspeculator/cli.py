@@ -1,11 +1,11 @@
-"""``pepdistill`` command-line interface.
+"""``msspeculator`` command-line interface.
 
     run      config.toml           -> trained model (+ optional bench)
     predict  model + FASTA          -> library.parquet
     prepare  config.toml             -> deterministic shard assets
 
 ``run`` drives the whole Lightning pipeline from one :class:`RunConfig` (pretrain -> train ->
-export -> bench, each stage toggleable); see :mod:`pepdistill.distill.pipeline`. ``predict``
+export -> bench, each stage toggleable); see :mod:`msspeculator.distill.pipeline`. ``predict``
 is standalone inference: generate a spectral library from an already-trained model.
 """
 
@@ -24,7 +24,7 @@ from .data.digest import digest_fasta
 from .data.precursors import enumerate_precursors, frame_to_precursors
 
 # torch, pandas and the training pipeline are imported inside the commands that use them, as the
-# other commands here already do. At module scope they made `pepdistill prepare` load the whole
+# other commands here already do. At module scope they made `msspeculator prepare` load the whole
 # training stack: an ETL worker paid seconds of import and a GB of memory for a path that never
 # touches a tensor. Torch is also an optional dependency (the `torch` extra), so importing it here
 # would make every command require an install the preparation commands do not need.
@@ -40,7 +40,7 @@ def _require_torch(command: str) -> None:
     """
     if importlib.util.find_spec("torch") is None:
         raise SystemExit(
-            f"`pepdistill {command}` needs PyTorch, which is not installed. It lives behind the "
+            f"`msspeculator {command}` needs PyTorch, which is not installed. It lives behind the "
             "`torch` extra so preparation workers can skip the CUDA wheels:\n"
             "    uv sync --extra torch"
         )

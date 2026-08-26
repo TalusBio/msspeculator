@@ -57,7 +57,7 @@ def _fill_optional(
 
     Retention time is in this group rather than treated as required. One source carries 100 null
     retention times, and a NaN label is masked out of the RT loss for that row alone
-    (:func:`pepdistill.distill.losses.labeled_mse`), so a missing one costs that row's RT
+    (:func:`msspeculator.distill.losses.labeled_mse`), so a missing one costs that row's RT
     supervision rather than failing a whole shard. Pandas surfaced these as NaN, which is why
     they never surfaced before.
     """

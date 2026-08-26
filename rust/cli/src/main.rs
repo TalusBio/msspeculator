@@ -1,10 +1,10 @@
-//! pepdistill Rust inference CLI: FASTA libraries, peptide prediction, and model diagnostics.
+//! msspeculator Rust inference CLI: FASTA libraries, peptide prediction, and model diagnostics.
 
 use std::str::FromStr;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use pepdistill_core::{builtin, fit, predict, speclib, MsContext, Prediction};
+use msspeculator_core::{builtin, fit, predict, speclib, MsContext, Prediction};
 use serde_json::json;
 
 mod diagnostics;
@@ -13,7 +13,7 @@ mod mzspeclib;
 
 #[derive(Parser)]
 #[command(
-    name = "pepdistill-cli",
+    name = "msspeculator-cli",
     about = "Generate libraries, predict peptides, or render model diagnostics."
 )]
 struct Cli {
@@ -72,7 +72,7 @@ impl FromStr for AddUnimod {
 
 #[derive(clap::Args)]
 struct ArtifactArgs {
-    /// The model: a path to a .safetensors artifact (from `pepdistill export-rust`), or
+    /// The model: a path to a .safetensors artifact (from `msspeculator export-rust`), or
     /// `builtin:NAME` for one compiled into this binary. Defaults to the bundled model, so a
     /// fresh build predicts without staging anything.
     #[arg(long, default_value = "builtin:small-v0")]

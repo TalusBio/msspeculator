@@ -2,9 +2,9 @@
 
 import pytest
 
-from pepdistill.chem import Peptide
-from pepdistill.data.encode import collate
-from pepdistill.data.precursors import Precursor
+from msspeculator.chem import Peptide
+from msspeculator.data.encode import collate
+from msspeculator.data.precursors import Precursor
 
 TMT_MASS = 229.1629321
 PHOSPHO_MASS = 79.9663312
@@ -109,6 +109,6 @@ def test_nterm_named_plus_residue_zero_mass_only_stays_legal():
 
 
 def test_mod_scale_is_retired():
-    import pepdistill_rs
+    import msspeculator_rs
 
-    assert not hasattr(pepdistill_rs, "MOD_SCALE")
+    assert not hasattr(msspeculator_rs, "MOD_SCALE")

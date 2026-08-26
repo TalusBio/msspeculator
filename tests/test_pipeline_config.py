@@ -2,8 +2,8 @@
 
 import pytest
 
-from pepdistill.distill.pipeline import RunConfig
-from pepdistill.models import build_student
+from msspeculator.distill.pipeline import RunConfig
+from msspeculator.models import build_student
 
 BASE = """
 out = "runs/x"

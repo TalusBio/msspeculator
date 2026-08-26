@@ -4,9 +4,9 @@ import numpy as np
 import torch
 from lightning.pytorch.loggers import CSVLogger
 
-from pepdistill.data.config import DigestConfig
-from pepdistill.distill.lightning import DistillModule
-from pepdistill.distill.stream_pretrain import (
+from msspeculator.data.config import DigestConfig
+from msspeculator.distill.lightning import DistillModule
+from msspeculator.distill.stream_pretrain import (
     StreamMix,
     StreamPretrainCfg,
     _peptides,
@@ -15,9 +15,9 @@ from pepdistill.distill.stream_pretrain import (
     default_mixes,
     fit_stream_pretrain,
 )
-from pepdistill.models.context import MSContextEncoder
-from pepdistill.models.registry import build_student
-from pepdistill.teacher import FakeTeacher
+from msspeculator.models.context import MSContextEncoder
+from msspeculator.models.registry import build_student
+from msspeculator.teacher import FakeTeacher
 
 FASTA = """>p1
 MKWVTFISLLFLFSSAYSRGVFRRDTHKSEIAHRFKDLGEEHFKGLVLIAFSQYLQQCPF
@@ -193,8 +193,8 @@ def test_all_charge_states_keeps_a_peptide_together_at_every_charge():
     """
     import numpy as np
 
-    from pepdistill.data.config import DigestConfig
-    from pepdistill.data.sources import precursors_from_sequences
+    from msspeculator.data.config import DigestConfig
+    from msspeculator.data.sources import precursors_from_sequences
 
     cfg = DigestConfig(min_charge=2, max_charge=4, max_variable_mods=1)
     seqs = ["SAMPLER", "PEPTIDEMK", "ACDEFGHIK"]
@@ -214,8 +214,8 @@ def test_all_charge_states_keeps_a_peptide_together_at_every_charge():
 def test_sampling_mode_still_yields_one_precursor_per_sequence():
     import numpy as np
 
-    from pepdistill.data.config import DigestConfig
-    from pepdistill.data.sources import precursors_from_sequences
+    from msspeculator.data.config import DigestConfig
+    from msspeculator.data.sources import precursors_from_sequences
 
     cfg = DigestConfig(min_charge=2, max_charge=4)
     seqs = ["SAMPLER", "PEPTIDEK"]

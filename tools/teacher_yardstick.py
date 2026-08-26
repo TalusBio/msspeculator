@@ -29,11 +29,11 @@ from typing import Any
 import fsspec
 import numpy as np
 
-from pepdistill.chem import unimod_title
-from pepdistill.data.prepared import PreparedManifest, PreparedStreamingDataset
-from pepdistill.diagnostics import SA_HISTOGRAM_EDGES, normalized_spectral_angle, sa_histogram
-from pepdistill.models.context import MSContextEncoder
-from pepdistill.teacher import get_teacher
+from msspeculator.chem import unimod_title
+from msspeculator.data.prepared import PreparedManifest, PreparedStreamingDataset
+from msspeculator.diagnostics import SA_HISTOGRAM_EDGES, normalized_spectral_angle, sa_histogram
+from msspeculator.models.context import MSContextEncoder
+from msspeculator.teacher import get_teacher
 
 
 # Every reason `_teacher_refusal` can return. Listed once so the report always accounts for all of
@@ -71,7 +71,7 @@ def _teacher_refusal(precursor) -> str | None:
     """
     # Local by necessity, not laziness: importing the wrapper pulls in peptdeep/alphabase, and
     # `--render-from` must be able to rebuild the Markdown without the optional teacher extra.
-    from pepdistill.teacher.peptdeep_teacher import _alphabase_mod
+    from msspeculator.teacher.peptdeep_teacher import _alphabase_mod
 
     peptide = precursor.peptide
     for site, spec in peptide.mods:

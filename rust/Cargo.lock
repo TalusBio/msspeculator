@@ -265,6 +265,44 @@ dependencies = [
 ]
 
 [[package]]
+name = "msspeculator-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "blake2",
+ "clap",
+ "flate2",
+ "msspeculator-core",
+ "serde_json",
+]
+
+[[package]]
+name = "msspeculator-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "blake2",
+ "libm",
+ "ndarray",
+ "pest",
+ "pest_derive",
+ "safetensors",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "msspeculator_rs"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "msspeculator-core",
+ "ndarray",
+ "numpy",
+ "pyo3",
+]
+
+[[package]]
 name = "ndarray"
 version = "0.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -332,44 +370,6 @@ name = "once_cell_polyfill"
 version = "1.70.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
-
-[[package]]
-name = "pepdistill-cli"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "blake2",
- "clap",
- "flate2",
- "pepdistill-core",
- "serde_json",
-]
-
-[[package]]
-name = "pepdistill-core"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "blake2",
- "libm",
- "ndarray",
- "pest",
- "pest_derive",
- "safetensors",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "pepdistill_rs"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "ndarray",
- "numpy",
- "pepdistill-core",
- "pyo3",
-]
 
 [[package]]
 name = "pest"

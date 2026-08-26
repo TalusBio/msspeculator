@@ -1,4 +1,4 @@
-//! Pure-Rust pepdistill inference for the `predict` CLI.
+//! Pure-Rust msspeculator inference for the `predict` CLI.
 //!
 //! Load a `.safetensors` artifact ([`artifact::Artifact`]), run the transformer student forward
 //! ([`model::Predictor`]), and assemble a single-peptide [`Prediction`] whose fragment table

@@ -4,7 +4,7 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use pepdistill_core::{predict, Artifact};
+use msspeculator_core::{predict, Artifact};
 
 const IRT_STANDARDS_TSV: &str = include_str!("../../../data/reference_peptides/biognosys_irt.tsv");
 

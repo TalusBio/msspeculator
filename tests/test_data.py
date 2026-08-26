@@ -3,14 +3,14 @@ from pathlib import Path
 
 import pytest
 
-from pepdistill.data.config import DigestConfig, SplitConfig
-from pepdistill.data.digest import cleave_protein, digest_records, resolve_fasta
-from pepdistill.data.precursors import (
+from msspeculator.data.config import DigestConfig, SplitConfig
+from msspeculator.data.digest import cleave_protein, digest_records, resolve_fasta
+from msspeculator.data.precursors import (
     enumerate_precursors,
     frame_to_precursors,
     precursors_to_frame,
 )
-from pepdistill.data.split import assign_split
+from msspeculator.data.split import assign_split
 
 
 def test_trypsin_cleaves_after_kr_not_before_p():
@@ -29,7 +29,7 @@ def test_uniprot_fasta_is_downloaded_once_to_cache(tmp_path, monkeypatch):
         assert timeout == 120
         return io.BytesIO(b">protein\nSAMPLERK\n")
 
-    monkeypatch.setattr("pepdistill.data.digest.urllib.request.urlopen", open_url)
+    monkeypatch.setattr("msspeculator.data.digest.urllib.request.urlopen", open_url)
     logs: list[str] = []
     first = resolve_fasta("uniprot:UP000000625", cache_dir=tmp_path, log=logs.append)
     second = resolve_fasta("uniprot:UP000000625", cache_dir=tmp_path, log=logs.append)
@@ -155,8 +155,8 @@ def test_digest_records_dedupes_and_sorts():
 
 
 def test_precursor_frame_roundtrips_terminal_and_mass_only_mods():
-    from pepdistill.chem import Peptide
-    from pepdistill.data.precursors import (
+    from msspeculator.chem import Peptide
+    from msspeculator.data.precursors import (
         Precursor,
         frame_to_precursors,
         precursors_to_frame,
@@ -172,7 +172,7 @@ def test_precursor_frame_roundtrips_terminal_and_mass_only_mods():
 
 
 def test_nterm_and_side_chain_mods_are_distinct_sites():
-    from pepdistill.chem import Peptide
+    from msspeculator.chem import Peptide
 
     p = Peptide("KPEPTIDE", (("n", "UNIMOD:737"), (0, "UNIMOD:737")))
     assert len(p.mods) == 2
@@ -188,8 +188,8 @@ def test_unspecific_digest_refuses_an_unreachable_length_window():
     """
     import pytest
 
-    from pepdistill.data.config import DigestConfig
-    from pepdistill.data.digest import digest_records
+    from msspeculator.data.config import DigestConfig
+    from msspeculator.data.digest import digest_records
 
     records = [("p1", "MKWVTFISLLFLFSSAYSRGVFRRDTHKSEIAHRFKDLGEEHFK")]
     with pytest.raises(ValueError, match="at most"):
@@ -206,8 +206,8 @@ def test_digest_refuses_an_empty_result_from_real_proteins():
     """A specific enzyme with an impossible window must also fail loudly, not return []."""
     import pytest
 
-    from pepdistill.data.config import DigestConfig
-    from pepdistill.data.digest import digest_records
+    from msspeculator.data.config import DigestConfig
+    from msspeculator.data.digest import digest_records
 
     records = [("p1", "MKWVTFISLLFLFSSAYSRGVFRR")]
     with pytest.raises(ValueError, match="0 peptides"):
@@ -227,7 +227,7 @@ def test_two_parsers_one_strict_one_tolerant_of_prospect_only():
     is called once at ingest, `from_string` accepts only canonical ProForma and is what everything
     downstream uses.
     """
-    from pepdistill.chem import Peptide
+    from msspeculator.chem import Peptide
 
     # PROSPECT omits the N-terminal separator; both spellings mean the terminus, not residue 0.
     for spelling in ("[UNIMOD:737]ET[UNIMOD:21]TLHLVLR", "[UNIMOD:737]-ET[UNIMOD:21]TLHLVLR"):
@@ -289,7 +289,7 @@ def _fake_botocore(monkeypatch, credentials):
 
 
 def test_only_a_remote_target_needs_credentials():
-    from pepdistill.data.storage import is_remote, parquet_storage_options
+    from msspeculator.data.storage import is_remote, parquet_storage_options
 
     assert is_remote("s3://bucket/key.parquet")
     assert is_remote(["s3://bucket/a.parquet", "s3://bucket/b.parquet"])
@@ -310,7 +310,7 @@ def test_parquet_storage_options_are_explicit_for_remote_targets(monkeypatch):
     so passing what it finds makes the same call work everywhere; `ast-grep` enforces that every
     Polars read does so.
     """
-    from pepdistill.data.storage import parquet_storage_options
+    from msspeculator.data.storage import parquet_storage_options
 
     class Frozen:  # botocore's ReadOnlyCredentials shape
         access_key = "AKIAEXAMPLE"
@@ -333,7 +333,7 @@ def test_parquet_storage_options_are_explicit_for_remote_targets(monkeypatch):
 def test_with_no_credentials_anywhere_polars_is_left_to_its_own_resolution(monkeypatch):
     """An empty mapping is not a failure: a public bucket still reads, and a private one fails
     with the object store's own message instead of one invented here."""
-    from pepdistill.data.storage import parquet_storage_options
+    from msspeculator.data.storage import parquet_storage_options
 
     _fake_botocore(monkeypatch, None)
     assert parquet_storage_options("s3://bucket/key.parquet") == {}
@@ -342,7 +342,7 @@ def test_with_no_credentials_anywhere_polars_is_left_to_its_own_resolution(monke
 def test_an_unusable_session_is_reported_rather_than_downgraded(monkeypatch):
     """An expired SSO session raises from the refresh. It must propagate: silently returning {}
     would turn a renewable login into an object-store timeout against instance metadata."""
-    from pepdistill.data.storage import parquet_storage_options
+    from msspeculator.data.storage import parquet_storage_options
 
     class Expired:
         def get_frozen_credentials(self):
@@ -382,7 +382,7 @@ def test_meta_index_keeps_the_best_localization_and_drops_ties():
     engine did localize, so the best one is the label; where they tie it did not, and keeping
     whichever row came first would teach a site-specific model a coin flip.
     """
-    from pepdistill.data.meta_index import build_meta_index_from_frame
+    from msspeculator.data.meta_index import build_meta_index_from_frame
 
     index = build_meta_index_from_frame(
         _meta_rows(
@@ -410,7 +410,7 @@ def test_meta_index_keeps_the_best_localization_and_drops_ties():
 
 def test_meta_index_drops_ties_when_no_score_is_recorded():
     """With no score to compare, two placements are still two placements."""
-    from pepdistill.data.meta_index import build_meta_index_from_frame
+    from msspeculator.data.meta_index import build_meta_index_from_frame
 
     frame = _meta_rows([(1, "S[UNIMOD:21]AMPLER", 1.0), (1, "SAMPLE[UNIMOD:21]R", 1.0)]).drop(
         "andromeda_score"
@@ -429,7 +429,7 @@ def test_meta_index_drops_a_scan_reported_with_two_peptides():
     distinguishes the candidates, so the spectrum is dropped and counted apart from a localization
     tie, whose cause is different.
     """
-    from pepdistill.data.meta_index import build_meta_index_from_frame
+    from msspeculator.data.meta_index import build_meta_index_from_frame
 
     index = build_meta_index_from_frame(
         _meta_rows(
@@ -479,7 +479,7 @@ def test_pretrain_sources_carry_their_own_mods():
     ``_digest_cfg`` dropped both lists, so a pretrain config could not set mods at all and every
     run silently used the DigestConfig defaults.
     """
-    from pepdistill.distill.pipeline import DigestSource, _digest_cfg
+    from msspeculator.distill.pipeline import DigestSource, _digest_cfg
 
     default = _digest_cfg(DigestSource(fasta="x.fasta"))
     assert default.fixed_mods == ("C[UNIMOD:4]",)
@@ -511,7 +511,7 @@ def test_ingest_stores_the_canonical_spelling_whatever_prospect_wrote():
     grammar cannot make that mistake, because the terminus and the last residue are different
     productions rather than the same loop with an index.
     """
-    from pepdistill.chem import Peptide
+    from msspeculator.chem import Peptide
 
     # Every spelling PROSPECT uses, canonicalized. The N-terminal separator is added, and two mods
     # on one residue are ordered deterministically, so equal molecules produce equal strings.

@@ -1,7 +1,7 @@
-"""Chemistry is single-sourced in Rust (pepdistill_rs / rust/core). This module only
+"""Chemistry is single-sourced in Rust (msspeculator_rs / rust/core). This module only
 re-exports, it defines no constants or logic (so nothing here can drift)."""
 
-from pepdistill_rs import (  # noqa: F401
+from msspeculator_rs import (  # noqa: F401
     H2O,
     ION_TYPES,
     PROTON,

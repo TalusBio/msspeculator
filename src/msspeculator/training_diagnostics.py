@@ -1,6 +1,6 @@
 """Longitudinal, low-frequency diagnostics for a live training run.
 
-The plotting primitives live in :mod:`pepdistill.diagnostics`; this module owns the model-
+The plotting primitives live in :mod:`msspeculator.diagnostics`; this module owns the model-
 specific extraction and Lightning lifecycle.  PCA frames and reference spectra are frozen at
 construction/first render so changes across steps describe the student, not a moving diagnostic.
 """
@@ -302,7 +302,7 @@ class TrainingDiagnosticRenderer:
         if nce_range[0] >= nce_range[1]:
             raise ValueError("diagnostic NCE range must be increasing")
         os.environ.setdefault(
-            "MPLCONFIGDIR", str(Path(tempfile.gettempdir()) / "pepdistill-matplotlib")
+            "MPLCONFIGDIR", str(Path(tempfile.gettempdir()) / "msspeculator-matplotlib")
         )
         self.out = Path(out)
         self.acquisition = acquisition

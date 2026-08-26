@@ -1,4 +1,4 @@
-//! Deterministic train/val/test assignment, ported from `src/pepdistill/data/split.py`.
+//! Deterministic train/val/test assignment, ported from `src/msspeculator/data/split.py`.
 //!
 //! Hashing rather than sampling is what makes a peptide keep its assignment as the corpus grows,
 //! across machines and across runs. Every modified form and charge state of one bare sequence
@@ -71,7 +71,7 @@ mod tests {
     ///
     /// ```text
     /// uv run python -c "
-    /// from pepdistill.data.split import _unit_hash
+    /// from msspeculator.data.split import _unit_hash
     /// for s in ['PEPTIDEK','ACDEFGHIK','SAMPLERK','TESTPEPTIDER','K']:
     ///     print(s, repr(_unit_hash(s, 'pepdistill-v1')))"
     /// ```

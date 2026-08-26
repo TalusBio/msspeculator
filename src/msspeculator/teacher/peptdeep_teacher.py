@@ -21,7 +21,7 @@ def _modification_title(pep, spec) -> str:
     ``Carbamidomethyl@C`` for accession 4 but a bare ``Phospho`` for 21. The caller appends the
     site itself, so it needs the bare title every time:
 
-    >>> from pepdistill.chem import Peptide
+    >>> from msspeculator.chem import Peptide
     >>> peptide = Peptide.from_string("AC[UNIMOD:4]DES[UNIMOD:21]K")
     >>> [_modification_title(peptide, spec) for _, spec in peptide.mods]
     ['Carbamidomethyl', 'Phospho']
@@ -131,7 +131,7 @@ _PEPTDEEP_ION_COLS = tuple(f"{ion}_z{z}" for ion, z in ION_TYPES)
 
 _IMPORT_HINT = (
     "peptdeep is required for the AlphaPeptDeep teacher. Install the extra:\n"
-    "    uv pip install 'pepdistill[teacher]'"
+    "    uv pip install 'msspeculator[teacher]'"
 )
 
 

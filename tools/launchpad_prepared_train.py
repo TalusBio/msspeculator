@@ -69,7 +69,7 @@ def main() -> None:
         "etl",
         "--extra",
         "tracking",
-        "pepdistill",
+        "msspeculator",
         "run",
         str(config),
         "--device",

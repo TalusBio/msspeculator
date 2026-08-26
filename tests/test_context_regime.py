@@ -13,14 +13,14 @@ from types import SimpleNamespace
 
 import pytest
 import torch
-from pepdistill.distill.dataset import MSFactors
+from msspeculator.distill.dataset import MSFactors
 
-from pepdistill.chem import Peptide
-from pepdistill.data.config import SplitConfig
-from pepdistill.data.encode import collate
-from pepdistill.data.precursors import Precursor
-from pepdistill.data.split import assign_split
-from pepdistill.distill.context_regime import (
+from msspeculator.chem import Peptide
+from msspeculator.data.config import SplitConfig
+from msspeculator.data.encode import collate
+from msspeculator.data.precursors import Precursor
+from msspeculator.data.split import assign_split
+from msspeculator.distill.context_regime import (
     RealExample,
     RealSpeclibDataset,
     RealSpeclibModule,
@@ -29,10 +29,10 @@ from pepdistill.distill.context_regime import (
     establish_rt_norm,
     fit_realspeclib_datasets,
 )
-from pepdistill.models.context import ChromRunbook, MSContextEncoder
-from pepdistill.models.registry import build_student
-from pepdistill.teacher.base import PrecursorLabels
-from pepdistill.teacher.fake import FakeTeacher
+from msspeculator.models.context import ChromRunbook, MSContextEncoder
+from msspeculator.models.registry import build_student
+from msspeculator.teacher.base import PrecursorLabels
+from msspeculator.teacher.fake import FakeTeacher
 
 OFFSET = 25.0
 
@@ -227,7 +227,7 @@ def test_degenerate_variance_falls_back_to_unit_std():
 
 
 def test_fit_from_prebuilt_datasets_trains_and_reports_metrics(tmp_path, capsys):
-    from pepdistill.distill.context_regime import RealSpeclibDataset
+    from msspeculator.distill.context_regime import RealSpeclibDataset
 
     model = build_student("small")
     model.set_norm(rt_mean=0.0, rt_std=1.0)
@@ -280,7 +280,7 @@ def test_fit_from_prebuilt_datasets_trains_and_reports_metrics(tmp_path, capsys)
     # The per-dataset spectral-angle distribution is retained along with its mean. A mean cannot be
     # drawn against the published teacher yardstick or the corpus replicate ceiling, and all three
     # share this grid so they overlay directly.
-    from pepdistill.diagnostics import SA_HISTOGRAM_EDGES
+    from msspeculator.diagnostics import SA_HISTOGRAM_EDGES
 
     edges = records[-1]["val_sa_histogram_bin_edges"]
     assert edges == list(SA_HISTOGRAM_EDGES)
@@ -380,7 +380,7 @@ def test_every_epoch_gets_a_validation_when_the_interval_never_elapses():
     """
     import lightning as L
 
-    from pepdistill.distill.context_regime import RealSpeclibDataset
+    from msspeculator.distill.context_regime import RealSpeclibDataset
 
     checks: list[int] = []
 
@@ -426,7 +426,7 @@ def test_epoch_shorter_than_the_validation_interval_still_checkpoints(tmp_path):
     epoch, since this callback is what writes `latest.ckpt`. Every other test leaves sanity
     checking on, which sets the attribute as a side effect and hid this.
     """
-    from pepdistill.distill.context_regime import RealSpeclibDataset
+    from msspeculator.distill.context_regime import RealSpeclibDataset
 
     model = build_student("small")
     model.set_norm(rt_mean=0.0, rt_std=1.0)
@@ -454,7 +454,7 @@ def test_epoch_shorter_than_the_validation_interval_still_checkpoints(tmp_path):
 
     # Pin what the epoch-end snapshot records when nothing has validated. Driven directly,
     # because the post-fit validation pass overwrites `latest.ckpt` with a real step.
-    from pepdistill.distill.context_regime import _RealCheckpoint
+    from msspeculator.distill.context_regime import _RealCheckpoint
 
     module.last_validation_step = None
     directory = tmp_path / "unvalidated"

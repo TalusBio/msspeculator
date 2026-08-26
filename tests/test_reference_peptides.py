@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from pepdistill.diagnostics import IRT_STANDARDS
+from msspeculator.diagnostics import IRT_STANDARDS
 
 
 PRTC_PATH = Path(__file__).parents[1] / "data" / "reference_peptides" / "prtc.tsv"

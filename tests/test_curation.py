@@ -3,8 +3,8 @@ import json
 import polars as pl
 import pytest
 
-from pepdistill.data.prepared_schema import PREPARED_SPECTRA_SCHEMA, prepared_frame
-from pepdistill.etl.curation import CURATION_ANNOTATION_SCHEMA, analyze_prepared_curation
+from msspeculator.data.prepared_schema import PREPARED_SPECTRA_SCHEMA, prepared_frame
+from msspeculator.etl.curation import CURATION_ANNOTATION_SCHEMA, analyze_prepared_curation
 
 
 def _row(

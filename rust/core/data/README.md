@@ -1,13 +1,13 @@
 # Vendored data
 
-`pepdistill-core` compiles these files into the binary. It does not read them at runtime. Each file
+`msspeculator-core` compiles these files into the binary. It does not read them at runtime. Each file
 stores its provenance in its own header. This index lets you inspect the tree without opening each file.
 
 | file | what | provenance lives in | regenerate |
 | --- | --- | --- | --- |
 | `elements.tsv` | 40 UNIMOD nuclide masses | `#` header | `tools/gen_unimod.py` |
 | `unimod.tsv` | 1,560 UNIMOD modification deltas | `#` header | `tools/gen_unimod.py` |
-| `weights/small-v0.safetensors` | trained model, embedded by `builtin.rs` | safetensors metadata + `weights/README.md` | `pepdistill export-rust` |
+| `weights/small-v0.safetensors` | trained model, embedded by `builtin.rs` | safetensors metadata + `weights/README.md` | `msspeculator export-rust` |
 
 ## The UNIMOD tables
 

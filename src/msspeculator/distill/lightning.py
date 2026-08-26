@@ -6,7 +6,7 @@ embeds + trunk + heads + norm buffers. Each training *regime* is a thin
 defines only its loss/data contract. Multiple regimes constructed with the *same* model
 instance share weights, so you can, e.g., pre-train with :class:`DistillModule` (teacher
 soft labels) and then fine-tune the identical backbone with ``RealSpeclibModule``
-(experimental spectra), "pass the backbone around". :mod:`pepdistill.distill.pipeline`
+(experimental spectra), "pass the backbone around". :mod:`msspeculator.distill.pipeline`
 chains exactly that (pretrain -> real train) from one config.
 """
 

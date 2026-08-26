@@ -17,16 +17,16 @@ import pytest
 import numpy as np
 import torch
 
-from pepdistill.chem import Peptide
-from pepdistill.data.encode import FRAG_OFFSET, collate
-from pepdistill.data.precursors import Precursor
-from pepdistill.export import export_safetensors
-from pepdistill.models.context import ChromRunbook, MSContextEncoder
-from pepdistill.models.registry import build_student, save_checkpoint
-from pepdistill.predict.fast import TorchRunner, predict_library_fast
+from msspeculator.chem import Peptide
+from msspeculator.data.encode import FRAG_OFFSET, collate
+from msspeculator.data.precursors import Precursor
+from msspeculator.export import export_safetensors
+from msspeculator.models.context import ChromRunbook, MSContextEncoder
+from msspeculator.models.registry import build_student, save_checkpoint
+from msspeculator.predict.fast import TorchRunner, predict_library_fast
 
 RUST_DIR = Path(__file__).resolve().parents[1] / "rust"
-BIN = RUST_DIR / "target" / "release" / "pepdistill-cli"
+BIN = RUST_DIR / "target" / "release" / "msspeculator-cli"
 # An acquisition setup addressed by name rather than composed from factors, which is the only
 # thing available for a library that records neither instrument nor collision energy.
 NAMED_SETUP = "Evosep60SPD_heron"
@@ -53,7 +53,7 @@ def _binary() -> str:
     if shutil.which("cargo") is None:
         pytest.skip("no cargo toolchain")
     r = subprocess.run(
-        ["cargo", "build", "-p", "pepdistill-cli", "--release"],
+        ["cargo", "build", "-p", "msspeculator-cli", "--release"],
         cwd=RUST_DIR,
         capture_output=True,
         text=True,
@@ -427,11 +427,11 @@ def test_rust_rejects_a_v1_artifact(artifact, tmp_path):
 
     src = artifact["path"]
     with safe_open(str(src), framework="pt") as f:
-        meta = _json.loads(f.metadata()["pepdistill"])
+        meta = _json.loads(f.metadata()["msspeculator"])
         tensors = {k: f.get_tensor(k) for k in f.keys()}
     meta["format_version"] = 1
     stale = tmp_path / "v1.safetensors"
-    save_file(tensors, str(stale), metadata={"pepdistill": _json.dumps(meta)})
+    save_file(tensors, str(stale), metadata={"msspeculator": _json.dumps(meta)})
 
     r = subprocess.run(
         [
@@ -495,8 +495,8 @@ def test_fit_context_improves_a_held_out_library_score(artifact, tmp_path):
     carries the padded fragment rows, and it differentiates exactly rather than by finite
     differences), so pinning a number here would pin the difference rather than the behaviour.
     """
-    from pepdistill.data.split import assign_split
-    from pepdistill.data.config import SplitConfig
+    from msspeculator.data.split import assign_split
+    from msspeculator.data.config import SplitConfig
 
     # Enough peptides that the project's hash split yields both halves; asserted, not assumed.
     peptides = [f"PEPTIDE{chr(65 + i % 26)}{chr(65 + i // 26)}K" for i in range(220)]
@@ -736,11 +736,11 @@ def test_mzspeclib_output_is_readable_by_the_reference_implementation(artifact, 
         for attribute in library.attributes
         if attribute.key.endswith("other attribute value") and attribute.group_id in named
     }
-    assert values["pepdistill:inputs.model"] == str(artifact["path"])
-    assert len(values["pepdistill:inputs.model_blake2b_256"]) == 64
-    assert str(values["pepdistill:fragments.max_fragments"]) == "4"
-    assert values["pepdistill:digestion.enzyme"] == "trypsin"
-    assert values["pepdistill:output.format"] == "mzspeclib-text"
+    assert values["msspeculator:inputs.model"] == str(artifact["path"])
+    assert len(values["msspeculator:inputs.model_blake2b_256"]) == 64
+    assert str(values["msspeculator:fragments.max_fragments"]) == "4"
+    assert values["msspeculator:digestion.enzyme"] == "trypsin"
+    assert values["msspeculator:output.format"] == "mzspeclib-text"
 
 
 def test_mzspeclib_output_violates_no_rule_at_any_level(artifact, tmp_path):
@@ -795,9 +795,9 @@ def test_mzspeclib_reports_both_retention_quantities_under_a_chrom_context(artif
         for attribute in library.attributes
         if attribute.key.endswith("other attribute value") and attribute.group_id in named
     }
-    assert values["pepdistill:retention.normalized.kind"] == "dimensionless index, minutes-like"
-    assert "TFAHTESHISK = 0" in values["pepdistill:retention.normalized.scale"]
-    assert values["pepdistill:retention.raw.chrom_context"] == "dsA"
+    assert values["msspeculator:retention.normalized.kind"] == "dimensionless index, minutes-like"
+    assert "TFAHTESHISK = 0" in values["msspeculator:retention.normalized.scale"]
+    assert values["msspeculator:retention.raw.chrom_context"] == "dsA"
 
     chain = validator.load_default_validator()
     chain.validate_library(SpectrumLibrary(filename=str(out)))

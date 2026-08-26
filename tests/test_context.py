@@ -3,16 +3,16 @@
 import torch
 import fsspec
 
-from pepdistill.chem import Peptide
-from pepdistill.data.encode import collate
-from pepdistill.data.precursors import Precursor
-from pepdistill.models.context import (
+from msspeculator.chem import Peptide
+from msspeculator.data.encode import collate
+from msspeculator.data.precursors import Precursor
+from msspeculator.models.context import (
     DEFAULT_FRAGMENTATIONS,
     DEFAULT_INSTRUMENTS,
     ChromRunbook,
     MSContextEncoder,
 )
-from pepdistill.models.registry import (
+from msspeculator.models.registry import (
     ContextBundle,
     build_student,
     load_checkpoint,
@@ -49,7 +49,7 @@ def test_a_new_source_cannot_renumber_trained_rows(tmp_path):
     renumbering silently handed each trained row to a different dataset: no error, just RT context
     predicted from the wrong chromatography.
     """
-    from pepdistill.distill.pipeline import _runbook_for_datasets
+    from msspeculator.distill.pipeline import _runbook_for_datasets
 
     model = build_student("small")
     book = ChromRunbook(n_datasets=2, context_dim=model.cfg.context_dim)
@@ -108,7 +108,7 @@ def test_checkpoint_loads_from_fsspec_uri(tmp_path):
     model = build_student("flash")
     encoder = MSContextEncoder(context_dim=model.cfg.context_dim)
     save_checkpoint(model, local, encoder=encoder)
-    uri = "memory://pepdistill-tests/m.ckpt"
+    uri = "memory://msspeculator-tests/m.ckpt"
     with local.open("rb") as src, fsspec.open(uri, "wb") as dst:
         dst.write(src.read())
     loaded = load_checkpoint(uri)
@@ -119,7 +119,7 @@ def test_checkpoint_loads_from_fsspec_uri(tmp_path):
 
 def test_context_aware_predict_changes_ms2_not_rt():
     """TorchRunner with a ms_context shifts MS2 but leaves RT and CCS (context-free) alone."""
-    from pepdistill.predict.fast import TorchRunner, _bucket_arrays
+    from msspeculator.predict.fast import TorchRunner, _bucket_arrays
 
     m = build_student("small").eval()
     m.set_norm(30.0, 10.0, 400.0, 50.0)
@@ -216,11 +216,11 @@ def test_runbook_affine_is_identity_at_init():
     """Zero-init and the neutral row must both reproduce base RT EXACTLY, not approximately."""
     import torch
 
-    from pepdistill.chem import Peptide
-    from pepdistill.data.encode import collate
-    from pepdistill.data.precursors import Precursor
-    from pepdistill.models.context import ChromRunbook
-    from pepdistill.models.registry import build_student
+    from msspeculator.chem import Peptide
+    from msspeculator.data.encode import collate
+    from msspeculator.data.precursors import Precursor
+    from msspeculator.models.context import ChromRunbook
+    from msspeculator.models.registry import build_student
 
     m = build_student("small").eval()
     rb = ChromRunbook(2, m.cfg.context_dim)
@@ -246,11 +246,11 @@ def test_runbook_affine_recovers_a_known_scale_and_shift():
     """
     import torch
 
-    from pepdistill.chem import Peptide
-    from pepdistill.data.encode import collate
-    from pepdistill.data.precursors import Precursor
-    from pepdistill.models.context import ChromRunbook
-    from pepdistill.models.registry import build_student
+    from msspeculator.chem import Peptide
+    from msspeculator.data.encode import collate
+    from msspeculator.data.precursors import Precursor
+    from msspeculator.models.context import ChromRunbook
+    from msspeculator.models.registry import build_student
 
     torch.manual_seed(0)
     m = build_student("small").eval()
@@ -287,11 +287,11 @@ def test_affine_never_touches_rt_base():
     """rt_base is the iRT anchor; conditioning it would destroy the frame it defines."""
     import torch
 
-    from pepdistill.chem import Peptide
-    from pepdistill.data.encode import collate
-    from pepdistill.data.precursors import Precursor
-    from pepdistill.models.context import ChromRunbook
-    from pepdistill.models.registry import build_student
+    from msspeculator.chem import Peptide
+    from msspeculator.data.encode import collate
+    from msspeculator.data.precursors import Precursor
+    from msspeculator.models.context import ChromRunbook
+    from msspeculator.models.registry import build_student
 
     m = build_student("small").eval()
     rb = ChromRunbook(1, m.cfg.context_dim)

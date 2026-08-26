@@ -97,6 +97,7 @@ class SplitConfig:
     train: float = 0.8
     val: float = 0.1
     test: float = 0.1
+    # Keep the v1 salt so renaming the package does not reshuffle existing datasets.
     salt: str = "pepdistill-v1"
 
     def __post_init__(self) -> None:

@@ -105,7 +105,7 @@ fn cosine(a: &Array2<f32>, b: &Array2<f32>) -> f32 {
 }
 
 /// Normalized spectral contrast angle in [0, 1], 1 = identical. The reporting metric, matching
-/// `pepdistill.distill.losses.spectral_angle`.
+/// `msspeculator.distill.losses.spectral_angle`.
 fn spectral_angle(a: &Array2<f32>, b: &Array2<f32>) -> f32 {
     let cos = cosine(a, b).clamp(-1.0, 1.0);
     1.0 - 2.0 * cos.acos() / std::f32::consts::PI

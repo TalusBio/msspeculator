@@ -1,4 +1,4 @@
-//! Core tokenizer, a pure-Rust port of `pepdistill.data.encode.collate`.
+//! Core tokenizer, a pure-Rust port of `msspeculator.data.encode.collate`.
 //!
 //! Token id is `ord(aa) - AA_OFFSET` (no lookup table). Modifications are exposed as four
 //! channels (`mod_arrays`), element composition, raw mass, and two boolean presence masks,

@@ -110,7 +110,7 @@ class PreparedManifest:
 def load_shard_manifests(prefix: str, log: Callable[[str], None] | None = None) -> list[dict]:
     """Read every per-shard manifest under a prepared prefix, read-only.
 
-    Reads the prefix rather than a :class:`~pepdistill.etl.config.PrepareConfig`, so a corpus can be
+    Reads the prefix rather than a :class:`~msspeculator.etl.config.PrepareConfig`, so a corpus can be
     inspected without the current policy matching the one that built it; a policy change moves the
     config fingerprint, which would hide every shard; and so asking a question about a published
     corpus never rewrites its catalog.
@@ -226,7 +226,7 @@ def _frame_batch(frame: pl.DataFrame, encoder) -> RealBatch:
     from ..distill.context_regime import RealBatch
     from ..distill.dataset import LabeledBatch, MSFactors
 
-    import pepdistill_rs as _rs
+    import msspeculator_rs as _rs
 
     arrays = _rs.collate_prepared(
         frame["proforma"].to_list(),
@@ -354,7 +354,7 @@ class PreparedStreamingDataset:
             read_at = time.perf_counter()
             # Split is the only admission test. A row missing one RT label keeps the other two
             # heads' supervision, and the loss masks the missing term per row
-            # (:func:`pepdistill.distill.losses.labeled_mse`).
+            # (:func:`msspeculator.distill.losses.labeled_mse`).
             frame = read_prepared_parquet(stream).filter(pl.col("split").is_in(self.splits))
             if self.splits == frozenset({"val"}) and self.manifest.val_winners:
                 keep = [

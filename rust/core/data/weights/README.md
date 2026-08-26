@@ -1,11 +1,11 @@
 # Bundled weights
 
-Artifacts compiled into `pepdistill-cli` by `rust/core/src/builtin.rs`, so that a clean clone
+Artifacts compiled into `msspeculator-cli` by `rust/core/src/builtin.rs`, so that a clean clone
 builds a tool that can predict. Each is addressed as `--model builtin:<name>`; the name and the
 file's blake2b-256 are what a generated library records as its model identity.
 
 **The provenance is inside each file**, not in this note. Every artifact written by
-`pepdistill export-rust` carries a `provenance` key in its safetensors `__metadata__`: the source
+`msspeculator export-rust` carries a `provenance` key in its safetensors `__metadata__`: the source
 checkpoint's name and digest, plus the checkpoint's own training record: stage, epoch, global
 step, and the per-dataset validation values behind the score. Read it with:
 
@@ -14,7 +14,7 @@ uv run python -c "
 import json, struct, sys
 with open(sys.argv[1], 'rb') as f:
     n = struct.unpack('<Q', f.read(8))[0]
-    print(json.dumps(json.loads(json.loads(f.read(n))['__metadata__']['pepdistill'])['provenance'],
+    print(json.dumps(json.loads(json.loads(f.read(n))['__metadata__']['msspeculator'])['provenance'],
                      indent=2))
 " rust/core/data/weights/small-v0.safetensors
 ```
@@ -43,7 +43,7 @@ Export from a checkpoint. This step is deterministic. The same checkpoint yields
 which is what lets `builtin.rs` record a digest and a test assert it:
 
 ```bash
-uv run pepdistill export-rust --model runs/full-local-decay2/best.ckpt \
+uv run msspeculator export-rust --model runs/full-local-decay2/best.ckpt \
   -o rust/core/data/weights/small-v0.safetensors
 ```
 
@@ -52,7 +52,7 @@ worker scheduling, so re-running the config reproduces the model's *behaviour* w
 variation, not its weights:
 
 ```bash
-uv run pepdistill run --config runs/full-local-resume2.toml
+uv run msspeculator run --config runs/full-local-resume2.toml
 ```
 
 Re-exporting changes the digest whenever the checkpoint or the export format changes. The recorded

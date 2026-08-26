@@ -12,7 +12,7 @@
 #
 #   WANDB_API_KEY="$(tr -d '\r\n' < WANDB_SECRET)" \
 #     uv run --extra torch --extra teacher --extra etl --extra tracking \
-#     pepdistill run runs/full-local-resume.toml
+#     msspeculator run runs/full-local-resume.toml
 
 out = "runs/full-local-decay"
 # Model config, norm, encoder and the 41-row runbook all come from here; `preset` below is
@@ -25,7 +25,7 @@ seed = 0
 
 [tracking]
 enabled = true
-project = "pepdistill"
+project = "msspeculator"
 name = "local-small-decay"
 group = "full-v2-local"
 tags = ["full-nontest", "small", "local", "v2", "resume", "lr-decay"]

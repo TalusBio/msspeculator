@@ -2,15 +2,15 @@
 
 import pytest
 
-from pepdistill.chem import Peptide
-from pepdistill.data.precursors import Precursor
+from msspeculator.chem import Peptide
+from msspeculator.data.precursors import Precursor
 
 peptdeep = pytest.importorskip("peptdeep")
 
 
 @pytest.fixture(scope="module")
 def teacher():
-    from pepdistill.teacher import get_teacher
+    from msspeculator.teacher import get_teacher
 
     return get_teacher("alphapeptdeep", device="cpu")
 
@@ -32,7 +32,7 @@ def test_labels_align_with_input_order(teacher):
 def test_teacher_construction_does_not_emit_mask_modloss_warning():
     import warnings
 
-    from pepdistill.teacher.peptdeep_teacher import PeptDeepTeacher
+    from msspeculator.teacher.peptdeep_teacher import PeptDeepTeacher
 
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
@@ -120,8 +120,8 @@ def test_peptdeep_frame_refuses_mods_it_cannot_represent():
     """A mass-only delta cannot be named, and an unknown name is not silently substituted."""
     import pytest
 
-    from pepdistill.chem import Peptide
-    from pepdistill.teacher.peptdeep_teacher import _alphabase_mod, _modification_title
+    from msspeculator.chem import Peptide
+    from msspeculator.teacher.peptdeep_teacher import _alphabase_mod, _modification_title
 
     mass_only = Peptide("PEPTIDE", ((2, 42.010565),))
     with pytest.raises(ValueError, match="mass-only"):
@@ -146,8 +146,8 @@ def test_alphabase_mod_resolution_covers_our_mixed_vocabulary():
     Site and name are resolved together because they are coupled: our residue index 0 becomes
     alphabase site 1 for a side-chain mod but site 0 for a residue-anchored terminal mod.
     """
-    from pepdistill.chem import Peptide
-    from pepdistill.teacher.peptdeep_teacher import _alphabase_mod
+    from msspeculator.chem import Peptide
+    from msspeculator.teacher.peptdeep_teacher import _alphabase_mod
 
     # Already alphabase-style (frozen aliases and the digest path) pass through untouched.
     qualified = Peptide("ACDEMK", ((1, "UNIMOD:4"), (4, "UNIMOD:35")))
@@ -202,8 +202,8 @@ def test_accessions_are_translated_at_the_peptdeep_boundary():
     vendored UNIMOD table so there is no second mapping to drift, and an accession the table does
     not know is refused rather than guessed at.
     """
-    from pepdistill.chem import Peptide
-    from pepdistill.teacher.peptdeep_teacher import _alphabase_mod
+    from msspeculator.chem import Peptide
+    from msspeculator.teacher.peptdeep_teacher import _alphabase_mod
 
     for proforma, expected in (
         ("PEPS[UNIMOD:21]IDEK", [("Phospho@S", 4)]),

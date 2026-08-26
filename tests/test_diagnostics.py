@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from pepdistill.diagnostics import (
+from msspeculator.diagnostics import (
     DiagnosticReferencePanel,
     EmbeddingConnection,
     IRT_STANDARDS,
@@ -112,7 +112,7 @@ def test_irt_regression_metrics_are_reusable_without_plotting():
 
 
 def test_spectral_angle_series_recovers_its_mean_from_counts():
-    from pepdistill.diagnostics import SA_HISTOGRAM_BINS, SpectralAngleSeries, sa_histogram
+    from msspeculator.diagnostics import SA_HISTOGRAM_BINS, SpectralAngleSeries, sa_histogram
 
     values = np.concatenate([np.full(300, 0.92), np.full(100, 0.41)])
     series = SpectralAngleSeries("student", sa_histogram(values)["counts"])
@@ -144,7 +144,7 @@ def test_spectral_angle_violins_render_three_series_per_dataset(tmp_path):
     checks the renderer accepts that shape and tolerates a series that is missing for a dataset.
     """
     pytest.importorskip("matplotlib")
-    from pepdistill.diagnostics import (
+    from msspeculator.diagnostics import (
         SA_HISTOGRAM_BINS,
         SpectralAngleSeries,
         plot_spectral_angle_violins,
@@ -203,8 +203,8 @@ def test_reference_distributions_load_and_panel_uses_them(tmp_path):
     pytest.importorskip("matplotlib")
     import json
 
-    from pepdistill.diagnostics import SA_HISTOGRAM_BINS, SpectralAngleSeries, sa_histogram
-    from pepdistill.training_diagnostics import load_reference_distributions
+    from msspeculator.diagnostics import SA_HISTOGRAM_BINS, SpectralAngleSeries, sa_histogram
+    from msspeculator.training_diagnostics import load_reference_distributions
 
     rng = np.random.default_rng(1)
     diagnostics = tmp_path / "diagnostics"
@@ -247,8 +247,8 @@ def test_reference_distributions_load_and_panel_uses_them(tmp_path):
         assert load_reference_distributions(str(tmp_path / "absent")) == {}
 
     # Build the real renderer so the prefix is loaded through its own constructor.
-    from pepdistill.teacher import FakeTeacher
-    from pepdistill.training_diagnostics import TrainingDiagnosticRenderer
+    from msspeculator.teacher import FakeTeacher
+    from msspeculator.training_diagnostics import TrainingDiagnosticRenderer
 
     renderer = TrainingDiagnosticRenderer(
         tmp_path / "out", FakeTeacher(), butterflies=2, reference_prefix=str(tmp_path)

@@ -3,17 +3,17 @@ requires = ["maturin>=1.0,<2.0"]
 build-backend = "maturin"
 
 # Standalone build config for the Rust core: this is its own maturin-built package (the
-# root pyproject uses uv_build for the pure-Python `pepdistill` package and depends on this
+# root pyproject uses uv_build for the pure-Python `msspeculator` package and depends on this
 # one via `[tool.uv.sources]` as an editable path dependency), so `uv sync` / `maturin
-# develop` build the crate as the `pepdistill_rs` extension module here instead of walking
+# develop` build the crate as the `msspeculator_rs` extension module here instead of walking
 # up to the root pyproject. See rust/README.md.
 [project]
-name = "pepdistill_rs"
+name = "msspeculator_rs"
 version = "0.1.0"
-description = "Rust chemistry/tokenizer/batcher core for pepdistill (required at runtime)."
+description = "Rust chemistry/tokenizer/batcher core for msspeculator (required at runtime)."
 license = "Apache-2.0"
 requires-python = ">=3.11"
 
 [tool.maturin]
 manifest-path = "Cargo.toml"
-module-name = "pepdistill_rs"
+module-name = "msspeculator_rs"

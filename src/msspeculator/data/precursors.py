@@ -27,7 +27,7 @@ def enumerate_precursors(
     Exhaustive: every variable mod-form up to the per-peptide cap, ignoring the rules'
     probabilities. This is the library-generation path, where a missing modform is an
     identification that cannot be made. The pretrain stream samples instead; see
-    :func:`pepdistill.data.mod_rules.sampled_sites`.
+    :func:`msspeculator.data.mod_rules.sampled_sites`.
     """
     fixed_rules = digest.fixed_rules()
     variable_rules = tuple(rule for rule, _ in digest.variable_rules())

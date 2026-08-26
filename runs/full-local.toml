@@ -16,7 +16,7 @@ seed = 0
 
 [tracking]
 enabled = true
-project = "pepdistill"
+project = "msspeculator"
 name = "local-small"
 group = "full-v2-local"
 tags = ["full-nontest", "small", "local", "v2", "fast-loader"]

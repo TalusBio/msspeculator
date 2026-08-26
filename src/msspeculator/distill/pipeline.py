@@ -237,7 +237,7 @@ class TrackingCfg:
     """Optional Weights & Biases experiment tracking for both training stages."""
 
     enabled: bool = False
-    project: str = "pepdistill"
+    project: str = "msspeculator"
     entity: str | None = None
     name: str | None = None
     group: str | None = None
