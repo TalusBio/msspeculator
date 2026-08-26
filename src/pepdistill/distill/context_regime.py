@@ -855,6 +855,9 @@ def fit_realspeclib_datasets(
             BatchIterable(ds, batch_size, shuffle, seed),
             batch_size=None,
             num_workers=num_workers,
+            # Linux defaults to fork, which can deadlock after Torch has initialized thread pools.
+            # Spawn is slower to start but safe; persistent workers amortize that cost.
+            multiprocessing_context="spawn" if num_workers else None,
             # Workers retain BatchIterable._epoch between epochs, so shard ordering advances
             # rather than resetting when DataLoader reconstructs its processes.
             persistent_workers=num_workers > 0,

@@ -271,6 +271,8 @@ def test_prepared_reader_partitions_shards_across_loader_workers(tmp_path):
         BatchIterable(ds, batch_size=1, shuffle=False, seed=0),
         batch_size=None,
         num_workers=2,
+        # Match the supported production loader; fork can deadlock after Torch starts threads.
+        multiprocessing_context="spawn",
     )
     # The fixture contains two total rows in one shard. A naive IterableDataset would replay
     # that shard in both workers and return four; the worker-aware reader must return it once.
