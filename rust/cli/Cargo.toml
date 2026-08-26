@@ -11,8 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 msspeculator-core = { path = "../core" }
+msspeculator-inference = { path = "../inference" }
 clap = { version = "4", features = ["derive"] }
 serde_json = "1"
 anyhow = "1"
-flate2 = "1"
-blake2 = "0.10"

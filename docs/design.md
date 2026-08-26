@@ -1,97 +1,73 @@
-# msspeculator: current design
+# Current design
 
-## Goal
+## What the project does
 
-Generate search-engine-ready spectral libraries quickly with a compact student model. The
-student is first distilled from AlphaPeptDeep over an in-silico FASTA digest, then can be
-fine-tuned on prepared experimental libraries. It predicts MS2 fragment intensities, iRT/raw
-RT, and CCS; the Rust library generator converts CCS to Bruker 1/K0 for DIA-NN output.
+`msspeculator` trains a compact student model and uses it to predict peptide RT, CCS, and MS2
+fragment intensities. Python handles training and prepared-data ETL. Rust owns chemistry and the
+production inference path.
 
-## Pipeline
+## Data flow
 
 ```text
-FASTA ──digest/enumerate──> AlphaPeptDeep labels ──online pretrain──┐
-                                                                  ├──> checkpoint
-Zenodo ──prepare shards──> immutable Parquet + manifest ──train───┘
-                                                                       │
-                       export-rust ──> safetensors ──> DIA-NN TSV / mzSpecLib ──> search
+FASTA -> digest -> teacher labels -> pretrain --+
+                                                +-> checkpoint -> Rust artifact -> library -> search
+prepared shards -> train ----------------------+
 ```
 
-`msspeculator run` controls the `pretrain`, `train`, `export`, and `bench` stages from one TOML
-file. Pretraining streams teacher labels instead of materializing a label cache. Its OneCycle
-learning-rate schedule is on by default. Real-data training reads only prepared Parquet assets;
-it does not extract PROSPECT archives in the training process.
+Pretraining streams labels from a teacher. Real-spectrum training reads immutable Parquet shards.
+Preparation is separate, restartable, and range-addressable. Its vendored catalog and shard index
+define source identity. An optional S3 prefix caches source files and stores prepared assets. A
+final manifest is published only after every expected shard is present.
 
-Preparation is a separate, restartable ETL:
+Prepared training assigns shards deterministically across loader workers. Each worker carries rows
+across shard boundaries to form exact-length batches, so the model does not need padding masks.
 
-- A vendored catalog and compressed shard index describe the upstream Zenodo records.
-- An optional S3 prefix is a read-through cache. The vendored catalog and shard index remain the
-  source records.
-- Every global input shard maps to one immutable output asset and completion manifest.
-- `--range START:STOP` distributes half-open global shard ranges independently of worker count.
-- Finalization verifies all shard assets and publishes the worker-independent training manifest.
+## Contracts
 
-Prepared training partitions shuffled shards exactly once across persistent loader workers.
-Within each worker, rows are carried across shard boundaries into exact-length batches, avoiding
-transformer padding/masks and allowing Parquet decode and tensor collation to overlap model work.
+Rust is the authority for peptide parsing, chemistry constants, modification resolution,
+tokenization, fragment m/z, tensor packing, and the portable safetensors artifact. Python imports
+those values through the PyO3 extension.
 
-## Model and data contracts
+The model input combines residue and terminus tokens, modification composition or mass fields,
+position, charge, and optional acquisition context. MS2 context includes instrument, detector,
+fragmentation, and collision energy. RT can use a saved chromatography context. CCS is
+context-free.
 
-- Rust (`rust/core`) owns peptide parsing, chemistry, tokenization,
-  fragment m/z, tensor packing, and the standalone student forward pass. Python imports these
-  contracts through `msspeculator_rs`.
+Training can replace a residue with a chemistry-equivalent token while attaching the composition
+and mass difference at that position. Precursor and fragment targets stay unchanged.
 
-Training can apply chemistry-preserving residue substitution augmentation after collation. A
-residue token is replaced while its original-minus-replacement elemental composition and mass
-are attached at the same site. This leaves precursor/fragment targets invariant and teaches the
-token and compositional-modification paths a shared chemical representation. Residue formulas,
-like residue masses, are exported from the Rust chemistry authority.
-- The production activation is tanh-approximated GELU. All maintained presets are transformers;
-  the `small` and `base` families expose controlled head-count variants for training sweeps.
-- The input combines residue/terminus tokens, compositional and mass-only modification fields,
-  position, precursor charge, and optional acquisition context.
-- MS2 context uses instrument, detector, fragmentation, and collision energy. RT can select a
-  saved chromatography context. CCS prediction itself is context-free.
-- Deterministic hashing of stripped peptide sequence keeps all modification and charge forms in
-  the same train/validation/test partition.
-- Real-data validation is deduplicated to the best observation per library entry and reported
-  per dataset. Early stopping follows the mean of the configured per-dataset spectral angles.
-- Optional longitudinal diagnostics reuse one teacher-labeled iRT reference panel and fixed PCA
-  bases for the whole run. Initial/hourly/epoch/final renders can therefore be compared directly;
-  plots are stored as run artifacts and logged to W&B without entering the hot training loop.
+The train, validation, and test split hashes the stripped peptide sequence. Modification and charge
+forms therefore stay in one split. Validation keeps the best observation per library entry and
+reports each dataset separately.
 
 ## Inference and output
 
-The Python predictor writes long-format Parquet. The production Rust path loads a self-contained,
-versioned `.safetensors` artifact from a path or from the copy vendored into the binary. A clean
-clone therefore builds a tool that predicts. It digests FASTA, batches equal-length precursors, and uses a
-bounded worker pool feeding one writer thread. FASTA output streams as either a DIA-NN TSV or an
-mzSpecLib text library, selected by the `--out` suffix and optionally gzipped in that same writer
-thread; precursor CCS is converted to ion mobility in 1/K0. Output row order is intentionally
-unspecified. Every precursor is validated and capped once, before any format sees it, so the two
-serializations cannot disagree about what the library contains. They differ only in how they spell it.
-mzSpecLib also carries the resolved generation configuration in its header. This is the
-same record the `config.json` sidecar holds.
+The Python predictor writes long-format Parquet. Rust loads a versioned, self-contained
+`.safetensors` artifact, groups equal-length precursors into batches, and runs bounded workers
+feeding a writer. Output order is unspecified. The writer emits DIA-NN TSV or mzSpecLib text, with
+optional gzip compression. CCS is converted to Bruker 1/K0 for library output.
 
-The DIA-NN adapter has been exercised end to end with `timsseek` against a Bruker timsTOF run.
-Single-peptide JSON prediction remains available for parity checks and inspection.
+The `msspeculator-inference` crate owns this FASTA path. Its `write_library` function accepts
+`LibraryOptions`, starts the producer and worker queues, and returns `LibraryStats`. The CLI passes
+parsed arguments to that function. Rust applications can use the same path without reimplementing
+thread management or invoking a process.
+
+Every precursor is validated and capped before serialization. TSV output includes a `config.json`
+sidecar. mzSpecLib stores the same resolved generation settings in its header.
 
 ## Package boundaries
 
 ```text
-msspeculator/data/       digest, precursor enumeration, split, encoding, prepared-data reader
-msspeculator/etl/        catalog discovery, archive conversion, shard manifests, finalization
-msspeculator/teacher/    AlphaPeptDeep and deterministic fake teachers
-msspeculator/models/     student architectures, presets, context encoders, checkpoint contracts
-msspeculator/distill/    pretrain/train loops, validation, early stopping, pipeline configuration
-msspeculator/predict/    reference and vectorized Python library generation
-rust/core/             shared chemistry, encoding, artifact reader, and student inference
-rust/cli/              standalone safetensors-to-DIA-NN/mzSpecLib/JSON inference
+src/msspeculator/data/       digestion, encoding, split, prepared-data reader
+src/msspeculator/etl/        catalog, archive conversion, manifests, finalization
+src/msspeculator/teacher/    AlphaPeptDeep and fake teachers
+src/msspeculator/models/     architectures, presets, contexts, checkpoints
+src/msspeculator/distill/    pretrain/train loops and validation
+src/msspeculator/predict/    Python library generation
+rust/core/                    shared chemistry, encoding, artifact, inference
+rust/inference/               FASTA orchestration and library writers
+rust/cli/                     command-line wrapper
 ```
 
-## Deliberately deferred
-
-We removed the ONNX export and runtime because nothing used them. The export also baked a sequence
-length into the graph and rejected other lengths. The optimization and integration target is the Rust
-FASTA-to-library-to-search path. Additional search-engine adapters can follow measured consumer
-needs, and a portable export format can be reintroduced when a named consumer requires one.
+ONNX support was removed because no current consumer used it and its graph fixed sequence length.
+New output adapters should follow a measured consumer need.

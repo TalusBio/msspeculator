@@ -1,15 +1,17 @@
 //! msspeculator Rust inference CLI: FASTA libraries, peptide prediction, and model diagnostics.
 
+use std::path::PathBuf;
 use std::str::FromStr;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use msspeculator_core::{builtin, fit, predict, speclib, MsContext, Prediction};
+use msspeculator_core::{
+    builtin, fit, predict, speclib, BuiltinModel, ModelSource, MsContext, Prediction,
+};
 use serde_json::json;
 
 mod diagnostics;
-mod library;
-mod mzspeclib;
+use msspeculator_inference::library;
 
 #[derive(Parser)]
 #[command(
@@ -392,6 +394,17 @@ fn run_predict(args: PredictArgs) -> Result<()> {
     Ok(())
 }
 
+fn parse_model_source(spec: &str) -> Result<ModelSource> {
+    match spec.strip_prefix(builtin::BUILTIN_PREFIX) {
+        Some("small-v0") => Ok(ModelSource::Builtin(BuiltinModel::SmallV0)),
+        Some(name) => anyhow::bail!(
+            "unknown builtin model {name:?}; this build carries: {}",
+            builtin::names().join(", ")
+        ),
+        None => Ok(ModelSource::File(PathBuf::from(spec))),
+    }
+}
+
 fn run_library(args: LibraryArgs) -> Result<()> {
     let ms_context = args.context.ms_context();
     let default_fixed = ["C[UNIMOD:4]".to_string()];
@@ -416,7 +429,7 @@ fn run_library(args: LibraryArgs) -> Result<()> {
         None => Some(format!("{}.config.json", args.out)),
     };
     let stats = library::write_library(&library::LibraryOptions {
-        model: &args.artifact.model,
+        model: parse_model_source(&args.artifact.model)?,
         fasta: &args.fasta,
         out: &args.out,
         activation: args.artifact.activation.as_deref(),

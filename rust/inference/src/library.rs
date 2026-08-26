@@ -9,7 +9,8 @@ use anyhow::{bail, Context, Result};
 use msspeculator_core::peptide::{ModSpec, Peptide, Site};
 use msspeculator_core::proforma::{parse_modification_rule, ModificationRule, ModificationTarget};
 use msspeculator_core::{
-    predict_peptide_batch_charges_prepared, Artifact, MsContext, Prediction, PreparedContext,
+    predict_peptide_batch_charges_prepared, Artifact, ModelSource, MsContext, Prediction,
+    PreparedContext,
 };
 
 const VALID_AA: &str = "GASPVTCLINDQKEMHFRYW";
@@ -18,7 +19,8 @@ const IM_GAS_MASS: f64 = 28.0;
 const INFERENCE_BATCH_SIZE: usize = 64;
 
 pub struct LibraryOptions<'a> {
-    pub model: &'a str,
+    /// Built-in or file-backed model. The CLI converts its string option before calling this API.
+    pub model: ModelSource,
     pub fasta: &'a str,
     pub out: &'a str,
     pub activation: Option<&'a str>,
@@ -603,7 +605,7 @@ pub fn write_library(opts: &LibraryOptions<'_>) -> Result<LibraryStats> {
     if peptides.is_empty() {
         bail!("FASTA digest produced no peptides");
     }
-    let model = msspeculator_core::builtin::load_model(opts.model)?;
+    let model = msspeculator_core::load_source(opts.model.clone())?;
     let mut artifact = model.artifact;
     apply_activation_override(&mut artifact, opts.activation)?;
     let context = PreparedContext::new(&artifact, opts.ms_context, opts.chrom_context)?;
@@ -839,7 +841,7 @@ fn resolve_config(
             // The spec as asked for, which for a bundled model is a name rather than a path. A
             // temp path is not an identity; the digest is, and it is computed from the bytes that
             // were actually loaded either way.
-            "model": opts.model,
+            "model": opts.model.spec(),
             "model_blake2b_256": model_digest,
             "fasta": opts.fasta,
             "fasta_blake2b_256": file_digest(opts.fasta)?,

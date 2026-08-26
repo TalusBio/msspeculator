@@ -269,10 +269,9 @@ name = "msspeculator-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "blake2",
  "clap",
- "flate2",
  "msspeculator-core",
+ "msspeculator-inference",
  "serde_json",
 ]
 
@@ -287,6 +286,18 @@ dependencies = [
  "pest",
  "pest_derive",
  "safetensors",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "msspeculator-inference"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "blake2",
+ "flate2",
+ "msspeculator-core",
  "serde",
  "serde_json",
 ]

@@ -12,6 +12,7 @@
 use std::path::PathBuf;
 
 use anyhow::{anyhow, Context, Result};
+use serde::{Deserialize, Serialize};
 
 use crate::artifact::Artifact;
 
@@ -19,7 +20,7 @@ use crate::artifact::Artifact;
 pub const BUILTIN_PREFIX: &str = "builtin:";
 
 /// A model compiled into this crate.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum BuiltinModel {
     SmallV0,
 }
@@ -34,10 +35,20 @@ impl BuiltinModel {
 }
 
 /// Where an inference artifact should be loaded from.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum ModelSource {
     Builtin(BuiltinModel),
     File(PathBuf),
+}
+
+impl ModelSource {
+    /// Stable human-readable source used in provenance and logs.
+    pub fn spec(&self) -> String {
+        match self {
+            Self::Builtin(model) => format!("{BUILTIN_PREFIX}{}", model.name()),
+            Self::File(path) => path.to_string_lossy().into_owned(),
+        }
+    }
 }
 
 /// Ceiling on one bundled artifact. Enforced by a test, because the cost of a mistake here is a
