@@ -10,37 +10,75 @@ permissions:
 
 jobs:
   build:
-    name: Linux release executable
-    runs-on: ubuntu-latest
+    name: ${{ matrix.name }} release executable
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux x86_64
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            binary: msspeculator-cli
+            artifact: linux-x86_64
+          - name: Linux MUSL x86_64
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            binary: msspeculator-cli
+            artifact: linux-musl-x86_64
+          - name: macOS Intel
+            os: macos-13
+            target: x86_64-apple-darwin
+            binary: msspeculator-cli
+            artifact: macos-x86_64
+          - name: macOS ARM64
+            os: macos-14
+            target: aarch64-apple-darwin
+            binary: msspeculator-cli
+            artifact: macos-arm64
+          - name: Windows x86_64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            binary: msspeculator-cli.exe
+            artifact: windows-x86_64
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
+      - name: Install MUSL linker
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: sudo apt-get update && sudo apt-get install --yes musl-tools
+
+      - name: Install Rust target
+        run: rustup target add ${{ matrix.target }}
+
       - name: Build release executable
         env:
           MSSPECULATOR_GIT_COMMIT: ${{ github.sha }}
-        run: cargo build --release --manifest-path rust/Cargo.toml -p msspeculator-cli
+        run: cargo build --release --manifest-path rust/Cargo.toml -p msspeculator-cli --target ${{ matrix.target }}
 
       - name: Smoke-test executable
-        run: rust/target/release/msspeculator-cli --help
+        shell: bash
+        run: rust/target/${{ matrix.target }}/release/${{ matrix.binary }} --help
 
       - name: Write build metadata
+        shell: bash
         run: |
           {
             echo "version=${GITHUB_REF_NAME#v}"
             echo "commit=${GITHUB_SHA}"
-            echo "target=x86_64-unknown-linux-gnu"
-          } > rust/target/release/msspeculator-cli.build-info.txt
+            echo "target=${{ matrix.target }}"
+          } > rust/target/${{ matrix.target }}/release/${{ matrix.binary }}.build-info.txt
 
       - name: Upload executable
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: msspeculator-cli-${{ github.ref_name }}-linux-x86_64
+          name: msspeculator-cli-${{ github.ref_name }}-${{ matrix.artifact }}
           path: |
-            rust/target/release/msspeculator-cli
-            rust/target/release/msspeculator-cli.build-info.txt
+            rust/target/${{ matrix.target }}/release/${{ matrix.binary }}
+            rust/target/${{ matrix.target }}/release/${{ matrix.binary }}.build-info.txt
           if-no-files-found: error
           retention-days: 30
