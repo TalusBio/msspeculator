@@ -28,7 +28,7 @@ jobs:
             binary: msspeculator-cli
             artifact: linux-musl-x86_64
           - name: macOS Intel
-            os: macos-13
+            os: macos-15-intel
             target: x86_64-apple-darwin
             binary: msspeculator-cli
             artifact: macos-x86_64
