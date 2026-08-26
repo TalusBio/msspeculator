@@ -4,6 +4,8 @@ Choose a page by task:
 
 - [Local runbook](runbook-full-run.md) covers installation, a smoke run, prepared-data training,
   and local library generation.
+- [Training](training.md) covers teacher warmup and fine-tuning on prepared experimental spectra.
+- [Development](development.md) covers contributor setup, checks, and CI.
 - [Talus infrastructure](talus-infrastructure.md) covers AWS, Launchpad, corpus preparation,
   training jobs, and production library generation.
 - [Rust API](rust-api.md) covers embedding model inference and high-throughput library generation
