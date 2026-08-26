@@ -51,8 +51,8 @@ jobs:
       - name: Smoke-test the core dependency boundary
         run: |
           uv sync --no-dev
-          uv run --no-sync python -c "import pepdistill, pepdistill_rs"
-          uv run --no-sync pepdistill --help
+          uv run --no-sync python -c "import msspeculator, msspeculator_rs"
+          uv run --no-sync msspeculator --help
 
       - name: Install locked test environment
         # Dependency versions and the CPU-only Torch source are defined in pyproject.toml/uv.lock.
