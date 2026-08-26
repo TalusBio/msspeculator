@@ -32,10 +32,10 @@ table:
 
 ```rust,no_run
 use anyhow::Result;
-use msspeculator_core::{predict, Artifact};
+use msspeculator_core::{predict, BuiltinModel, ModelSource};
 
 fn main() -> Result<()> {
-    let artifact = Artifact::load("model.safetensors")?;
+    let artifact = msspeculator_core::load_source(ModelSource::Builtin(BuiltinModel::SmallV0))?.artifact;
     let result = predict(
         &artifact,
         "PEPC[UNIMOD:4]IDER",

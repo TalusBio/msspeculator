@@ -9,12 +9,36 @@
 //! Anything too large for version control does not belong here. It would be a *runtime* fetch
 //! into a cache, which leaves this property intact.
 
+use std::path::PathBuf;
+
 use anyhow::{anyhow, Context, Result};
 
 use crate::artifact::Artifact;
 
 /// Prefix that addresses a bundled artifact rather than a filesystem path.
 pub const BUILTIN_PREFIX: &str = "builtin:";
+
+/// A model compiled into this crate.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BuiltinModel {
+    SmallV0,
+}
+
+impl BuiltinModel {
+    /// Stable name used in provenance and by the command-line interface.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::SmallV0 => "small-v0",
+        }
+    }
+}
+
+/// Where an inference artifact should be loaded from.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ModelSource {
+    Builtin(BuiltinModel),
+    File(PathBuf),
+}
 
 /// Ceiling on one bundled artifact. Enforced by a test, because the cost of a mistake here is a
 /// large binary in git history, which is not something a later commit can take back.
@@ -50,6 +74,38 @@ pub fn digest_bytes(bytes: &[u8]) -> String {
 /// Names of every artifact compiled into this build.
 pub fn names() -> Vec<&'static str> {
     BUNDLED.iter().map(|(name, _, _)| *name).collect()
+}
+
+/// Load one of the artifacts compiled into this crate.
+pub fn load_builtin(model: BuiltinModel) -> Result<LoadedModel> {
+    let name = model.name();
+    let (_, bytes, recorded) = BUNDLED
+        .iter()
+        .find(|(bundled, _, _)| *bundled == name)
+        .ok_or_else(|| anyhow!("builtin model {name:?} is not included in this build"))?;
+    Ok(LoadedModel {
+        artifact: Artifact::from_bytes(bytes)
+            .with_context(|| format!("loading builtin model {name}"))?,
+        spec: format!("{BUILTIN_PREFIX}{name}"),
+        digest: (*recorded).to_string(),
+    })
+}
+
+/// Load a model from a typed source.
+pub fn load_source(source: ModelSource) -> Result<LoadedModel> {
+    match source {
+        ModelSource::Builtin(model) => load_builtin(model),
+        ModelSource::File(path) => {
+            let spec = path.to_string_lossy().into_owned();
+            let bytes = std::fs::read(&path).with_context(|| format!("reading {spec}"))?;
+            Ok(LoadedModel {
+                artifact: Artifact::from_bytes(&bytes)
+                    .with_context(|| format!("loading {spec}"))?,
+                spec,
+                digest: digest_bytes(&bytes),
+            })
+        }
+    }
 }
 
 /// An artifact plus how to refer to the thing it came from.
@@ -137,6 +193,13 @@ mod tests {
         // A real trained artifact, not a stub: it carries the norm the corpus was standardized on.
         assert!(loaded.artifact.meta.norm.rt_std > 0.0);
         assert!(names().contains(&"small-v0"));
+    }
+
+    #[test]
+    fn typed_source_loads_the_builtin_model() {
+        let loaded = load_source(ModelSource::Builtin(BuiltinModel::SmallV0)).unwrap();
+        assert_eq!(loaded.spec, "builtin:small-v0");
+        assert_eq!(loaded.digest, BUNDLED[0].2);
     }
 
     #[test]
