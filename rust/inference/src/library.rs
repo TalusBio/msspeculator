@@ -40,6 +40,9 @@ pub struct LibraryOptions<'a> {
     pub max_fragments: Option<usize>,
     /// Where to write the resolved-configuration sidecar, or `None` to skip it.
     pub config_out: Option<&'a str>,
+    /// Add pseudo-reversed peptide decoys. Decoys whose stripped sequence is already a target are
+    /// skipped, as are duplicate decoy sequences.
+    pub generate_decoys: bool,
 }
 
 /// Apply a runtime activation override used for controlled inference benchmarks.
@@ -106,6 +109,11 @@ pub struct SpectrumRow<'a> {
     pub diann_sequence: &'a str,
     /// ProForma spelling of the same peptidoform, e.g. `PEPC[UNIMOD:4]IDER`.
     pub proforma: &'a str,
+    /// Whether this spectrum belongs to the generated decoy set.
+    pub decoy: bool,
+    /// Stable ID for a target/decoy sequence pair. The target keeps the ID when its decoy is
+    /// collision-skipped; the ID is absent when decoys are disabled.
+    pub decoy_pair_id: Option<usize>,
     pub charge: i64,
     pub precursor_mz: f64,
     /// Monoisotopic mass of the neutral peptidoform, which is what a library states about an
@@ -146,7 +154,7 @@ impl<W: Write> LibrarySink for DiannSink<W> {
         for peak in &row.peaks {
             writeln!(
                 self.writer,
-                "{}\t{}\t{:.8}\t{}\t{:.6}\t{:.8}\t{}\t0\t{:.8}\t{}\t{}\t{}\tnoloss\t{:.8}",
+                "{}\t{}\t{:.8}\t{}\t{:.6}\t{:.8}\t{}\t{}\t{:.8}\t{}\t{}\t{}\tnoloss\t{:.8}",
                 row.diann_sequence,
                 row.stripped,
                 row.precursor_mz,
@@ -154,6 +162,7 @@ impl<W: Write> LibrarySink for DiannSink<W> {
                 row.rt,
                 row.mobility,
                 row.protein_group,
+                u8::from(row.decoy),
                 peak.mz,
                 peak.ion,
                 peak.ordinal,
@@ -176,6 +185,8 @@ pub struct LibraryStats {
     pub peptides: usize,
     pub precursors: usize,
     pub fragments: usize,
+    /// Number of decoy precursor spectra written.
+    pub decoys: usize,
 }
 
 fn parse_fasta(path: &Path) -> Result<Vec<(String, String)>> {
@@ -317,6 +328,47 @@ fn render_diann(sequence: &str, mods: &[(Site, ModSpec)]) -> String {
     diann
 }
 
+/// Reverse only the internal residues, preserving the enzymatic termini.
+///
+/// For example, `PEPTIDEK` becomes `PEDITPEK`. Keeping the first and last residues makes the
+/// decoy retain the target's tryptic context while changing its internal sequence.
+fn pseudo_reverse_sequence(sequence: &str) -> String {
+    let mut chars: Vec<char> = sequence.chars().collect();
+    let length = chars.len();
+    if length > 2 {
+        chars[1..length - 1].reverse();
+    }
+    chars.into_iter().collect()
+}
+
+/// Move residue modifications with their residues through a pseudo-reversal. Terminal
+/// modifications stay terminal.
+fn pseudo_reverse_peptide(peptide: &Peptide) -> Peptide {
+    let length = peptide.sequence.chars().count();
+    let mods = peptide
+        .mods
+        .iter()
+        .map(|(site, spec)| {
+            let site = match site {
+                Site::Residue(index) if *index > 0 && *index + 1 < length => {
+                    Site::Residue(length - 1 - index)
+                }
+                _ => *site,
+            };
+            (site, spec.clone())
+        })
+        .collect();
+    Peptide::new(pseudo_reverse_sequence(&peptide.sequence), mods)
+}
+
+fn decoy_protein_group(protein_group: &str) -> String {
+    protein_group
+        .split(';')
+        .map(|protein| format!("DECOY_{protein}"))
+        .collect::<Vec<_>>()
+        .join(";")
+}
+
 fn modified_forms(
     sequence: &str,
     fixed_rules: &[ModificationRule],
@@ -390,6 +442,8 @@ struct PendingPeptide {
     protein_group: String,
     peptide: Peptide,
     diann_sequence: String,
+    decoy: bool,
+    decoy_pair_id: Option<usize>,
 }
 
 struct PredictedPeptide {
@@ -397,6 +451,8 @@ struct PredictedPeptide {
     protein_group: String,
     diann_sequence: String,
     predictions: Vec<Prediction>,
+    decoy: bool,
+    decoy_pair_id: Option<usize>,
 }
 
 /// Validate one prediction and cap its transition list.
@@ -488,6 +544,8 @@ fn spectrum_row<'a>(
         protein_group: item.protein_group.as_str(),
         diann_sequence,
         proforma: prediction.peptide.as_str(),
+        decoy: item.decoy,
+        decoy_pair_id: item.decoy_pair_id,
         charge,
         precursor_mz: prediction.precursor_mz,
         neutral_mass: (prediction.precursor_mz - msspeculator_core::chem::PROTON) * charge as f64,
@@ -509,7 +567,13 @@ fn predict_batch(
         .into_iter()
         .map(|item| {
             (
-                (item.stripped, item.protein_group, item.diann_sequence),
+                (
+                    item.stripped,
+                    item.protein_group,
+                    item.diann_sequence,
+                    item.decoy,
+                    item.decoy_pair_id,
+                ),
                 item.peptide,
             )
         })
@@ -525,11 +589,15 @@ fn predict_batch(
         .into_iter()
         .zip(predictions)
         .map(
-            |((stripped, protein_group, diann_sequence), predictions)| PredictedPeptide {
-                stripped,
-                protein_group,
-                diann_sequence,
-                predictions,
+            |((stripped, protein_group, diann_sequence, decoy, decoy_pair_id), predictions)| {
+                PredictedPeptide {
+                    stripped,
+                    protein_group,
+                    diann_sequence,
+                    predictions,
+                    decoy,
+                    decoy_pair_id,
+                }
             },
         )
         .collect())
@@ -545,9 +613,29 @@ fn write_predicted_batch(
         for prediction in &item.predictions {
             let row = spectrum_row(item, prediction, max_fragments)?;
             stats.precursors += 1;
+            stats.decoys += usize::from(row.decoy);
             stats.fragments += row.peaks.len();
             sink.spectrum(&row)?;
         }
+    }
+    Ok(())
+}
+
+fn queue_pending(
+    pending: &mut BTreeMap<usize, Vec<PendingPeptide>>,
+    work_tx: &mpsc::SyncSender<Option<Vec<PendingPeptide>>>,
+    item: PendingPeptide,
+) -> Result<()> {
+    let length = item.peptide.sequence.len();
+    let ready = {
+        let bucket = pending.entry(length).or_default();
+        bucket.push(item);
+        (bucket.len() >= INFERENCE_BATCH_SIZE).then(|| std::mem::take(bucket))
+    };
+    if let Some(batch) = ready {
+        work_tx
+            .send(Some(batch))
+            .context("sending inference batch")?;
     }
     Ok(())
 }
@@ -696,30 +784,57 @@ pub fn write_library(opts: &LibraryOptions<'_>) -> Result<LibraryStats> {
         }));
     }
 
+    let target_sequences: BTreeSet<String> = peptides.keys().cloned().collect();
+    let mut decoy_sequences = BTreeSet::new();
+    let mut next_decoy_pair_id = 1usize;
     let mut pending: BTreeMap<usize, Vec<PendingPeptide>> = BTreeMap::new();
     for (sequence, proteins) in peptides {
         let protein_group = proteins.into_iter().collect::<Vec<_>>().join(";");
-        for (peptide, diann_sequence) in modified_forms(
+        let target_forms = modified_forms(
             &sequence,
             &fixed_rules,
             &variable_rules,
             opts.max_variable_mods,
-        )? {
-            let length = peptide.sequence.len();
-            let ready = {
-                let bucket = pending.entry(length).or_default();
-                bucket.push(PendingPeptide {
+        )?;
+        let decoy_sequence = pseudo_reverse_sequence(&sequence);
+        let emit_decoy = opts.generate_decoys
+            && !target_sequences.contains(&decoy_sequence)
+            && decoy_sequences.insert(decoy_sequence.clone());
+        // Assign the ID even when the decoy is skipped, so consumers can distinguish a target-only
+        // collision group from a library generated with decoys disabled.
+        let decoy_pair_id = opts.generate_decoys.then(|| {
+            let pair_id = next_decoy_pair_id;
+            next_decoy_pair_id += 1;
+            pair_id
+        });
+        for (peptide, diann_sequence) in target_forms {
+            queue_pending(
+                &mut pending,
+                &work_tx,
+                PendingPeptide {
                     stripped: sequence.clone(),
                     protein_group: protein_group.clone(),
-                    peptide,
+                    peptide: peptide.clone(),
                     diann_sequence,
-                });
-                (bucket.len() >= INFERENCE_BATCH_SIZE).then(|| std::mem::take(bucket))
-            };
-            if let Some(batch) = ready {
-                work_tx
-                    .send(Some(batch))
-                    .context("sending inference batch")?;
+                    decoy: false,
+                    decoy_pair_id,
+                },
+            )?;
+            if emit_decoy {
+                let decoy_peptide = pseudo_reverse_peptide(&peptide);
+                let decoy_diann = render_diann(&decoy_peptide.sequence, &decoy_peptide.mods);
+                queue_pending(
+                    &mut pending,
+                    &work_tx,
+                    PendingPeptide {
+                        stripped: decoy_sequence.clone(),
+                        protein_group: decoy_protein_group(&protein_group),
+                        peptide: decoy_peptide,
+                        diann_sequence: decoy_diann,
+                        decoy: true,
+                        decoy_pair_id,
+                    },
+                )?;
             }
         }
     }
@@ -872,6 +987,12 @@ fn resolve_config(
             "min_intensity": opts.min_intensity,
             "max_fragments": opts.max_fragments,
         },
+        "decoys": {
+            "enabled": opts.generate_decoys,
+            "method": "pseudo-reverse",
+            "protein_prefix": "DECOY_",
+            "collision_policy": "skip_if_stripped_sequence_is_a_target_or_duplicate",
+        },
         "output": {
             "path": opts.out,
             "format": format.name(),
@@ -908,6 +1029,27 @@ mod tests {
             digest_tryptic("AKPEPTIDERAAK", 1, 1, 30),
             vec!["AKPEPTIDER", "AKPEPTIDERAAK", "AAK"]
         );
+    }
+
+    #[test]
+    fn pseudo_reverse_preserves_termini() {
+        assert_eq!(pseudo_reverse_sequence("PEPTIDEK"), "PEDITPEK");
+        assert_eq!(pseudo_reverse_sequence("AK"), "AK");
+    }
+
+    #[test]
+    fn pseudo_reverse_moves_residue_modifications_with_their_residue() {
+        let peptide = Peptide::new(
+            "PEPTIDEK".into(),
+            vec![(
+                Site::Residue(2),
+                msspeculator_core::proforma::parse_descriptor("UNIMOD:35").unwrap(),
+            )],
+        );
+        let decoy = pseudo_reverse_peptide(&peptide);
+        assert_eq!(decoy.sequence, "PEDITPEK");
+        assert_eq!(decoy.mods[0].0, Site::Residue(5));
+        assert_eq!(decoy.modified_sequence(), "PEDITP[UNIMOD:35]EK");
     }
 
     #[test]

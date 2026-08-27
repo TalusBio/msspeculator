@@ -224,6 +224,9 @@ struct LibraryArgs {
     /// an empty string to skip it.
     #[arg(long, value_name = "PATH")]
     config_out: Option<String>,
+    /// Add pseudo-reversed decoy precursors. Decoys colliding with target sequences are skipped.
+    #[arg(long)]
+    decoys: bool,
 }
 
 #[derive(clap::Args)]
@@ -446,10 +449,11 @@ fn run_library(args: LibraryArgs) -> Result<()> {
         max_variable_mods: args.max_variable_mods,
         max_fragments: args.max_fragments,
         config_out: config_out.as_deref(),
+        generate_decoys: args.decoys,
     })?;
     eprintln!(
-        "{} proteins -> {} peptides -> {} precursors -> {} fragments -> {}",
-        stats.proteins, stats.peptides, stats.precursors, stats.fragments, args.out
+        "{} proteins -> {} peptides -> {} precursors ({} decoys) -> {} fragments -> {}",
+        stats.proteins, stats.peptides, stats.precursors, stats.decoys, stats.fragments, args.out
     );
     Ok(())
 }

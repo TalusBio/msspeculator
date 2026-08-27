@@ -46,6 +46,8 @@ The Python predictor writes long-format Parquet. Rust loads a versioned, self-co
 `.safetensors` artifact, groups equal-length precursors into batches, and runs bounded workers
 feeding a writer. Output order is unspecified. The writer emits DIA-NN TSV or mzSpecLib text, with
 optional gzip compression. CCS is converted to Bruker 1/K0 for library output.
+The optional decoy path pseudo-reverses internal residues, skips target-sequence collisions, and
+marks generated entries in both output formats.
 
 The `msspeculator-inference` crate owns this FASTA path. Its `write_library` function accepts
 `LibraryOptions`, starts the producer and worker queues, and returns `LibraryStats`. The CLI passes

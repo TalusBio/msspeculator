@@ -27,6 +27,9 @@ cargo run --release -p msspeculator-cli -- \
   --fasta proteome.fasta --out library.tsv
 ```
 
+Add `--decoys` for pseudo-reversed target-decoy entries. The CLI skips a decoy when its stripped
+sequence collides with a target sequence.
+
 Use an exported checkpoint instead:
 
 ```bash

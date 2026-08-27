@@ -150,6 +150,14 @@ impl<W: Write> LibrarySink for MzSpecLibSink<W> {
             self.writer,
             "MS:1003065|spectrum aggregation type=MS:1003074|predicted spectrum"
         )?;
+        // Generated decoys are predicted spectra for pseudo-reversed, unnatural peptidoforms.
+        // The attribute set keeps this one annotation out of every target entry; each decoy
+        // claims it below with `MS:1003212|library attribute set name`.
+        writeln!(self.writer, "<AttributeSet Spectrum=Decoy>")?;
+        writeln!(
+            self.writer,
+            "MS:1003072|spectrum origin type=MS:1003195|unnatural peptidoform decoy spectrum"
+        )?;
         // No `<AttributeSet Interpretation=all>`: the reference reader crashes on one, because
         // `_new_interpretation` applies sets with an `owner_id` its attribute manager does not
         // accept. Entries carry no interpretation at all instead; with exactly one analyte per
@@ -163,6 +171,18 @@ impl<W: Write> LibrarySink for MzSpecLibSink<W> {
         let ion = format!("{}/{}", row.proforma, row.charge);
         writeln!(self.writer, "<Spectrum={index}>")?;
         writeln!(self.writer, "MS:1003061|library spectrum name={ion}")?;
+        if row.decoy {
+            writeln!(self.writer, "MS:1003212|library attribute set name=Decoy")?;
+        }
+        if let Some(pair_id) = row.decoy_pair_id {
+            // No PSI-MS term identifies the target paired with a decoy. Keep the relationship as
+            // a project-defined spectrum attribute; each spectrum has one analyte in this file.
+            writeln!(
+                self.writer,
+                "[3]MS:1003275|other attribute name=msspeculator:decoy_pair_id"
+            )?;
+            writeln!(self.writer, "[3]MS:1003276|other attribute value={pair_id}")?;
+        }
         // No `MS:1003062|library spectrum index`: a reader assigns that from position as it goes,
         // and stating our own 1-based count alongside it leaves two indices in one entry.
         writeln!(self.writer, "MS:1000041|charge state={}", row.charge)?;
@@ -287,6 +307,8 @@ mod tests {
             protein_group: "P1;P2",
             diann_sequence: "PEPTIDEK",
             proforma: "PEPTIDEK",
+            decoy: false,
+            decoy_pair_id: None,
             charge: 2,
             precursor_mz: 456.75,
             neutral_mass: 911.48544707,
@@ -406,5 +428,44 @@ mod tests {
     fn protein_group_members_are_separate_attributes() {
         let text = rendered(None);
         assert!(text.contains("MS:1000885|protein accession=P1\nMS:1000885|protein accession=P2\n"));
+    }
+
+    #[test]
+    fn decoy_spectra_claim_the_decoy_attribute_set() {
+        let mut sink = MzSpecLibSink::new(Vec::new(), "out/lib.mzspeclib.txt");
+        sink.header(&serde_json::json!({"generator": {"version": "0.1.0"}}))
+            .unwrap();
+        let mut row = row();
+        row.decoy = true;
+        sink.spectrum(&row).unwrap();
+        let text = String::from_utf8(sink.writer).unwrap();
+        assert!(text.contains(
+            "<AttributeSet Spectrum=Decoy>\n\
+             MS:1003072|spectrum origin type=MS:1003195|unnatural peptidoform decoy spectrum\n"
+        ));
+        assert!(text.contains("MS:1003212|library attribute set name=Decoy\n"));
+    }
+
+    #[test]
+    fn target_and_decoy_spectra_carry_the_same_pair_id() {
+        let mut target = row();
+        target.decoy_pair_id = Some(7);
+        let mut decoy = row();
+        decoy.decoy = true;
+        decoy.decoy_pair_id = Some(7);
+        let mut sink = MzSpecLibSink::new(Vec::new(), "out/lib.mzspeclib.txt");
+        sink.header(&serde_json::json!({})).unwrap();
+        sink.spectrum(&target).unwrap();
+        sink.spectrum(&decoy).unwrap();
+        let text = String::from_utf8(sink.writer).unwrap();
+        assert_eq!(
+            text.matches("MS:1003275|other attribute name=msspeculator:decoy_pair_id")
+                .count(),
+            2
+        );
+        assert_eq!(
+            text.matches("MS:1003276|other attribute value=7").count(),
+            2
+        );
     }
 }

@@ -80,7 +80,7 @@ and unreadable artifact versions return errors.
 Use `msspeculator-inference::write_library` for the complete optimized path. It reads FASTA,
 digests and enumerates precursors, batches equal-length peptides, runs the bounded producer and
 worker queues, and writes DIA-NN TSV or mzSpecLib output. `LibraryStats` reports counts for
-proteins, peptides, precursors, and fragments.
+proteins, peptides, precursors, fragments, and decoy precursors.
 
 ```rust,no_run
 use msspeculator_core::{BuiltinModel, ModelSource};
@@ -107,6 +107,7 @@ fn run() -> anyhow::Result<()> {
         max_variable_mods: 1,
         max_fragments: None,
         config_out: Some("library.tsv.config.json"),
+        generate_decoys: false,
     })?;
     println!("{} precursors", stats.precursors);
     Ok(())
@@ -118,6 +119,18 @@ select mzSpecLib text; other suffixes select DIA-NN TSV. Add `.gz` to compress e
 Output order is unspecified because workers finish independently. The writer validates and caps
 each precursor before serialization. The generated provenance records the package version and
 source commit, along with the resolved model, input FASTA, and settings.
+
+Set `generate_decoys: true` to add pseudo-reversed decoys. Internal residues are reversed while
+the first and last residues stay fixed, so `PEPTIDEK` becomes `PEDITPEK`. A decoy is skipped when
+that stripped sequence is already a target or another decoy. DIA-NN rows use `Decoy=1` and a
+`DECOY_` protein prefix. mzSpecLib entries claim a `Decoy` spectrum attribute set and use the
+PSI-MS [`unnatural peptidoform decoy spectrum`](https://github.com/HUPO-PSI/psi-ms-CV/blob/master/psi-ms.obo)
+origin term.
+The `shuffle-and-reposition decoy spectrum` term is for rearranging peaks from an existing
+spectrum, which this predicted-decoy path does not do.
+For mzSpecLib output, each accepted target/decoy sequence pair shares a project-defined
+`msspeculator:decoy_pair_id` attribute. Collision-skipped pairs retain the ID on the target only;
+IDs are absent when decoys are off.
 
 Use the CLI when its FASTA defaults and file formats are sufficient. Use the inference crate when
 the application needs the same throughput with its own model source, paths, or surrounding
