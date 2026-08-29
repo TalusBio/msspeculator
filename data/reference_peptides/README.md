@@ -48,7 +48,19 @@ Four properties make the panel usable as a fixed reference:
 
 Peaks are struct-of-arrays within a row (`annotations`, `fragment_mz`, `relative_intensity` are
 `;`-separated and parallel), so a sequence is written once and the file stays legible in a diff.
-Intensities are relative to each spectrum's base peak. The underlying spectra come from
+Intensities are relative to each spectrum's base peak, with peaks below **1%** of it dropped
+(`--min-intensity`, the tool's default).
+
+Scores against this panel are the **normalized spectral contrast angle**,
+`1 - 2*arccos(clamp(cos, -1, 1))/pi`, on the flattened `(length - 1, n_ion)` grid. That is the same
+metric as `msspeculator.distill.losses.spectral_angle`, which a training run reports as
+`val/<dataset>/spectral_angle`; the two agree to about 1e-7, the difference between f32 and f64
+accumulation. The `frag_mask` in the training version exists because batches are padded to a
+common length, and the `eps=1e-8` there never binds for a real spectrum.
+
+One caveat when comparing the two: the 1% floor above means a peak the training target carries at
+0.4% is a zero here, so a score against this panel reads marginally high next to a validation
+score on the same weights. The underlying spectra come from
 ProteomeTools via PROSPECT, which is publicly available.
 
 This panel is real experimental data, which `biognosys_irt_transitions.tsv` is not: that one is a

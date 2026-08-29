@@ -383,7 +383,18 @@ fn render_report(plot: &str, summary: &IrtSummary, spectra: &[SpectrumScore]) ->
         summary.n, summary.slope, summary.intercept, summary.r_squared, summary.mae,
     )?;
     writeln!(output)?;
-    writeln!(output, "fragmentation, against vendored real spectra:")?;
+    writeln!(
+        output,
+        "fragmentation, against vendored real spectra. Normalized spectral contrast angle in",
+    )?;
+    writeln!(
+        output,
+        "[0, 1] on the dense (length-1, n_ion) grid, the same metric a training run reports as",
+    )?;
+    writeln!(
+        output,
+        "val/<dataset>/spectral_angle. The panel drops peaks below 1% of its base peak.",
+    )?;
     for score in spectra {
         writeln!(
             output,

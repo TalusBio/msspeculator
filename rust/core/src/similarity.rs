@@ -34,8 +34,14 @@ where
 
 /// Normalized spectral contrast angle in [0, 1], 1 = identical.
 ///
-/// The reporting metric, matching `msspeculator.distill.losses.spectral_angle`. Both spectra are
-/// read flat, so any grid works as long as the two agree on it.
+/// `1 - 2*arccos(clamp(cos, -1, 1))/pi`. Both spectra are read flat, so any grid works as long as
+/// the two agree on it, and the measure is scale-invariant, so normalizing either side to its base
+/// peak does not move it.
+///
+/// The same metric as `msspeculator.distill.losses.spectral_angle`, which a training run reports
+/// as `val/<dataset>/spectral_angle`, so the two are directly comparable; they agree to about
+/// 1e-7, which is f32 against f64 accumulation. That version additionally masks padded fragment
+/// positions, because training batches are padded to a shared length and these grids are not.
 pub fn spectral_angle<A, B>(a: A, b: B) -> f32
 where
     A: IntoIterator<Item = f32>,
