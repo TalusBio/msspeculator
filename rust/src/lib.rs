@@ -339,6 +339,24 @@ fn bucket_fragment_mz<'py>(
     Ok((mz.into_pyarray_bound(py), pmz.into_pyarray_bound(py)))
 }
 
+/// Cell a fragment occupies on the MS2 target grid: `(site, ion_column)`, or `None` if the ion
+/// does not exist for a peptide of that length.
+///
+/// The mapping the preparation ETL fills the grid with. Exposed so a Python reader of a vendored
+/// spectrum lands on the same cells the Rust doctor does; recomputing the site from an ordinal by
+/// hand is how a panel ends up claiming a b1 ion.
+#[pyfunction]
+fn fragment_cell(ion: &str, ordinal: usize, charge: u8, length: usize) -> PyResult<(u16, u8)> {
+    let kind = ion.chars().next().ok_or_else(|| {
+        pyo3::exceptions::PyValueError::new_err("ion type must be 'b' or 'y', got an empty string")
+    })?;
+    speclib::fragment_cell(kind, ordinal, charge, length).ok_or_else(|| {
+        pyo3::exceptions::PyValueError::new_err(format!(
+            "{ion}{ordinal}^{charge} is not a fragment of a {length}-mer"
+        ))
+    })
+}
+
 /// Least-squares agreement of predicted retention index against observed.
 ///
 /// Exposed so the training panel and `msspeculator-cli doctor` report the same slope for the same
@@ -609,6 +627,7 @@ fn msspeculator_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(read_speclib, m)?)?;
     m.add_function(wrap_pyfunction!(assign_split, m)?)?;
     m.add_function(wrap_pyfunction!(irt_regression, m)?)?;
+    m.add_function(wrap_pyfunction!(fragment_cell, m)?)?;
 
     m.add("PROTON", chem::PROTON)?;
     m.add("H2O", chem::H2O)?;

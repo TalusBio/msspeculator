@@ -21,7 +21,7 @@ import lightning as L
 import numpy as np
 import torch
 
-from .chem import Peptide, fragment_mz_matrix, mod_composition, mod_delta, unimod_title
+from .chem import Peptide, mod_composition, mod_delta, unimod_title
 from .data.encode import FRAG_OFFSET, collate
 from .data.precursors import Precursor
 from .diagnostics import (
@@ -33,6 +33,7 @@ from .diagnostics import (
     SpectralAngleSeries,
     SpectrumComparison,
     irt_regression_metrics,
+    load_reference_spectra,
     normalized_spectral_angle,
     plot_irt_scatter,
     plot_labeled_embedding_pca,
@@ -292,7 +293,6 @@ class TrainingDiagnosticRenderer:
     def __init__(
         self,
         out: str | Path,
-        teacher,
         *,
         acquisition: DiagnosticAcquisition = DiagnosticAcquisition(),
         butterflies: int = 3,
@@ -312,22 +312,20 @@ class TrainingDiagnosticRenderer:
         self.reference_distributions = (
             load_reference_distributions(reference_prefix) if reference_prefix else {}
         )
-        self.reference_name = getattr(teacher, "name", teacher.__class__.__name__)
-        references = [
-            Precursor(Peptide(standard.sequence), standard.charge, "diagnostic")
-            for standard in IRT_STANDARDS
-        ]
-        selected = _evenly_spaced(references, butterflies)
-        labels = teacher.predict(
-            selected, nces=np.full(len(selected), acquisition.nce, dtype=np.float32)
-        )
+        # Vendored real spectra rather than a teacher's prediction of them. The student is being
+        # trained to reproduce experimental data, so that is what the butterflies should draw it
+        # against, and it means constructing a renderer no longer loads a peptdeep model.
+        self.references = load_reference_spectra()[:butterflies]
+        self.reference_name = "experimental"
         self.targets = tuple(
-            _SpectrumTarget(precursor, np.asarray(label.ms2, dtype=np.float32))
-            for precursor, label in zip(selected, labels, strict=True)
-            if label is not None
+            _SpectrumTarget(
+                Precursor(Peptide.from_string(spectrum.proforma), spectrum.charge, "diagnostic"),
+                spectrum.intensity,
+            )
+            for spectrum in self.references
         )
         if not self.targets:
-            raise ValueError("teacher produced no spectra for the diagnostic reference panel")
+            raise ValueError("the vendored reference panel carries no spectra")
         self._bases: dict[str, PcaBasis] = {}
 
     def _embedding_plot(
@@ -404,39 +402,57 @@ class TrainingDiagnosticRenderer:
         target_dir.mkdir(parents=True, exist_ok=True)
         try:
             device = next(model.parameters()).device
-            references = [
+
+            def context_for(instrument: str, detector: str, fragmentation: str, nce: float, n: int):
+                def column(value, dtype):
+                    return torch.full((n,), value, dtype=dtype, device=device)
+
+                return encoder(
+                    column(encoder.instrument_id(instrument), torch.long),
+                    column(encoder.detector_id(detector), torch.long),
+                    column(encoder.fragmentation_id(fragmentation), torch.long),
+                    column(nce, torch.float32),
+                )
+
+            # Retention: the iRT standards, under the run's nominal acquisition. RT is
+            # context-free, so the context here only has to be the same one every snapshot.
+            standards = [
                 Precursor(Peptide(standard.sequence), standard.charge, "diagnostic")
                 for standard in IRT_STANDARDS
             ]
-            batch = collate(references).to(device)
             acquisition = self.acquisition
             with torch.inference_mode():
-                ms_context = encoder(
-                    torch.full(
-                        (len(references),),
-                        encoder.instrument_id(acquisition.instrument),
-                        dtype=torch.long,
-                        device=device,
-                    ),
-                    torch.full(
-                        (len(references),),
-                        encoder.detector_id(acquisition.detector),
-                        dtype=torch.long,
-                        device=device,
-                    ),
-                    torch.full(
-                        (len(references),),
-                        encoder.fragmentation_id(acquisition.fragmentation),
-                        dtype=torch.long,
-                        device=device,
-                    ),
-                    torch.full(
-                        (len(references),), acquisition.nce, dtype=torch.float32, device=device
+                irt_output = model(
+                    collate(standards).to(device),
+                    ms_context=context_for(
+                        acquisition.instrument,
+                        acquisition.detector,
+                        acquisition.fragmentation,
+                        acquisition.nce,
+                        len(standards),
                     ),
                 )
-                output = model(batch, ms_context=ms_context)
-                predictions = output["ms2"].cpu().numpy()
-                predicted_irt = model.unstandardize_rt(output["rt"]).cpu().numpy()
+                predicted_irt = model.unstandardize_rt(irt_output["rt"]).cpu().numpy()
+
+                # Fragmentation: each vendored spectrum under the acquisition it was recorded
+                # with. Drawing a spectrum acquired at NCE 25 against a prediction made at the
+                # run's nominal energy would show the mismatch as a bad model.
+                predictions = []
+                for spectrum in self.references:
+                    precursor = Precursor(
+                        Peptide.from_string(spectrum.proforma), spectrum.charge, "diagnostic"
+                    )
+                    output = model(
+                        collate([precursor]).to(device),
+                        ms_context=context_for(
+                            spectrum.instrument,
+                            spectrum.detector,
+                            spectrum.fragmentation,
+                            spectrum.energy,
+                            1,
+                        ),
+                    )
+                    predictions.append(output["ms2"][0].cpu().numpy())
 
             paths: dict[str, Path] = {}
             aa_path = self._embedding_plot(
@@ -472,26 +488,21 @@ class TrainingDiagnosticRenderer:
             if context_path is not None:
                 paths["acquisition_contexts"] = context_path
 
-            prediction_by_sequence = {
-                precursor.peptide.sequence: predictions[index]
-                for index, precursor in enumerate(references)
-            }
             comparisons = []
             agreements = []
-            for target in self.targets:
+            for spectrum, target, prediction in zip(
+                self.references, self.targets, predictions, strict=True
+            ):
                 precursor = target.precursor
-                length = precursor.peptide.length
-                student = prediction_by_sequence[precursor.peptide.sequence][
-                    FRAG_OFFSET : FRAG_OFFSET + length - 1
-                ]
+                # Fragment sites live at adjacent-pool indices [FRAG_OFFSET, +length-1) in the
+                # model's output. The vendored grid carries no such offset; it is already the
+                # target grid.
+                student = prediction[FRAG_OFFSET : FRAG_OFFSET + precursor.peptide.length - 1]
                 comparisons.append(
                     SpectrumComparison(
                         proforma_sequence=precursor.peptide.modified_sequence(),
                         charge=precursor.charge,
-                        fragment_mz=np.asarray(
-                            fragment_mz_matrix(precursor.peptide.sequence, precursor.peptide.mods),
-                            dtype=np.float64,
-                        ),
+                        fragment_mz=spectrum.fragment_mz,
                         student_intensity=student,
                         reference_intensity=target.intensity,
                         reference_name=self.reference_name,
@@ -524,7 +535,7 @@ class TrainingDiagnosticRenderer:
                     paths["spectral_angle_violins"] = panel
             rt_metrics = irt_regression_metrics(rt_observations)
             metrics = {
-                "teacher_spectral_angle": float(np.mean(agreements)),
+                "reference_spectral_angle": float(np.mean(agreements)),
                 "irt_slope": rt_metrics.slope,
                 "irt_intercept": rt_metrics.intercept,
                 "irt_r_squared": rt_metrics.r_squared,
@@ -612,7 +623,7 @@ class TrainingDiagnosticCallback(L.Callback):
             self.wandb_logger.log_metrics(payload, step=step)
         trainer.print(
             f"[diagnostics] {self.stage} {reason} at step {step:,}: "
-            f"teacher agreement={result.metrics['teacher_spectral_angle']:.4f}, "
+            f"reference agreement={result.metrics['reference_spectral_angle']:.4f}, "
             f"iRT R2={result.metrics['irt_r_squared']:.4f} -> "
             f"{next(iter(result.paths.values())).parent}"
         )

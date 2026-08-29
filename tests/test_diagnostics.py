@@ -220,11 +220,10 @@ def test_reference_distributions_load_and_panel_uses_them(tmp_path):
         assert load_reference_distributions(str(tmp_path / "absent")) == {}
 
     # Build the real renderer so the prefix is loaded through its own constructor.
-    from msspeculator.teacher import FakeTeacher
     from msspeculator.training_diagnostics import TrainingDiagnosticRenderer
 
     renderer = TrainingDiagnosticRenderer(
-        tmp_path / "out", FakeTeacher(), butterflies=2, reference_prefix=str(tmp_path)
+        tmp_path / "out", butterflies=2, reference_prefix=str(tmp_path)
     )
     assert sorted(renderer.reference_distributions["ptm"]) == ["ceiling", "teacher"]
 

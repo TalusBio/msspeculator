@@ -134,7 +134,6 @@ def test_training_diagnostics_config_parses(tmp_path):
             + """
 [diagnostics]
 enabled = true
-teacher = "fake"
 butterflies = 5
 every_n_epochs = 2
 interval_minutes = 30
@@ -143,7 +142,6 @@ render_initial = false
         )
     )
     assert cfg.diagnostics.enabled
-    assert cfg.diagnostics.teacher == "fake"
     assert cfg.diagnostics.butterflies == 5
     assert cfg.diagnostics.every_n_epochs == 2
     assert cfg.diagnostics.interval_minutes == 30

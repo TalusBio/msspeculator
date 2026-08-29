@@ -112,6 +112,75 @@ IRT_STANDARDS = (
     IrtStandard("LFLQFGAQGSPFLK", 100.00282166666665),
 )
 
+#: Vendored real spectra, beside the iRT standards they sit with in the repo.
+REFERENCE_SPECTRA_PATH = (
+    Path(__file__).resolve().parents[2] / "data" / "reference_peptides" / "diagnostic_spectra.tsv"
+)
+
+
+@dataclass(frozen=True)
+class ReferenceSpectrum:
+    """One vendored experimental spectrum, on the dense fragment grid.
+
+    Real data rather than a teacher's opinion of it, so the panel measures the student against the
+    thing it is meant to reproduce and needs no teacher loaded to draw.
+    """
+
+    dataset: str
+    proforma: str
+    charge: int
+    instrument: str
+    detector: str
+    fragmentation: str
+    energy: float
+    #: (length - 1, n_ion), relative to the base peak, zero where nothing was observed.
+    intensity: np.ndarray
+    fragment_mz: np.ndarray
+
+
+def load_reference_spectra(path: str | Path | None = None) -> tuple[ReferenceSpectrum, ...]:
+    """Read the vendored panel onto the dense fragment grid.
+
+    Cells come from ``msspeculator_rs.fragment_cell``, the mapping the preparation ETL filled the
+    grid with, so a spectrum read here and the same spectrum read by the Rust doctor land on the
+    same cells. See ``tools/vendor_reference_spectra.py`` for how the file is produced.
+    """
+    import msspeculator_rs as _rs
+
+    from .chem import ION_TYPES, Peptide, fragment_mz_matrix
+
+    lines = Path(path or REFERENCE_SPECTRA_PATH).read_text().splitlines()
+    header = lines[0].split("\t")
+    spectra = []
+    for line in lines[1:]:
+        row = dict(zip(header, line.split("\t"), strict=True))
+        peptide = Peptide.from_string(row["proforma"])
+        grid = np.zeros((peptide.length - 1, len(ION_TYPES)), dtype=np.float32)
+        annotations = row["annotations"].split(";")
+        intensities = row["relative_intensity"].split(";")
+        for annotation, value in zip(annotations, intensities, strict=True):
+            ion, _, charge = annotation.partition("^")
+            site, column = _rs.fragment_cell(ion[0], int(ion[1:]), int(charge or 1), peptide.length)
+            grid[site, column] = float(value)
+        spectra.append(
+            ReferenceSpectrum(
+                dataset=row["dataset"],
+                proforma=row["proforma"],
+                charge=int(row["charge"]),
+                instrument=row["instrument"],
+                detector=row["detector"],
+                fragmentation=row["fragmentation"],
+                energy=float(row["energy"]),
+                intensity=grid,
+                fragment_mz=np.asarray(
+                    fragment_mz_matrix(peptide.sequence, list(peptide.mods)), dtype=np.float64
+                ),
+            )
+        )
+    if not spectra:
+        raise ValueError(f"the vendored reference panel at {path} carries no spectra")
+    return tuple(spectra)
+
 
 # Spectral angle is bounded in [0, 1] for non-negative intensities, so one fixed grid can be
 # shared by every producer of a spectral-angle distribution: the teacher yardstick, the curation

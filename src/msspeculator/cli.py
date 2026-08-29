@@ -25,7 +25,6 @@ import typer
 # training stack: an ETL worker paid seconds of import and a GB of memory for a path that never
 # touches a tensor. Torch is also an optional dependency (the `torch` extra), so importing it here
 # would make every command require an install the preparation commands do not need.
-from .util import resolve_device
 
 
 def _require_torch(command: str) -> None:
@@ -272,42 +271,6 @@ def export_rust(
     out.parent.mkdir(parents=True, exist_ok=True)
     export_safetensors(model, out)
     typer.echo(f"exported -> {out}")
-
-
-@app.command()
-def diagnose(
-    model: Path = typer.Option(..., exists=True, readable=True, help="Checkpoint (.ckpt)."),
-    out: Path = typer.Option(..., "--out", "-o", help="Diagnostic output directory."),
-    teacher: str = typer.Option("alphapeptdeep", help="Reference teacher name."),
-    butterflies: int = typer.Option(3, min=1, help="Number of reference spectra."),
-    device: str = typer.Option("cpu", help="auto | cpu | mps | cuda"),
-) -> None:
-    """Render the same fixed diagnostic panel used during training for one checkpoint."""
-    _require_torch("diagnose")
-    from .models.context import MSContextEncoder
-    from .models.registry import load_checkpoint, load_context
-    from .teacher import get_teacher
-    from .training_diagnostics import TrainingDiagnosticRenderer
-
-    resolved = resolve_device(device)
-    student = load_checkpoint(model, map_location=str(resolved)).to(resolved)
-    context = load_context(model, map_location=str(resolved))
-    encoder = context.encoder if context is not None else None
-    if encoder is None:
-        encoder = MSContextEncoder(context_dim=student.cfg.context_dim)
-    encoder = encoder.to(resolved)
-    teacher_kwargs = {} if teacher == "fake" else {"device": "cpu", "instrument": "Lumos"}
-    renderer = TrainingDiagnosticRenderer(
-        out,
-        get_teacher(teacher, **teacher_kwargs),
-        butterflies=butterflies,
-    )
-    result = renderer.render(student, encoder, "checkpoint")
-    for name, path in result.paths.items():
-        typer.echo(f"{name} -> {path}")
-    typer.echo(
-        "metrics: " + ", ".join(f"{name}={value:.4f}" for name, value in result.metrics.items())
-    )
 
 
 if __name__ == "__main__":

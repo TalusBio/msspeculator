@@ -250,12 +250,11 @@ class TrackingCfg:
 class DiagnosticsCfg:
     """Low-frequency longitudinal plots for representations, iRT, and reference spectra.
 
-    Disabled by default because plotting and the AlphaPeptDeep reference teacher are optional
-    dependencies. Enable it for production training runs installed with ``tracking,teacher``.
+    Disabled by default because plotting is an optional dependency. The butterflies draw against
+    the vendored experimental panel, so enabling this needs no teacher installed.
     """
 
     enabled: bool = False
-    teacher: str | None = None  # defaults to the pretrain teacher
     butterflies: int = 3
     every_n_epochs: int = 1  # 0 disables epoch renders
     interval_minutes: float = 60.0  # 0 disables wall-clock renders
@@ -633,12 +632,11 @@ def _runbook_for_datasets(
     return book
 
 
-def _diagnostic_renderer(cfg: RunConfig, teacher, out: Path):
+def _diagnostic_renderer(cfg: RunConfig, out: Path):
     from ..training_diagnostics import DiagnosticAcquisition, TrainingDiagnosticRenderer
 
     return TrainingDiagnosticRenderer(
         out / "diagnostics",
-        teacher,
         acquisition=DiagnosticAcquisition(
             instrument=cfg.pretrain.instrument,
             detector=cfg.pretrain.detector,
@@ -675,17 +673,7 @@ def _run_pretrain(
     mixes = _stream_mixes(p, log)
     kw = {} if p.teacher == "fake" else {"device": p.device, "instrument": p.instrument}
     teacher = get_teacher(p.teacher, **kw)
-    diagnostic_teacher = teacher
-    if cfg.diagnostics.enabled and cfg.diagnostics.teacher not in (None, p.teacher):
-        diagnostic_kw = (
-            {}
-            if cfg.diagnostics.teacher == "fake"
-            else {"device": p.device, "instrument": p.instrument}
-        )
-        diagnostic_teacher = get_teacher(cfg.diagnostics.teacher, **diagnostic_kw)
-    renderer = (
-        _diagnostic_renderer(cfg, diagnostic_teacher, out) if cfg.diagnostics.enabled else None
-    )
+    renderer = _diagnostic_renderer(cfg, out) if cfg.diagnostics.enabled else None
     spc = StreamPretrainCfg(
         mixes=mixes,
         nce_range=(p.nce_min, p.nce_max),
@@ -825,15 +813,7 @@ def run_pipeline(cfg: RunConfig, log=print) -> dict:
     if cfg.train.enabled:
         assert encoder is not None, "need_encoder covers cfg.train.enabled"
         if cfg.diagnostics.enabled and diagnostic_renderer is None:
-            teacher_name = cfg.diagnostics.teacher or cfg.pretrain.teacher
-            teacher_kw = (
-                {}
-                if teacher_name == "fake"
-                else {"device": cfg.pretrain.device, "instrument": cfg.pretrain.instrument}
-            )
-            diagnostic_renderer = _diagnostic_renderer(
-                cfg, get_teacher(teacher_name, **teacher_kw), out
-            )
+            diagnostic_renderer = _diagnostic_renderer(cfg, out)
         if not cfg.train.prepared_prefix:
             raise ValueError("[train] requires prepared_prefix; run the prepared ETL first")
         if cfg.train.model_threads < 1:

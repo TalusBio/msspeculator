@@ -50,7 +50,6 @@ enabled = false
 
 [diagnostics]
 enabled = true
-teacher = "fake"
 butterflies = 2
 every_n_epochs = 0
 interval_minutes = 0
