@@ -611,18 +611,26 @@ def plot_irt_scatter(
 
 
 def irt_regression_metrics(observations: Sequence[RtObservation]) -> RtRegressionMetrics:
-    """Compute the regression summary used by both plots and experiment tracking."""
+    """Compute the regression summary used by both plots and experiment tracking.
+
+    Delegates to the same ``msspeculator_core::irt`` fit that ``msspeculator-cli doctor`` reports,
+    so a slope read off a training panel and a slope read off the exported weights are the same
+    number. A flat prediction (an untrained model) yields slope and R-squared of 0 rather than a
+    degenerate fit, which is what the Rust caller has always reported for that case.
+    """
+    import msspeculator_rs as _rs
+
     if len(observations) < 2:
         raise ValueError("at least two iRT observations are required")
-    observed = np.asarray([item.observed_irt for item in observations], dtype=np.float64)
-    predicted = np.asarray([item.predicted_irt for item in observations], dtype=np.float64)
-    slope, intercept = np.polyfit(observed, predicted, 1)
-    correlation = np.corrcoef(observed, predicted)[0, 1]
+    summary = _rs.irt_regression(
+        [float(item.observed_irt) for item in observations],
+        [float(item.predicted_irt) for item in observations],
+    )
     return RtRegressionMetrics(
-        slope=float(slope),
-        intercept=float(intercept),
-        r_squared=float(correlation**2) if np.isfinite(correlation) else 0.0,
-        mae=float(np.mean(np.abs(predicted - observed))),
+        slope=summary["slope"],
+        intercept=summary["intercept"],
+        r_squared=summary["r_squared"],
+        mae=summary["mae"],
     )
 
 

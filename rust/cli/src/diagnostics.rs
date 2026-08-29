@@ -4,6 +4,7 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use msspeculator_core::irt::{summarize, IrtSummary};
 use msspeculator_core::{predict, Artifact};
 
 const IRT_STANDARDS_TSV: &str = include_str!("../../../data/reference_peptides/biognosys_irt.tsv");
@@ -36,58 +37,12 @@ fn irt_standards() -> Result<Vec<IrtStandard<'static>>> {
         .collect()
 }
 
-#[derive(Debug)]
-pub struct IrtSummary {
-    pub n: usize,
-    pub slope: f64,
-    pub intercept: f64,
-    pub r_squared: f64,
-    pub mae: f64,
-}
-
 pub struct DoctorReport {
     pub summary: IrtSummary,
     pub terminal_plot: String,
     pub svg_path: PathBuf,
     pub report_path: PathBuf,
     pub predictions_path: PathBuf,
-}
-
-fn summarize(observed: &[f64], predicted: &[f64]) -> IrtSummary {
-    let n = observed.len();
-    let mean_x = observed.iter().sum::<f64>() / n as f64;
-    let mean_y = predicted.iter().sum::<f64>() / n as f64;
-    let covariance = observed
-        .iter()
-        .zip(predicted)
-        .map(|(x, y)| (x - mean_x) * (y - mean_y))
-        .sum::<f64>();
-    let variance_x = observed.iter().map(|x| (x - mean_x).powi(2)).sum::<f64>();
-    let variance_y = predicted.iter().map(|y| (y - mean_y).powi(2)).sum::<f64>();
-    let slope = if variance_x > 0.0 {
-        covariance / variance_x
-    } else {
-        0.0
-    };
-    let intercept = mean_y - slope * mean_x;
-    let r_squared = if variance_x > 0.0 && variance_y > 0.0 {
-        covariance.powi(2) / (variance_x * variance_y)
-    } else {
-        0.0
-    };
-    let mae = observed
-        .iter()
-        .zip(predicted)
-        .map(|(x, y)| (x - y).abs())
-        .sum::<f64>()
-        / n as f64;
-    IrtSummary {
-        n,
-        slope,
-        intercept,
-        r_squared,
-        mae,
-    }
 }
 
 fn bounds(observed: &[f64], predicted: &[f64]) -> (f64, f64) {

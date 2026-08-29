@@ -15,9 +15,10 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
 use msspeculator_core::chem;
+use msspeculator_core::model::Predictor;
 use msspeculator_core::peptide::{ModSpec, Peptide as CorePeptide, Site};
 use msspeculator_core::split as speclib_split;
-use msspeculator_core::{bucket, proforma, speclib, tokenize, unimod};
+use msspeculator_core::{bucket, irt, proforma, speclib, tokenize, unimod, Artifact};
 
 fn to_pyerr(e: anyhow::Error) -> PyErr {
     pyo3::exceptions::PyValueError::new_err(e.to_string())
@@ -338,6 +339,121 @@ fn bucket_fragment_mz<'py>(
     Ok((mz.into_pyarray_bound(py), pmz.into_pyarray_bound(py)))
 }
 
+/// Least-squares agreement of predicted retention index against observed.
+///
+/// Exposed so the training panel and `msspeculator-cli doctor` report the same slope for the same
+/// weights. A second implementation in numpy would drift, and "is the RT scale right?" is not a
+/// question that can have two answers.
+#[pyfunction]
+fn irt_regression<'py>(
+    py: Python<'py>,
+    observed: Vec<f64>,
+    predicted: Vec<f64>,
+) -> PyResult<Bound<'py, PyDict>> {
+    // Checked here rather than in core: every Rust caller pairs a panel with its own predictions
+    // and cannot mismatch them, whereas a Python caller assembles both lists itself.
+    if observed.len() != predicted.len() {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "observed and predicted must be the same length, got {} and {}",
+            observed.len(),
+            predicted.len()
+        )));
+    }
+    if observed.is_empty() {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "cannot regress an empty panel",
+        ));
+    }
+    let summary = irt::summarize(&observed, &predicted);
+    let d = PyDict::new_bound(py);
+    d.set_item("n", summary.n)?;
+    d.set_item("slope", summary.slope)?;
+    d.set_item("intercept", summary.intercept)?;
+    d.set_item("r_squared", summary.r_squared)?;
+    d.set_item("mae", summary.mae)?;
+    Ok(d)
+}
+
+/// A loaded set of portable weights, kept alive across calls.
+///
+/// The point of holding it is parity checking: comparing a torch forward against the Rust forward
+/// on the same weights, in-process, without building a binary or shelling out. Loading per call
+/// would make a per-epoch check cost more than the epoch.
+#[pyclass]
+struct PortableWeights {
+    artifact: Artifact,
+}
+
+#[pymethods]
+impl PortableWeights {
+    /// Load a `.safetensors` export written by `msspeculator export-rust`.
+    #[staticmethod]
+    fn load(path: &str) -> PyResult<Self> {
+        let artifact = Artifact::load(path).map_err(to_pyerr)?;
+        Ok(Self { artifact })
+    }
+
+    /// Dense forward for one peptidoform: `(ms2 [L-1, n_ion], rt, ccs)`.
+    ///
+    /// Dense and unfiltered, unlike the CLI's prediction. The comparison this exists for is
+    /// against torch's own dense output. Applying a base-peak normalization and an intensity
+    /// floor first would hide the small disagreements it is looking for.
+    ///
+    /// Acquisition context arrives as either an already-encoded vector (what torch feeds its own
+    /// model) or the name of a setup fitted into these weights. It is never a `::`-separated
+    /// string here: that grammar belongs to the CLI, and parsing it in a second place is what
+    /// this seam exists to avoid.
+    #[pyo3(signature = (peptide, charge, ms_context=None, ms_setup=None, chrom_context=None))]
+    fn forward<'py>(
+        &self,
+        py: Python<'py>,
+        peptide: &str,
+        charge: i64,
+        ms_context: Option<numpy::PyReadonlyArray1<'py, f32>>,
+        ms_setup: Option<&str>,
+        chrom_context: Option<&str>,
+    ) -> PyResult<(Bound<'py, numpy::PyArray2<f32>>, f32, f32)> {
+        if ms_context.is_some() && ms_setup.is_some() {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "pass ms_context or ms_setup, not both",
+            ));
+        }
+        let pep = CorePeptide::parse(peptide).map_err(to_pyerr)?;
+        let predictor = Predictor::new(&self.artifact);
+
+        // Both forms end as a context vector, which the weights then project into the shift the
+        // heads consume. The projection belongs to the weights, not to the caller.
+        let context: Option<Array1<f32>> = match (&ms_context, ms_setup) {
+            (Some(vector), _) => Some(vector.as_array().to_owned()),
+            (None, Some(setup)) => Some(predictor.named_ms_context(setup).map_err(to_pyerr)?),
+            (None, None) => None,
+        };
+        let ms_shift = match &context {
+            Some(vector) => Some(predictor.context_shift(vector.view()).map_err(to_pyerr)?),
+            None => None,
+        };
+
+        let (chrom_shift, chrom_affine) = match chrom_context {
+            Some(dataset) => (
+                Some(predictor.chrom_context_shift(dataset).map_err(to_pyerr)?),
+                Some(predictor.chrom_affine(dataset).map_err(to_pyerr)?),
+            ),
+            None => (None, None),
+        };
+
+        let (ms2, rt, ccs) = predictor
+            .forward(
+                &pep,
+                charge,
+                ms_shift.as_ref(),
+                chrom_shift.as_ref(),
+                chrom_affine,
+            )
+            .map_err(to_pyerr)?;
+        Ok((ms2.into_pyarray_bound(py), rt, ccs))
+    }
+}
+
 /// Assign a bare sequence to a split, from the Rust port of `msspeculator.data.split`.
 ///
 /// Exposed so the two implementations can be compared directly. They have to agree exactly: the
@@ -478,6 +594,7 @@ fn read_speclib<'py>(
 #[pymodule]
 fn msspeculator_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Peptide>()?;
+    m.add_class::<PortableWeights>()?;
     m.add_function(wrap_pyfunction!(fragment_mz, m)?)?;
     m.add_function(wrap_pyfunction!(fragment_mz_matrix, m)?)?;
     m.add_function(wrap_pyfunction!(ms2_target_shape, m)?)?;
@@ -491,6 +608,7 @@ fn msspeculator_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(bucket_fragment_mz, m)?)?;
     m.add_function(wrap_pyfunction!(read_speclib, m)?)?;
     m.add_function(wrap_pyfunction!(assign_split, m)?)?;
+    m.add_function(wrap_pyfunction!(irt_regression, m)?)?;
 
     m.add("PROTON", chem::PROTON)?;
     m.add("H2O", chem::H2O)?;

@@ -10,6 +10,7 @@ pub mod builtin;
 pub mod chem;
 pub mod composition;
 pub mod fit;
+pub mod irt;
 pub mod landmarks;
 pub mod model;
 pub mod peptide;
