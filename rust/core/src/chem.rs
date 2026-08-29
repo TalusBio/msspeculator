@@ -244,4 +244,51 @@ mod tests {
             assert!(e.comp.element_comp().is_err());
         }
     }
+
+    /// Every m/z in the vendored Biognosys transition table, recomputed from our own residue
+    /// masses.
+    ///
+    /// The other tests in this module check our arithmetic against hand-computed constants and
+    /// against itself (b + y complementarity). This one checks it against a table nobody here
+    /// wrote: if a residue mass, the water term, or the proton were wrong, every test above could
+    /// still agree while a real library disagreed with the instrument that produced it.
+    ///
+    /// The tolerance is 10 mDa, which is not the precision of the arithmetic: it is the accuracy
+    /// of the table. This is a QQQ method sheet, printed to two or three decimals and not always
+    /// rounded to its own last place; measured against our values the worst row is off by 4.1
+    /// mDa. That is still two orders of magnitude below any error this test could plausibly
+    /// catch, since the smallest wrong residue mass moves a fragment by about 1 Da, a dropped
+    /// water by 18, and a wrong proton term by 1.007.
+    #[test]
+    fn vendored_transition_mz_matches_our_chemistry() {
+        const TABLE: &str =
+            include_str!("../../../data/reference_peptides/biognosys_irt_transitions.tsv");
+        const VENDOR_ACCURACY: f64 = 0.01;
+
+        let mut checked = 0;
+        for (index, line) in TABLE.lines().skip(1).enumerate() {
+            let f: Vec<&str> = line.split('\t').collect();
+            assert_eq!(f.len(), 12, "bad vendored transition row {}", index + 2);
+            let sequence = f[9];
+            let rm = residue_masses(sequence.as_bytes()).expect("vendored peptide is parseable");
+
+            let q1: f64 = f[0].parse().expect("Q1 monoisotopic");
+            let precursor_charge: i64 = f[5].parse().expect("precursor charge");
+            approx(precursor_mz(&rm, precursor_charge), q1, VENDOR_ACCURACY);
+
+            let q3: f64 = f[2].parse().expect("Q3");
+            let ion = f[6];
+            let fragment_charge: i64 = f[7].parse().expect("fragment charge");
+            let ordinal: usize = f[8].parse().expect("fragment number");
+            approx(
+                fragment_mz(&rm, ion, ordinal, fragment_charge).expect("known ion type"),
+                q3,
+                VENDOR_ACCURACY,
+            );
+            checked += 1;
+        }
+        // The table is vendored, so an empty or truncated one would silently pass everything
+        // above by checking nothing. It carries 33 transitions today.
+        assert!(checked >= 33, "only {checked} vendored transitions checked");
+    }
 }

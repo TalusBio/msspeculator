@@ -2,12 +2,10 @@ import numpy as np
 import pytest
 
 from msspeculator.diagnostics import (
-    DiagnosticReferencePanel,
     EmbeddingConnection,
     IRT_STANDARDS,
     LabeledEmbedding,
     PcaBasis,
-    ReferenceSpectrum,
     RtObservation,
     SpectrumComparison,
     normalized_spectral_angle,
@@ -25,31 +23,6 @@ def test_fixed_pca_basis_roundtrip_shape_and_variance():
     assert coordinates.shape == (4, 2)
     assert basis.explained_variance_ratio.sum() == pytest.approx(1.0)
     np.testing.assert_allclose(coordinates.mean(axis=0), 0.0, atol=1e-12)
-
-
-def test_reference_panel_roundtrips_and_reports_teacher_yardstick(tmp_path):
-    experimental = np.asarray([[1.0, 0.2], [0.0, 0.5]], dtype=np.float32)
-    teacher = experimental.copy()
-    panel = DiagnosticReferencePanel(
-        (
-            ReferenceSpectrum(
-                dataset="pool",
-                sequence="PEPTIDEK",
-                serialized_mods="",
-                charge=2,
-                fragment_mz=np.asarray([[100.0, 200.0], [300.0, 400.0]]),
-                experimental_intensity=experimental,
-                teacher_intensity=teacher,
-            ),
-        )
-    )
-    path = tmp_path / "panel.npz"
-    panel.save(path)
-    loaded = DiagnosticReferencePanel.load(path)
-
-    assert loaded.spectra[0].sequence == "PEPTIDEK"
-    np.testing.assert_array_equal(loaded.spectra[0].teacher_intensity, teacher)
-    assert loaded.teacher_yardstick() == {"pool": pytest.approx(1.0)}
 
 
 def test_spectrum_plot_writes_png(tmp_path):

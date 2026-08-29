@@ -2,13 +2,10 @@
 
 from __future__ import annotations
 
-import io
-import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
 
-import fsspec
 import numpy as np
 
 
@@ -114,108 +111,6 @@ IRT_STANDARDS = (
     IrtStandard("GTFIIDPAAVIR", 87.23322233333332),
     IrtStandard("LFLQFGAQGSPFLK", 100.00282166666665),
 )
-
-
-@dataclass(frozen=True)
-class ReferenceSpectrum:
-    """Immutable teacher/experimental diagnostic values for one prepared precursor."""
-
-    dataset: str
-    sequence: str
-    serialized_mods: str
-    charge: int
-    fragment_mz: np.ndarray
-    experimental_intensity: np.ndarray
-    teacher_intensity: np.ndarray
-
-
-@dataclass(frozen=True)
-class DiagnosticReferencePanel:
-    """Cached fixed panel used for teacher yardsticks and longitudinal butterflies."""
-
-    spectra: tuple[ReferenceSpectrum, ...]
-
-    def save(self, uri: str | Path) -> None:
-        metadata = []
-        mz_parts = []
-        experimental_parts = []
-        teacher_parts = []
-        offset = 0
-        for spectrum in self.spectra:
-            shape = tuple(np.asarray(spectrum.experimental_intensity).shape)
-            if np.asarray(spectrum.fragment_mz).shape != shape:
-                raise ValueError(f"fragment m/z shape mismatch for {spectrum.sequence}")
-            if np.asarray(spectrum.teacher_intensity).shape != shape:
-                raise ValueError(f"teacher intensity shape mismatch for {spectrum.sequence}")
-            size = int(np.prod(shape))
-            metadata.append(
-                {
-                    "dataset": spectrum.dataset,
-                    "sequence": spectrum.sequence,
-                    "serialized_mods": spectrum.serialized_mods,
-                    "charge": spectrum.charge,
-                    "shape": shape,
-                    "offset": offset,
-                    "size": size,
-                }
-            )
-            mz_parts.append(np.asarray(spectrum.fragment_mz, dtype=np.float32).ravel())
-            experimental_parts.append(
-                np.asarray(spectrum.experimental_intensity, dtype=np.float32).ravel()
-            )
-            teacher_parts.append(np.asarray(spectrum.teacher_intensity, dtype=np.float32).ravel())
-            offset += size
-        payload = io.BytesIO()
-        np.savez_compressed(
-            payload,
-            metadata=np.asarray(json.dumps(metadata)),
-            fragment_mz=np.concatenate(mz_parts) if mz_parts else np.empty(0, np.float32),
-            experimental=(
-                np.concatenate(experimental_parts)
-                if experimental_parts
-                else np.empty(0, np.float32)
-            ),
-            teacher=np.concatenate(teacher_parts) if teacher_parts else np.empty(0, np.float32),
-        )
-        with fsspec.open(str(uri), "wb") as stream:
-            stream.write(payload.getvalue())
-
-    @classmethod
-    def load(cls, uri: str | Path) -> "DiagnosticReferencePanel":
-        with fsspec.open(str(uri), "rb") as stream:
-            payload = io.BytesIO(stream.read())
-        with np.load(payload, allow_pickle=False) as arrays:
-            metadata = json.loads(str(arrays["metadata"]))
-            result = []
-            for row in metadata:
-                start = int(row["offset"])
-                stop = start + int(row["size"])
-                shape = tuple(int(value) for value in row["shape"])
-                result.append(
-                    ReferenceSpectrum(
-                        dataset=str(row["dataset"]),
-                        sequence=str(row["sequence"]),
-                        serialized_mods=str(row["serialized_mods"]),
-                        charge=int(row["charge"]),
-                        fragment_mz=arrays["fragment_mz"][start:stop].reshape(shape).copy(),
-                        experimental_intensity=(
-                            arrays["experimental"][start:stop].reshape(shape).copy()
-                        ),
-                        teacher_intensity=arrays["teacher"][start:stop].reshape(shape).copy(),
-                    )
-                )
-        return cls(tuple(result))
-
-    def teacher_yardstick(self) -> dict[str, float]:
-        """Mean teacher-vs-experimental spectral agreement, separately per dataset."""
-        grouped: dict[str, list[float]] = {}
-        for spectrum in self.spectra:
-            grouped.setdefault(spectrum.dataset, []).append(
-                normalized_spectral_angle(
-                    spectrum.teacher_intensity, spectrum.experimental_intensity
-                )
-            )
-        return {dataset: float(np.mean(values)) for dataset, values in sorted(grouped.items())}
 
 
 # Spectral angle is bounded in [0, 1] for non-negative intensities, so one fixed grid can be
@@ -695,11 +590,9 @@ def plot_spectrum_butterflies(
 __all__ = [
     "IRT_STANDARDS",
     "PcaBasis",
-    "DiagnosticReferencePanel",
     "EmbeddingConnection",
     "LabeledEmbedding",
     "IrtStandard",
-    "ReferenceSpectrum",
     "SA_HISTOGRAM_BINS",
     "SA_HISTOGRAM_EDGES",
     "SpectralAngleSeries",
