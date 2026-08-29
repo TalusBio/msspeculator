@@ -20,6 +20,32 @@ scale.
 
 <https://biognosys.com/content/uploads/2021/03/irt-kit-reference-sheet.xls>
 
+`diagnostic_spectra.tsv` is the fixed MS2 panel the model doctor scores against. Unlike the
+tables above it transcribes no vendor sheet: it is three real spectra drawn from the prepared
+corpus by `tools/vendor_reference_spectra.py`, which is how it gets regenerated.
+
+    uv run --extra etl python tools/vendor_reference_spectra.py \
+        --chunks '<prepared-prefix>/shards/prospect_TUM_first_pool_1/*/data.parquet' \
+        --chunks '<prepared-prefix>/shards/multi_ptm_TUM_mod_pS/*/data.parquet' \
+        --chunks '<prepared-prefix>/shards/prospect_TUM_HLA/*/data.parquet' \
+        --out data/reference_peptides/diagnostic_spectra.tsv
+
+Three properties make the panel usable as a fixed reference:
+
+- **Validation split.** Validation already drives early stopping and checkpoint selection, so
+  reading it every epoch shows the run nothing it was not already seeing. Test stays untouched,
+  and train would not show a fit going wrong.
+- **One spectrum per dataset**, across a phosphopeptide, a non-tryptic HLA peptide, and a plain
+  tryptic one. Three spectra from one dataset would be three views of one acquisition.
+- **FTMS only.** An ion trap discards fragments below roughly a third of the precursor m/z, so an
+  ITMS spectrum can put its base peak at the detection edge, and then a failing check cannot be
+  told from an instrument limit.
+
+Peaks are struct-of-arrays within a row (`annotations`, `fragment_mz`, `relative_intensity` are
+`;`-separated and parallel), so a sequence is written once and the file stays legible in a diff.
+Intensities are relative to each spectrum's base peak. The underlying spectra come from
+ProteomeTools via PROSPECT, which is publicly available.
+
 `biognosys_irt_transitions.tsv` transcribes the neighboring `iRT Kit
 transitions` worksheet. Its relative-intensity column intentionally follows the
 integer display precision of that worksheet and is explicitly approximate in
