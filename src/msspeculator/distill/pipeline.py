@@ -1,4 +1,4 @@
-"""One config-driven Lightning pipeline: pretrain -> train -> bench.
+"""One config-driven Lightning pipeline: pretrain -> train.
 
 A single :class:`RunConfig` replaces the old per-stage CLI + hand-rolled trainer. Every stage
 is independently toggleable; the model and the shared :class:`MSContextEncoder` are built once
@@ -13,10 +13,9 @@ Stages:
   special mode.
 - **train**, real-speclib sink over a prepared Parquet manifest, streamed from local storage or
   object storage, with per-dataset ``chrom_context`` and factor-driven ``ms_context``.
-- **bench**, library-generation throughput on a FASTA digest.
 
-Inference (predict a library from a finished model) is deliberately NOT here. It is the
-standalone ``predict`` command.
+Inference is not here. A finished run writes portable weights, and the Rust CLI generates
+libraries from them; see ``docs/adr/0001``.
 """
 
 from __future__ import annotations
@@ -36,13 +35,11 @@ import fsspec
 import lightning as L
 import torch
 
-from ..data.config import DigestConfig, SplitConfig
-from ..data.digest import digest_fasta, resolve_fasta
+from ..data.config import DigestConfig
+from ..data.digest import resolve_fasta
 from ..data.prepared import PreparedManifest, PreparedStreamingDataset
-from ..data.precursors import enumerate_precursors
 from ..models.context import ChromRunbook, MSContextEncoder
 from ..models.registry import PRESETS, build_student, load_checkpoint, load_context, save_checkpoint
-from ..predict.fast import TorchRunner, predict_library_fast
 from ..teacher import get_teacher
 from .context_regime import establish_rt_norm, fit_realspeclib_datasets
 from .stream_pretrain import StreamMix, StreamPretrainCfg, fit_stream_pretrain
@@ -226,13 +223,6 @@ def _train_cfg(raw: dict) -> TrainCfg:
 
 
 @dataclass
-class BenchCfg:
-    enabled: bool = False
-    fasta: str = ""
-    repeats: int = 3
-
-
-@dataclass
 class TrackingCfg:
     """Optional Weights & Biases experiment tracking for both training stages."""
 
@@ -294,10 +284,9 @@ class RunConfig:
     dropout: float | None = None
     device: str = "auto"
     seed: int = 0
-    model_in: str | None = None  # optional checkpoint to initialize pretrain/train/bench
+    model_in: str | None = None  # optional checkpoint to initialize pretrain/train
     pretrain: PretrainCfg = field(default_factory=PretrainCfg)
     train: TrainCfg = field(default_factory=TrainCfg)
-    bench: BenchCfg = field(default_factory=BenchCfg)
     tracking: TrackingCfg = field(default_factory=TrackingCfg)
     diagnostics: DiagnosticsCfg = field(default_factory=DiagnosticsCfg)
     augmentation: AugmentationCfg = field(default_factory=AugmentationCfg)
@@ -325,7 +314,6 @@ class RunConfig:
             },
             pretrain=PretrainCfg(sources=sources, **pre),
             train=_train_cfg(raw.get("train", {})),
-            bench=BenchCfg(**raw.get("bench", {})),
             tracking=TrackingCfg(**raw.get("tracking", {})),
             diagnostics=DiagnosticsCfg(**raw.get("diagnostics", {})),
             augmentation=AugmentationCfg(**raw.get("augmentation", {})),
@@ -964,9 +952,6 @@ def run_pipeline(cfg: RunConfig, log=print) -> dict:
         mirror(ckpt)
     log(f"saved {ckpt}")
 
-    if cfg.bench.enabled and cfg.bench.fasta:
-        summary["bench"] = _bench(model, cfg.bench, log)
-
     summary_path = out / "summary.json"
     summary_path.write_text(json.dumps(summary, indent=2, default=str))
     if mirror is not None:
@@ -995,27 +980,11 @@ def _energy_curve(encoder, ce_min: float, ce_max: float, n: int = 5) -> dict[str
     return {f"{c:.1f}": round(float(v), 4) for c, v in zip(ces, norms)}
 
 
-def _bench(model, cfg: BenchCfg, log) -> dict:
-    dcfg = DigestConfig()
-    precs = enumerate_precursors(digest_fasta(cfg.fasta, dcfg), dcfg, SplitConfig())
-    runner = TorchRunner(model, "cpu")
-    predict_library_fast(runner, precs[: min(2000, len(precs))])  # warmup
-    best = float("inf")
-    for _ in range(cfg.repeats):
-        t = time.perf_counter()
-        lib = predict_library_fast(runner, precs)
-        best = min(best, time.perf_counter() - t)
-    rate = len(precs) / best if best > 0 else float("inf")
-    log(f"[bench] {len(precs)} precursors, {len(lib)} rows, best {best:.3f}s -> {rate:,.0f}/s")
-    return {"precursors": len(precs), "rows": len(lib), "best_s": best, "rate": rate}
-
-
 __all__ = [
     "RunConfig",
     "DigestSource",
     "PretrainCfg",
     "TrainCfg",
-    "BenchCfg",
     "TrackingCfg",
     "DiagnosticsCfg",
     "run_pipeline",

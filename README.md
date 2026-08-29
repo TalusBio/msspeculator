@@ -46,15 +46,19 @@ model-health report. Run `cargo run -p msspeculator-cli -- --help` for all optio
 Rust applications can call the same length-batched, queued inference path without spawning a
 process. See the [Rust API guide](docs/rust-api.md).
 
-## Python inference
+## From a training checkpoint
 
-Use a trained checkpoint to write a Parquet library:
+Training writes a `.ckpt`, which the Rust CLI cannot read. Export it to portable weights first:
 
 ```bash
 uv sync --locked --no-dev --extra torch-cpu
-uv run msspeculator predict --model model.ckpt \
-  --fasta proteome.fasta -o library.parquet --device auto
+uv run msspeculator export-rust --model model.ckpt -o model.safetensors
+cargo run --release -p msspeculator-cli -- \
+  library --model model.safetensors --fasta proteome.fasta --out library.tsv
 ```
+
+There is no Python prediction command. Inference is Rust so it can run where a Python runtime
+cannot; see [ADR 0001](docs/adr/0001-inference-targets-portable-rust.md).
 
 ## More
 
