@@ -8,8 +8,11 @@ Validation split, not test: validation already drives early stopping and checkpo
 looking at it every epoch adds nothing to what the run already sees, while test stays untouched.
 Not train either, since a panel the model was fit on cannot show a fit going wrong.
 
-Deterministic: spectra are chosen by sorting on `spectrum_id`, so re-running against the same
-corpus rewrites the same file. Run it, eyeball the diff, commit it.
+Spectra are chosen on quality, not position. A reference the model can be wrong about in many
+places is worth more than one it can miss in three, so the ranking is backbone coverage first
+(the fraction of fragmentation sites with an observed ion), then Andromeda score. Both are
+recorded in the output, and ties break on `spectrum_id`, so the same corpus rewrites the same
+file. Run it, read the ranking it prints, commit the diff.
 
     uv run --extra etl python tools/vendor_reference_spectra.py \
         --prepared-prefix s3://bucket/pepdistill-prepared/v2 \
@@ -38,6 +41,10 @@ COLUMNS = (
     "fragmentation",
     "energy",
     "irt",
+    # Why this spectrum and not another one. Recorded so a later run that picks something else is
+    # a visible change of evidence rather than an unexplained diff.
+    "backbone_coverage",
+    "andromeda_score",
     "annotations",
     "fragment_mz",
     "relative_intensity",
@@ -69,6 +76,7 @@ def _peaks(proforma: str, ms2: list[float], min_intensity: float):
     annotations: list[str] = []
     mz_values: list[float] = []
     intensities: list[float] = []
+    covered_sites = set()
     for site in range(rows):
         for column, (ion, fragment_charge) in enumerate(rs.ION_TYPES):
             relative = ms2[site * columns + column] / peak
@@ -78,9 +86,17 @@ def _peaks(proforma: str, ms2: list[float], min_intensity: float):
             annotations.append(_annotation(ion, ordinal, fragment_charge))
             mz_values.append(rs.fragment_mz(residue_mass, ion, ordinal, fragment_charge))
             intensities.append(relative)
+            covered_sites.add(site)
     if not annotations:
         return None
-    return annotations, mz_values, intensities
+    # Coverage counts sites, not peaks: four charge/ion variants of one backbone cleavage say less
+    # about a model than four different cleavages do.
+    return {
+        "annotations": annotations,
+        "fragment_mz": mz_values,
+        "relative_intensity": intensities,
+        "backbone_coverage": len(covered_sites) / rows,
+    }
 
 
 def main() -> None:
@@ -113,6 +129,16 @@ def main() -> None:
         default=0.01,
         help="drop peaks below this fraction of the base peak",
     )
+    parser.add_argument(
+        "--candidates",
+        type=int,
+        default=200,
+        help=(
+            "per dataset, how many top-scoring spectra to rank on coverage. Andromeda score is a "
+            "column and costs nothing to sort on; coverage needs the peaks unpacked, so score "
+            "narrows the field first."
+        ),
+    )
     args = parser.parse_args()
 
     if args.prepared_prefix:
@@ -125,45 +151,62 @@ def main() -> None:
         if not chunk_uris:
             raise SystemExit(f"no chunks matched {args.chunks}")
 
-    selected: list[dict] = []
-    # One spectrum per dataset, taking the lowest `spectrum_id` with usable peaks. A panel of
-    # three spectra from one dataset is three views of one acquisition, and the point of the panel
-    # is that a model wrong about a whole class of peptide has somewhere to show it.
-    seen_datasets: set[str] = set()
+    # Score narrows, coverage decides. Each chunk contributes only its best-scoring rows, so the
+    # whole corpus never has to be held at once.
+    shortlist: dict[str, list[pl.DataFrame]] = {}
     for uri in chunk_uris:
-        if len(selected) == args.count:
-            break
-        frame = read_prepared_parquet(uri)
-        frame = frame.filter(
+        frame = read_prepared_parquet(uri).filter(
             (pl.col("split") == "val") & (pl.col("detector") == args.detector)
-        ).sort("spectrum_id")
-        for row in frame.iter_rows(named=True):
-            if row["dataset"] in seen_datasets:
-                break
+        )
+        if frame.is_empty():
+            continue
+        for key, group in frame.group_by(["dataset"]):
+            shortlist.setdefault(str(key[0]), []).append(
+                group.top_k(args.candidates, by="andromeda_score")
+            )
+
+    ranked: list[dict] = []
+    for _dataset, frames in sorted(shortlist.items()):
+        best: dict | None = None
+        candidates = pl.concat(frames).top_k(args.candidates, by="andromeda_score")
+        # `spectrum_id` last, so a tie on both quality measures still resolves the same way twice.
+        for row in candidates.sort(
+            ["andromeda_score", "spectrum_id"], descending=[True, False]
+        ).iter_rows(named=True):
             peaks = _peaks(row["proforma"], list(row["ms2"]), args.min_intensity)
             if peaks is None:
                 continue
-            annotations, mz_values, intensities = peaks
-            seen_datasets.add(row["dataset"])
-            selected.append(
-                {
-                    "dataset": row["dataset"],
-                    "proforma": row["proforma"],
-                    "charge": row["charge"],
-                    "instrument": row["instrument"],
-                    "detector": row["detector"],
-                    "fragmentation": row["fragmentation"],
-                    "energy": f"{row['energy']:.4g}",
-                    "irt": f"{row['irt']:.6g}",
-                    "annotations": ";".join(annotations),
-                    "fragment_mz": ";".join(f"{value:.6f}" for value in mz_values),
-                    "relative_intensity": ";".join(f"{value:.6f}" for value in intensities),
-                }
-            )
-            break
-        if len(selected) == args.count:
-            break
+            key = (peaks["backbone_coverage"], row["andromeda_score"])
+            if best is None or key > best["key"]:
+                best = {"key": key, "row": row, "peaks": peaks}
+        if best is None:
+            continue
+        row, peaks = best["row"], best["peaks"]
+        ranked.append(
+            {
+                "dataset": row["dataset"],
+                "proforma": row["proforma"],
+                "charge": row["charge"],
+                "instrument": row["instrument"],
+                "detector": row["detector"],
+                "fragmentation": row["fragmentation"],
+                "energy": f"{row['energy']:.4g}",
+                "irt": f"{row['irt']:.6g}",
+                "backbone_coverage": f"{peaks['backbone_coverage']:.4f}",
+                "andromeda_score": f"{row['andromeda_score']:.4g}",
+                "annotations": ";".join(peaks["annotations"]),
+                "fragment_mz": ";".join(f"{value:.6f}" for value in peaks["fragment_mz"]),
+                "relative_intensity": ";".join(
+                    f"{value:.6f}" for value in peaks["relative_intensity"]
+                ),
+            }
+        )
 
+    # One per dataset, and the best datasets first: a panel of three spectra from one dataset is
+    # three views of one acquisition, and the point is that a model wrong about a whole class of
+    # peptide has somewhere to show it.
+    ranked.sort(key=lambda item: (-float(item["backbone_coverage"]), item["dataset"]))
+    selected = ranked[: args.count]
     if len(selected) < args.count:
         raise SystemExit(
             f"only {len(selected)} usable validation spectra found in {len(chunk_uris)} chunk(s)"
@@ -175,8 +218,13 @@ def main() -> None:
         for row in selected:
             stream.write("\t".join(str(row[column]) for column in COLUMNS) + "\n")
     print(f"wrote {len(selected)} spectra -> {args.out}")
-    for row in selected:
-        print(f"  {row['dataset']}  {row['proforma']}  z={row['charge']}")
+    print(f"{'dataset':<26} {'peptidoform':<24} {'z':>2} {'coverage':>9} {'andromeda':>10}")
+    for row in ranked:
+        mark = "*" if row in selected else " "
+        print(
+            f"{mark}{row['dataset']:<25} {row['proforma']:<24} {row['charge']:>2} "
+            f"{float(row['backbone_coverage']):>9.2f} {float(row['andromeda_score']):>10.1f}"
+        )
 
 
 if __name__ == "__main__":

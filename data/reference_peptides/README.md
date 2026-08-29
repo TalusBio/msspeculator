@@ -30,11 +30,16 @@ corpus by `tools/vendor_reference_spectra.py`, which is how it gets regenerated.
         --chunks '<prepared-prefix>/shards/prospect_TUM_HLA/*/data.parquet' \
         --out data/reference_peptides/diagnostic_spectra.tsv
 
-Three properties make the panel usable as a fixed reference:
+Four properties make the panel usable as a fixed reference:
 
 - **Validation split.** Validation already drives early stopping and checkpoint selection, so
   reading it every epoch shows the run nothing it was not already seeing. Test stays untouched,
   and train would not show a fit going wrong.
+- **Ranked on quality, not position.** Backbone coverage first, then Andromeda score. All three
+  currently cover every fragmentation site and score 366 to 455, against a corpus median nearer
+  120. A spectrum missing half its backbone would let a model be wrong in the gaps for free.
+  Both numbers are columns in the file, so a later run that picks differently is a visible change
+  of evidence rather than an unexplained diff.
 - **One spectrum per dataset**, across a phosphopeptide, a non-tryptic HLA peptide, and a plain
   tryptic one. Three spectra from one dataset would be three views of one acquisition.
 - **FTMS only.** An ion trap discards fragments below roughly a third of the precursor m/z, so an
@@ -45,6 +50,10 @@ Peaks are struct-of-arrays within a row (`annotations`, `fragment_mz`, `relative
 `;`-separated and parallel), so a sequence is written once and the file stays legible in a diff.
 Intensities are relative to each spectrum's base peak. The underlying spectra come from
 ProteomeTools via PROSPECT, which is publicly available.
+
+This panel is real experimental data, which `biognosys_irt_transitions.tsv` is not: that one is a
+triple-quadrupole method sheet, an acquisition the model is never trained on, so it pins m/z
+arithmetic and nothing about predicted intensity.
 
 `biognosys_irt_transitions.tsv` transcribes the neighboring `iRT Kit
 transitions` worksheet. Its relative-intensity column intentionally follows the
