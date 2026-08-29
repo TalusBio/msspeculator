@@ -130,7 +130,11 @@ def test_periodic_pretrain_checkpoint_is_inference_ready(tmp_path):
     callback = _StreamCheckpoint(1, path, lambda item: mirrored.append(item.name), lambda _: None)
     callback.on_train_batch_end(None, Module(), None, None, 0)
     assert path.exists()
-    assert mirrored == ["pretrain-latest.ckpt"]
+    # Portable weights land beside the checkpoint and are mirrored too: a warm start nobody can
+    # read without torch is not inference-ready, which is what this snapshot claims to be.
+    weights = path.with_suffix(".safetensors")
+    assert weights.exists()
+    assert mirrored == ["pretrain-latest.ckpt", "pretrain-latest.safetensors"]
 
 
 def test_onecycle_holds_final_lr_after_configured_steps():

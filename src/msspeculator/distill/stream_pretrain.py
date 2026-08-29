@@ -37,6 +37,7 @@ from ..models.registry import save_checkpoint
 from ..models.student import StudentModel
 from .dataset import DistillDataset, MSFactors, collate_with_labels
 from .lightning import DistillModule
+from .portable_snapshot import export_beside, export_drift
 
 
 @dataclass
@@ -294,7 +295,12 @@ class _StreamCheckpoint(L.Callback):
         )
         if self.mirror is not None:
             self.mirror(self.path)
-        self.emit(f"[pretrain] checkpointed step {step} -> {self.path}")
+        weights = export_beside(self.path, self.mirror)
+        drift = export_drift(weights, pl_module.model)
+        self.emit(
+            f"[pretrain] checkpointed step {step} -> {self.path}"
+            + ("" if drift is None else f" (export drift {drift:.2e})")
+        )
 
 
 def fit_stream_pretrain(

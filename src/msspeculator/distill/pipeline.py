@@ -545,6 +545,9 @@ def _final_training_metadata(module) -> dict:
             # None when the run finished without ever validating; see the callback's `_save`.
             "validated_at_step": module.last_validation_step,
         },
+        # Travels with the checkpoint because it is a claim about the checkpoint: whoever picks
+        # this artifact up can see whether its export still predicted what it predicts.
+        "export_ms2_max_abs_diff": module.export_ms2_max_abs_diff,
     }
 
 
