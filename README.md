@@ -40,8 +40,23 @@ cargo run --release -p msspeculator-cli -- \
 ```
 
 The output is DIA-NN TSV by default. Use a `.mzspeclib.txt` suffix for mzSpecLib text and add
-`.gz` to compress either format. The CLI also supports single-peptide JSON prediction and a
-model-health report. Run `cargo run -p msspeculator-cli -- --help` for all options.
+`.gz` to compress either format. The CLI also supports single-peptide JSON prediction. Run
+`cargo run -p msspeculator-cli -- --help` for all options.
+
+## Checking a model
+
+`run-doctor` asks two questions of a set of weights and needs no corpus, no network, and no
+Python:
+
+```bash
+cargo run --release -p msspeculator-cli -- run-doctor --model model.safetensors --out doctor
+```
+
+Retention is scored against the Biognosys iRT standards (slope, intercept, R², MAE). Fragmentation
+is scored against three vendored experimental spectra, reported as a spectral angle per spectrum;
+see [the panel's provenance](data/reference_peptides/README.md). A model that is not trained shows
+a flat retention slope and a low spectral angle, so the report distinguishes "wrong scale" from
+"wrong spectrum".
 
 Rust applications can call the same length-batched, queued inference path without spawning a
 process. See the [Rust API guide](docs/rust-api.md).
