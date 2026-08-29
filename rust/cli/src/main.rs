@@ -474,6 +474,19 @@ fn run_doctor(args: DoctorArgs) -> Result<()> {
         report.summary.r_squared,
         report.summary.mae
     );
+    // Retention says whether the model is on the right scale; this says whether it predicts the
+    // spectrum, which is the part a search engine actually consumes.
+    for score in &report.spectra {
+        eprintln!(
+            "{:<26} {:<26} z={} spectral_angle={:.4}",
+            score.dataset, score.proforma, score.charge, score.spectral_angle
+        );
+    }
+    eprintln!(
+        "{} reference spectra -> mean spectral angle {:.4}",
+        report.spectra.len(),
+        report.mean_spectral_angle()
+    );
     Ok(())
 }
 

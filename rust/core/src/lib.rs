@@ -15,6 +15,7 @@ pub mod landmarks;
 pub mod model;
 pub mod peptide;
 pub mod proforma;
+pub mod similarity;
 pub mod speclib;
 pub mod split;
 pub mod tokenize;
