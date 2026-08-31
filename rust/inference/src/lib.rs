@@ -6,6 +6,7 @@
 pub mod library;
 pub mod mzspeclib;
 pub mod progress;
+mod proteome;
 pub mod provenance;
 
 pub use library::{

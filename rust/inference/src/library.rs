@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
-use std::io::{BufRead, BufReader, BufWriter, Write};
+use std::io::{BufWriter, Write};
 use std::path::Path;
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
@@ -15,9 +15,9 @@ use msspeculator_core::{
 };
 
 use crate::progress::{Phase, ProgressFn, Reporter};
+use crate::proteome::{peptides, Digest, DigestRules};
 use crate::provenance::{resolve_provenance, write_sidecar, LibraryProvenance, Output};
 
-const VALID_AA: &str = "GASPVTCLINDQKEMHFRYW";
 const CCS_IM_COEF: f64 = 1059.62245;
 const IM_GAS_MASS: f64 = 28.0;
 const INFERENCE_BATCH_SIZE: usize = 64;
@@ -235,130 +235,6 @@ pub struct LibraryStats {
     pub predict: Duration,
 }
 
-fn digest_tryptic(sequence: &str, missed: usize, min_len: usize, max_len: usize) -> Vec<String> {
-    let bytes = sequence.as_bytes();
-    let mut sites = vec![0usize];
-    for (i, &aa) in bytes.iter().enumerate() {
-        if (aa == b'K' || aa == b'R') && bytes.get(i + 1) != Some(&b'P') {
-            sites.push(i + 1);
-        }
-    }
-    if sites.last().copied() != Some(bytes.len()) {
-        sites.push(bytes.len());
-    }
-    let mut out = Vec::new();
-    for start in 0..sites.len().saturating_sub(1) {
-        for mc in 0..=missed {
-            let end = start + mc + 1;
-            if end >= sites.len() {
-                break;
-            }
-            let pep = &sequence[sites[start]..sites[end]];
-            if (min_len..=max_len).contains(&pep.len())
-                && pep.bytes().all(|aa| VALID_AA.as_bytes().contains(&aa))
-            {
-                out.push(pep.to_string());
-            }
-        }
-    }
-    out
-}
-
-/// Read the FASTA and digest it in one pass, reporting bytes consumed as it goes.
-///
-/// Digesting each record as it is read, rather than after the whole file, means the FASTA is
-/// never held whole: a protein's sequence is dropped once its peptides are recorded, so peak
-/// memory is the peptide map plus one protein instead of the peptide map plus every protein. The
-/// single pass is also what lets one monotone byte counter describe the phase; two passes over
-/// the same bytes would each run a progress bar from empty to full.
-///
-/// Returns the record count alongside the map, since a protein contributing no peptide in the
-/// length range is still a protein the run read.
-fn digest_fasta(
-    path: &Path,
-    missed: usize,
-    min_len: usize,
-    max_len: usize,
-    reporter: Reporter<'_>,
-) -> Result<(usize, BTreeMap<String, BTreeSet<String>>)> {
-    let file = File::open(path).with_context(|| format!("opening FASTA {}", path.display()))?;
-    // The progress denominator, read once. A file whose length will not come back still digests;
-    // it reports against zero, which `Progress::fraction` already answers as 0.0.
-    let total = file.metadata().map(|meta| meta.len()).unwrap_or(0);
-    let mut reader = BufReader::new(file);
-    let mut peptides: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    let mut proteins = 0usize;
-    let mut id: Option<String> = None;
-    let mut seq = String::new();
-    let mut consumed = 0u64;
-    let mut line_no = 0usize;
-    let mut line = String::new();
-    // `read_line` rather than `lines()`, so `consumed` counts the bytes the file holds rather
-    // than the bytes left over after a split has discarded every line ending.
-    loop {
-        line.clear();
-        let read = reader
-            .read_line(&mut line)
-            .with_context(|| format!("reading {}:{}", path.display(), line_no + 1))?;
-        if read == 0 {
-            break;
-        }
-        consumed += read as u64;
-        line_no += 1;
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        if let Some(header) = trimmed.strip_prefix('>') {
-            let accession = header
-                .split_whitespace()
-                .next()
-                .context("empty FASTA header")?
-                .to_string();
-            if let Some(previous) = id.replace(accession) {
-                digest_into(&mut peptides, &previous, &seq, missed, min_len, max_len);
-                seq.clear();
-                proteins += 1;
-                reporter.at(Phase::Digesting, consumed, total);
-            }
-        } else {
-            if id.is_none() {
-                bail!(
-                    "{}:{} has sequence before the first FASTA header",
-                    path.display(),
-                    line_no
-                );
-            }
-            seq.push_str(&trimmed.to_ascii_uppercase());
-        }
-    }
-    if let Some(id) = id {
-        digest_into(&mut peptides, &id, &seq, missed, min_len, max_len);
-        proteins += 1;
-    }
-    if proteins == 0 {
-        bail!("FASTA {} contains no records", path.display());
-    }
-    reporter.at(Phase::Digesting, total, total);
-    Ok((proteins, peptides))
-}
-
-fn digest_into(
-    peptides: &mut BTreeMap<String, BTreeSet<String>>,
-    protein: &str,
-    sequence: &str,
-    missed: usize,
-    min_len: usize,
-    max_len: usize,
-) {
-    for peptide in digest_tryptic(sequence, missed, min_len, max_len) {
-        peptides
-            .entry(peptide)
-            .or_default()
-            .insert(protein.to_string());
-    }
-}
-
 fn rule_sites(sequence: &str, rule: &ModificationRule) -> Vec<Site> {
     match &rule.target {
         ModificationTarget::Residues(targets) => sequence
@@ -520,9 +396,15 @@ fn ccs_to_bruker_mobility(ccs: f64, charge: i64, precursor_mz: f64) -> f64 {
     ccs * reduced_mass.sqrt() / charge as f64 / CCS_IM_COEF
 }
 
+/// One peptidoform on its way to a worker.
+///
+/// The stripped sequence and the protein group are `Arc<str>` rather than `String` because they
+/// are properties of the *peptide*, and a peptide with three modified forms in three charges puts
+/// nine of these on the queue. Resolved once per peptide and shared, so a peptidoform costs two
+/// atomic increments instead of two allocations and two copies.
 struct PendingPeptide {
-    stripped: String,
-    protein_group: String,
+    stripped: Arc<str>,
+    protein_group: Arc<str>,
     peptide: Peptide,
     diann_sequence: String,
     decoy: bool,
@@ -530,8 +412,8 @@ struct PendingPeptide {
 }
 
 struct PredictedPeptide {
-    stripped: String,
-    protein_group: String,
+    stripped: Arc<str>,
+    protein_group: Arc<str>,
     diann_sequence: String,
     predictions: Vec<Prediction>,
     decoy: bool,
@@ -623,8 +505,8 @@ fn spectrum_row<'a>(
         });
     }
     Ok(SpectrumRow {
-        stripped: item.stripped.as_str(),
-        protein_group: item.protein_group.as_str(),
+        stripped: &item.stripped,
+        protein_group: &item.protein_group,
         diann_sequence,
         proforma: prediction.peptide.as_str(),
         decoy: item.decoy,
@@ -838,22 +720,24 @@ fn run_library(
     }
     let reporter = Reporter::new(opts.progress);
     let digest_started = Instant::now();
-    let (proteins, peptides) = digest_fasta(
+    let digest = Arc::new(Digest::read(
         opts.fasta,
-        opts.missed_cleavages,
-        opts.min_length,
-        opts.max_length,
+        &DigestRules {
+            missed_cleavages: opts.missed_cleavages,
+            min_length: opts.min_length,
+            max_length: opts.max_length,
+        },
         reporter,
-    )?;
-    if peptides.is_empty() {
+    )?);
+    if digest.is_empty() {
         bail!("FASTA digest produced no peptides");
     }
-    let digest = digest_started.elapsed();
+    let digest_elapsed = digest_started.elapsed();
     let predict_started = Instant::now();
     // The denominator for the rest of the build. Peptides rather than precursors: a peptide's
     // precursor count depends on how many modified forms it turns out to have, which is only
     // known once it is enumerated, and a total that is still being discovered is no total at all.
-    let total_peptides = peptides.len() as u64;
+    let total_peptides = digest.peptides() as u64;
     reporter.at(Phase::Loading, 0, 1);
     let model = msspeculator_core::load_source(opts.model.clone())?;
     reporter.at(Phase::Loading, 1, 1);
@@ -862,8 +746,8 @@ fn run_library(
     let context = PreparedContext::new(&artifact, opts.ms_context, opts.chrom_context)?;
     let charges = (opts.min_charge..=opts.max_charge).collect::<Vec<_>>();
     let stats = LibraryStats {
-        proteins,
-        peptides: peptides.len(),
+        proteins: digest.proteins(),
+        peptides: digest.peptides(),
         ..LibraryStats::default()
     };
 
@@ -928,13 +812,13 @@ fn run_library(
         }));
     }
 
-    let target_sequences: BTreeSet<String> = peptides.keys().cloned().collect();
     let mut decoy_sequences = BTreeSet::new();
     let mut next_decoy_pair_id = 1usize;
     let mut pending: BTreeMap<usize, Vec<PendingPeptide>> = BTreeMap::new();
     let mut peptides_done = 0u64;
-    for (sequence, protein_set) in peptides {
-        let protein_group = protein_set.into_iter().collect::<Vec<_>>().join(";");
+    for source in peptides(&digest) {
+        let sequence: Arc<str> = Arc::from(source.residues());
+        let protein_group: Arc<str> = Arc::from(source.protein_group().as_str());
         let target_forms = modified_forms(
             &sequence,
             &fixed_rules,
@@ -942,8 +826,11 @@ fn run_library(
             opts.max_variable_mods,
         )?;
         let decoy_sequence = pseudo_reverse_sequence(&sequence);
+        // Asked of the digest by binary search rather than of a set built from it: a
+        // `BTreeSet<String>` of every target sequence would be a second copy of the whole digest,
+        // to answer a question the sorted peptide table already answers.
         let emit_decoy = opts.generate_decoys
-            && !target_sequences.contains(&decoy_sequence)
+            && !digest.contains(&decoy_sequence)
             && decoy_sequences.insert(decoy_sequence.clone());
         // Assign the ID even when the decoy is skipped, so consumers can distinguish a target-only
         // collision group from a library generated with decoys disabled.
@@ -952,29 +839,37 @@ fn run_library(
             next_decoy_pair_id += 1;
             pair_id
         });
+        // Resolved once per peptide, outside the loop over its modified forms, so a peptide with
+        // several peptidoforms shares one copy of each rather than allocating per form.
+        let decoy_shared: Option<(Arc<str>, Arc<str>)> = emit_decoy.then(|| {
+            (
+                Arc::from(decoy_sequence.as_str()),
+                Arc::from(decoy_protein_group(&protein_group).as_str()),
+            )
+        });
         let mut dispatched = false;
         for (peptide, diann_sequence) in target_forms {
             dispatched |= queue_pending(
                 &mut pending,
                 &work_tx,
                 PendingPeptide {
-                    stripped: sequence.clone(),
-                    protein_group: protein_group.clone(),
+                    stripped: Arc::clone(&sequence),
+                    protein_group: Arc::clone(&protein_group),
                     peptide: peptide.clone(),
                     diann_sequence,
                     decoy: false,
                     decoy_pair_id,
                 },
             )?;
-            if emit_decoy {
+            if let Some((decoy_stripped, decoy_group)) = decoy_shared.as_ref() {
                 let decoy_peptide = pseudo_reverse_peptide(&peptide);
                 let decoy_diann = render_diann(&decoy_peptide.sequence, &decoy_peptide.mods);
                 dispatched |= queue_pending(
                     &mut pending,
                     &work_tx,
                     PendingPeptide {
-                        stripped: decoy_sequence.clone(),
-                        protein_group: decoy_protein_group(&protein_group),
+                        stripped: Arc::clone(decoy_stripped),
+                        protein_group: Arc::clone(decoy_group),
                         peptide: decoy_peptide,
                         diann_sequence: decoy_diann,
                         decoy: true,
@@ -1006,7 +901,7 @@ fn run_library(
     let mut stats = writer_handle
         .join()
         .map_err(|_| anyhow::anyhow!("library writer panicked"))??;
-    stats.digest = digest;
+    stats.digest = digest_elapsed;
     stats.predict = predict_started.elapsed();
     // The closing update, after the join rather than after the last peptide was queued: the
     // producer runs a bounded distance ahead of the workers, so a bar that reached 100% when
@@ -1188,25 +1083,6 @@ mod tests {
         assert!(stats.digest < stats.digest + stats.predict);
     }
 
-    /// The digest reads bytes rather than lines, so the line endings and the missing final
-    /// newline that a real FASTA arrives with have to leave the same peptides behind.
-    #[test]
-    fn digestion_survives_crlf_and_a_missing_final_newline() {
-        let scratch = Scratch::new("crlf.fasta");
-        std::fs::write(
-            &scratch.0,
-            ">protein_one d\r\nPEPTIDEMR\r\n\r\n>protein_two d\r\nSAMPLETID",
-        )
-        .unwrap();
-        let (proteins, peptides) =
-            digest_fasta(scratch.path(), 0, 9, 9, Reporter::new(None)).unwrap();
-        assert_eq!(proteins, 2);
-        assert_eq!(
-            peptides.keys().collect::<Vec<_>>(),
-            vec!["PEPTIDEMR", "SAMPLETID"]
-        );
-    }
-
     /// The point of the split: a library reaches a caller's own sink with no file anywhere, and
     /// the two entry points do not drift into producing different libraries.
     #[test]
@@ -1274,18 +1150,6 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(out.path()).unwrap(),
             "EXISTING LIBRARY\n"
-        );
-    }
-
-    #[test]
-    fn tryptic_digest_honors_proline_and_missed_cleavages() {
-        assert_eq!(
-            digest_tryptic("AKPEPTIDERAAK", 0, 1, 30),
-            vec!["AKPEPTIDER", "AAK"]
-        );
-        assert_eq!(
-            digest_tryptic("AKPEPTIDERAAK", 1, 1, 30),
-            vec!["AKPEPTIDER", "AKPEPTIDERAAK", "AAK"]
         );
     }
 
