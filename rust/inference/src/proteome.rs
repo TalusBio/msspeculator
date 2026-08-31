@@ -232,6 +232,10 @@ impl Digest {
         // The progress denominator, read once. A file whose length will not come back still
         // digests; it reports against zero, which `Progress::fraction` answers as 0.0.
         let total = file.metadata().map(|meta| meta.len()).unwrap_or(0);
+        // The opening update, before a byte is read. The in-loop report only fires when a header
+        // closes the previous protein, so without this one the first thing a caller hears is the
+        // sixty-fourth protein and its bar appears partway along.
+        reporter.at(Phase::Digesting, 0, total);
         let mut reader = BufReader::new(file);
 
         let mut builder = Builder::new(rules);

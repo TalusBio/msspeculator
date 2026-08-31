@@ -153,11 +153,22 @@ queue; only the closing update lands after the last spectrum reaches the sink, s
 written rather than queued.
 
 Updates are bounded — thousands over a build, not millions, and both ends of every phase always
-arrive — but they are not tied to any clock. A callback that moves a bar needs nothing else; one
-that writes a log line should throttle on its own.
+arrive, so a phase's first update has `done == 0` — but they are not tied to any clock. A callback
+that moves a bar needs nothing else; one that writes a log line should throttle on its own.
 
-`LibraryStats` reports `digest` and `predict` as `Duration`s once the build finishes, and
-`write_library` records them in the sidecar as `seconds_digesting` and `seconds_predicting`.
+Two things about drawing the bar are yours to get right, and neither is about the update rate.
+A terminal and a redirected stream need two renderers rather than one narrowed: `\r` into a file
+produces a single enormous line, so when the stream is not a terminal, trade the bar for one
+appended line per interval. And close the bar — whatever draws it leaves the cursor on its own
+line, so the next thing written continues it (`] 57/57 (0s)2 proteins -> ...`), and the next thing
+written is often the error that ended the build. Close it on drop rather than at the end of the
+happy path, which is the case that does not have it drawn. `msspeculator`'s own CLI does both in
+`rust/cli/src/progress.rs`.
+
+`LibraryStats` reports `digest`, `load` and `predict` as `Duration`s once the build finishes —
+three disjoint numbers that sum to the build, because loading the model scales on the artifact and
+the page cache rather than on the proteome or the precursor count. `write_library` records them in
+the sidecar as `seconds_digesting`, `seconds_loading` and `seconds_predicting`.
 
 ## Receive rows without writing a file
 

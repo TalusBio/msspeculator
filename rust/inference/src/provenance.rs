@@ -200,16 +200,21 @@ pub struct Counts {
     pub decoys: usize,
 }
 
-/// How long the run took, split where digestion hands off to prediction.
+/// How long the run took, one number per phase the build reported.
 ///
 /// Recorded beside the counts because a progress bar showing it is gone the moment the terminal
 /// scrolls, and "this build took 70 seconds, the last one took 700" is a question asked weeks
 /// later. Rounded to milliseconds: nothing downstream can act on a finer number, and full `f64`
 /// seconds would churn the sidecar's text on every rebuild.
+///
+/// One field per phase rather than two, because the three scale on unrelated things: digestion on
+/// the proteome, prediction on the precursor count and the model, loading on the artifact and on
+/// whether the page cache is cold. The three are disjoint and sum to the build.
 #[derive(Clone, Debug, serde::Serialize)]
 #[non_exhaustive]
 pub struct Timing {
     pub seconds_digesting: f64,
+    pub seconds_loading: f64,
     pub seconds_predicting: f64,
 }
 
@@ -221,6 +226,7 @@ impl From<&LibraryStats> for Timing {
     fn from(stats: &LibraryStats) -> Self {
         Self {
             seconds_digesting: seconds(stats.digest),
+            seconds_loading: seconds(stats.load),
             seconds_predicting: seconds(stats.predict),
         }
     }
@@ -608,11 +614,15 @@ mod tests {
     fn the_sidecar_records_each_phase_to_the_millisecond() {
         let stats = LibraryStats {
             digest: std::time::Duration::from_micros(1_500_400),
+            load: std::time::Duration::from_micros(12_300_500),
             predict: std::time::Duration::from_micros(70_000_999),
             ..LibraryStats::default()
         };
         let json = serde_json::to_value(Timing::from(&stats)).unwrap();
         assert_eq!(json["seconds_digesting"], 1.5);
+        // The phase that exists to explain a pause is the one whose duration answers "did the
+        // rebuild get slower loading the model, or running it?".
+        assert_eq!(json["seconds_loading"], 12.301);
         assert_eq!(json["seconds_predicting"], 70.001);
     }
 }
