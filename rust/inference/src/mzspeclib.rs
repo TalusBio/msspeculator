@@ -18,6 +18,7 @@ use anyhow::Result;
 use serde_json::Value;
 
 use crate::library::{LibrarySink, SpectrumRow};
+use crate::provenance::LibraryProvenance;
 
 /// The format version of the grammar emitted here, not of our library.
 const FORMAT_VERSION: &str = "1.0";
@@ -36,10 +37,10 @@ pub struct MzSpecLibSink<W: Write> {
 }
 
 impl<W: Write> MzSpecLibSink<W> {
-    pub fn new(writer: W, out_path: &str) -> Self {
+    pub fn new(writer: W, out_path: &Path) -> Self {
         // `library.mzspeclib.txt.gz` -> `library`: the name a reader shows, with our suffixes and
         // the directory stripped off.
-        let name = Path::new(out_path)
+        let name = out_path
             .file_name()
             .map_or("library", |name| name.to_str().unwrap_or("library"))
             .trim_end_matches(".gz")
@@ -58,7 +59,7 @@ impl<W: Write> MzSpecLibSink<W> {
     }
 }
 
-/// Flatten the resolved configuration into dotted `key -> value` pairs, dropping nulls.
+/// Flatten the provenance into dotted `key -> value` pairs, dropping nulls.
 ///
 /// Objects recurse; anything else is a leaf. Arrays stay JSON text: `["C[UNIMOD:2057]", ...]`
 /// reads as what was passed on the command line, which is the point of recording it.
@@ -100,8 +101,9 @@ fn annotation(ion: &str, ordinal: i64, charge: i64) -> String {
     }
 }
 
-impl<W: Write> LibrarySink for MzSpecLibSink<W> {
-    fn header(&mut self, config: &Value) -> Result<()> {
+impl<W: Write + Send> LibrarySink for MzSpecLibSink<W> {
+    fn header(&mut self, provenance: &LibraryProvenance) -> Result<()> {
+        let config = provenance.to_json();
         writeln!(self.writer, "<mzSpecLib>")?;
         writeln!(
             self.writer,
@@ -120,10 +122,10 @@ impl<W: Write> LibrarySink for MzSpecLibSink<W> {
         // about what wrote the file, and the rule that asks for it is a MAY.
         //
         // Nothing else spells "the model and the settings that produced this library" either, so
-        // the resolved configuration rides as name/value pairs; the grammar's own escape hatch
+        // the provenance rides as name/value pairs; the grammar's own escape hatch
         // for an attribute the vocabulary has no term for. One group per key: the pair is the
         // attribute, which is why both lines carry the same group id.
-        for (group, (key, value)) in provenance_attributes(config).into_iter().enumerate() {
+        for (group, (key, value)) in provenance_attributes(&config).into_iter().enumerate() {
             let group = group + 1;
             writeln!(
                 self.writer,
@@ -334,16 +336,70 @@ mod tests {
         }
     }
 
+    /// A provenance with no acquisition context and no output, so the header's handling of the
+    /// optional halves is exercised alongside the populated ones.
+    fn provenance() -> LibraryProvenance {
+        use crate::provenance::*;
+        LibraryProvenance {
+            generator: Generator {
+                tool: "msspeculator-cli library",
+                version: "0.1.0",
+                commit: "abc123",
+            },
+            inputs: Inputs {
+                model: "m.safetensors".into(),
+                model_blake2b_256: "0".repeat(64),
+                fasta: "proteome.fasta".into(),
+                fasta_blake2b_256: "1".repeat(64),
+            },
+            digestion: Digestion {
+                enzyme: "trypsin",
+                missed_cleavages: 2,
+                min_length: 7,
+                max_length: 30,
+                min_charge: 2,
+                max_charge: 4,
+            },
+            modifications: Modifications {
+                fixed: Vec::new(),
+                variable: vec!["M[UNIMOD:35]".into()],
+                max_variable_mods: 1,
+            },
+            context: Contexts {
+                ms: None,
+                chrom: None,
+            },
+            retention: Retention {
+                normalized: NormalizedRetention {
+                    term: "MS:1000896|normalized retention time",
+                    kind: "dimensionless index, minutes-like",
+                    scale: "anchored",
+                    anchor_check: AnchorCheck {
+                        on_scale: true,
+                        max_abs_error: 0.5,
+                        anchors: Vec::new(),
+                    },
+                },
+                raw: None,
+            },
+            fragments: FragmentPolicy {
+                min_intensity: 0.01,
+                max_fragments: Some(15),
+            },
+            decoys: DecoyPolicy {
+                enabled: false,
+                method: "pseudo-reverse",
+                protein_prefix: "DECOY_",
+                collision_policy: "skip",
+            },
+            output: None,
+        }
+    }
+
     /// `irt` present means a chromatography context was applied, so `rt` is a gradient time.
     fn rendered(irt: Option<f32>) -> String {
-        let mut sink = MzSpecLibSink::new(Vec::new(), "out/lib.mzspeclib.txt.gz");
-        sink.header(&serde_json::json!({
-            "generator": {"version": "0.1.0", "commit": "abc123"},
-            "inputs": {"model": "m.safetensors", "fasta": null},
-            "fragments": {"max_fragments": 15},
-            "modifications": {"variable": ["M[UNIMOD:35]"]},
-        }))
-        .unwrap();
+        let mut sink = MzSpecLibSink::new(Vec::new(), Path::new("out/lib.mzspeclib.txt.gz"));
+        sink.header(&provenance()).unwrap();
         sink.spectrum(&row_with_irt(irt)).unwrap();
         String::from_utf8(sink.writer).unwrap()
     }
@@ -359,8 +415,10 @@ mod tests {
         assert!(text.contains("MS:1003276|other attribute value=m.safetensors"));
         assert!(text.contains("MS:1003276|other attribute value=15"));
         assert!(text.contains(r#"MS:1003276|other attribute value=["M[UNIMOD:35]"]"#));
-        // A null knob says nothing a reader can act on.
-        assert!(!text.contains("inputs.fasta"));
+        // A knob that was not set says nothing a reader can act on: no acquisition context was
+        // requested, and no file was written.
+        assert!(!text.contains("context.ms"));
+        assert!(!text.contains("output."));
     }
 
     #[test]
@@ -432,9 +490,8 @@ mod tests {
 
     #[test]
     fn decoy_spectra_claim_the_decoy_attribute_set() {
-        let mut sink = MzSpecLibSink::new(Vec::new(), "out/lib.mzspeclib.txt");
-        sink.header(&serde_json::json!({"generator": {"version": "0.1.0"}}))
-            .unwrap();
+        let mut sink = MzSpecLibSink::new(Vec::new(), Path::new("out/lib.mzspeclib.txt"));
+        sink.header(&provenance()).unwrap();
         let mut row = row();
         row.decoy = true;
         sink.spectrum(&row).unwrap();
@@ -449,12 +506,12 @@ mod tests {
     #[test]
     fn target_and_decoy_spectra_carry_the_same_pair_id() {
         let mut target = row();
-        target.decoy_pair_id = Some(7);
+        target.decoy_pair_id = Some(4242);
         let mut decoy = row();
         decoy.decoy = true;
-        decoy.decoy_pair_id = Some(7);
-        let mut sink = MzSpecLibSink::new(Vec::new(), "out/lib.mzspeclib.txt");
-        sink.header(&serde_json::json!({})).unwrap();
+        decoy.decoy_pair_id = Some(4242);
+        let mut sink = MzSpecLibSink::new(Vec::new(), Path::new("out/lib.mzspeclib.txt"));
+        sink.header(&provenance()).unwrap();
         sink.spectrum(&target).unwrap();
         sink.spectrum(&decoy).unwrap();
         let text = String::from_utf8(sink.writer).unwrap();
@@ -464,7 +521,8 @@ mod tests {
             2
         );
         assert_eq!(
-            text.matches("MS:1003276|other attribute value=7").count(),
+            text.matches("MS:1003276|other attribute value=4242")
+                .count(),
             2
         );
     }

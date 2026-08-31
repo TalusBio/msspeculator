@@ -54,6 +54,11 @@ The `msspeculator-inference` crate owns this FASTA path. Its `write_library` fun
 parsed arguments to that function. Rust applications can use the same path without reimplementing
 thread management or invoking a process.
 
+An application that wants the rows rather than a file implements `LibrarySink` and calls
+`stream_library`, which takes the same options minus the output path and sidecar. The two entry
+points share one implementation, so a caller-supplied sink sees exactly what the bundled DIA-NN and
+mzSpecLib writers see.
+
 Every precursor is validated and capped before serialization. TSV output includes a `config.json`
 sidecar. mzSpecLib stores the same resolved generation settings in its header.
 

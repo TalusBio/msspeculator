@@ -1,6 +1,6 @@
 //! msspeculator Rust inference CLI: FASTA libraries, peptide prediction, and model diagnostics.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use anyhow::Result;
@@ -184,11 +184,11 @@ struct LibraryArgs {
     artifact: ArtifactArgs,
     /// FASTA to digest.
     #[arg(long)]
-    fasta: String,
+    fasta: PathBuf,
     /// Output path. The suffix picks the format: `.mzspeclib.txt` writes mzSpecLib, which carries
     /// its own provenance, and anything else writes DIA-NN TSV. A trailing `.gz` compresses either.
     #[arg(long)]
-    out: String,
+    out: PathBuf,
     #[arg(long, default_value_t = 2)]
     missed_cleavages: usize,
     #[arg(long, default_value_t = 7)]
@@ -220,10 +220,12 @@ struct LibraryArgs {
     /// `--min-intensity`, so a precursor with fewer surviving peaks keeps all of them.
     #[arg(long, value_name = "N")]
     max_fragments: Option<usize>,
-    /// Where to write the resolved-configuration sidecar. Defaults to `<out>.config.json`; pass
-    /// an empty string to skip it.
-    #[arg(long, value_name = "PATH")]
-    config_out: Option<String>,
+    /// Where to write the resolved-configuration sidecar. Defaults to `<out>.config.json`.
+    #[arg(long, value_name = "PATH", conflicts_with = "no_config_out")]
+    config_out: Option<PathBuf>,
+    /// Skip the resolved-configuration sidecar.
+    #[arg(long)]
+    no_config_out: bool,
     /// Add pseudo-reversed decoy precursors. Decoys colliding with target sequences are skipped.
     #[arg(long)]
     decoys: bool,
@@ -235,7 +237,7 @@ struct DoctorArgs {
     artifact: ArtifactArgs,
     /// Directory for diagnostic artifacts.
     #[arg(long, default_value = "model-doctor")]
-    out: String,
+    out: PathBuf,
 }
 
 #[derive(clap::Args)]
@@ -245,7 +247,7 @@ struct FitContextArgs {
     /// Local path to a Spectronaut or DIA-NN TSV library. Remote libraries are downloaded first:
     /// this reads the file directly and has no object-store client.
     #[arg(long)]
-    library: String,
+    library: PathBuf,
     /// Modification present in the library, as ACCESSION or ACCESSION:MASS. Repeatable.
     #[arg(long = "add-unimod", value_name = "ACCESSION[:MASS]")]
     add_unimod: Vec<AddUnimod>,
@@ -272,7 +274,7 @@ struct FitContextArgs {
     /// Where to write the artifact carrying the fitted row. Never in place: the input artifact
     /// is the reference point a fit is judged against.
     #[arg(long, requires = "save_as")]
-    out: Option<String>,
+    out: Option<PathBuf>,
 }
 
 fn run_fit_context(args: FitContextArgs) -> Result<()> {
@@ -280,7 +282,7 @@ fn run_fit_context(args: FitContextArgs) -> Result<()> {
     library::apply_activation_override(&mut artifact, args.artifact.activation.as_deref())?;
 
     let spec = speclib::LibrarySpec {
-        context: args.library.clone(),
+        context: args.library.display().to_string(),
         instrument: args.instrument.clone(),
         detector: args.detector.clone(),
         fragmentation: args.fragmentation.clone(),
@@ -295,7 +297,7 @@ fn run_fit_context(args: FitContextArgs) -> Result<()> {
         retention: speclib::RetentionSource::Normalized,
         drop_excluded: args.drop_excluded,
     };
-    let (precursors, stats) = speclib::read_speclib(std::path::Path::new(&args.library), &spec)?;
+    let (precursors, stats) = speclib::read_speclib(&args.library, &spec)?;
     if !stats.unmapped_masses.is_empty() {
         anyhow::bail!(
             "library contains mass shifts no --add-unimod explains: {}. Declare each one, with \
@@ -318,7 +320,7 @@ fn run_fit_context(args: FitContextArgs) -> Result<()> {
     println!(
         "{}",
         serde_json::to_string(&serde_json::json!({
-            "library": args.library,
+            "library": args.library.display().to_string(),
             "stats": {
                 "rows": stats.rows,
                 "decoys": stats.decoys,
@@ -408,6 +410,33 @@ fn parse_model_source(spec: &str) -> Result<ModelSource> {
     }
 }
 
+/// Append to a path's whole name rather than replacing its extension.
+///
+/// `lib.mzspeclib.txt` gains `.config.json` to become `lib.mzspeclib.txt.config.json`;
+/// `Path::with_extension` would have produced `lib.mzspeclib.config.json` and lost which format
+/// the sidecar describes. Built as an OS string, since a path need not be UTF-8.
+fn append_suffix(path: &Path, suffix: &str) -> PathBuf {
+    let mut name = path.to_path_buf().into_os_string();
+    name.push(suffix);
+    PathBuf::from(name)
+}
+
+impl LibraryArgs {
+    /// Written by default: a library whose settings live only in a shell history cannot be
+    /// regenerated. `--no-config-out` is the explicit opt out, and clap already refuses it
+    /// together with `--config-out`.
+    fn sidecar_path(&self) -> Option<PathBuf> {
+        if self.no_config_out {
+            return None;
+        }
+        Some(
+            self.config_out
+                .clone()
+                .unwrap_or_else(|| append_suffix(&self.out, ".config.json")),
+        )
+    }
+}
+
 fn run_library(args: LibraryArgs) -> Result<()> {
     let ms_context = args.context.ms_context();
     let default_fixed = ["C[UNIMOD:4]".to_string()];
@@ -424,36 +453,37 @@ fn run_library(args: LibraryArgs) -> Result<()> {
     } else {
         &args.variable_mod
     };
-    // Written by default: a library whose settings live only in a shell history cannot be
-    // regenerated. `--config-out ""` is the explicit opt out.
-    let config_out = match args.config_out.as_deref() {
-        Some("") => None,
-        Some(path) => Some(path.to_string()),
-        None => Some(format!("{}.config.json", args.out)),
-    };
+    let config_out = args.sidecar_path();
     let stats = library::write_library(&library::LibraryOptions {
-        model: parse_model_source(&args.artifact.model)?,
-        fasta: &args.fasta,
         out: &args.out,
-        activation: args.artifact.activation.as_deref(),
-        ms_context: ms_context.as_ref(),
-        chrom_context: args.context.chrom_context.as_deref(),
-        min_intensity: args.min_intensity,
-        missed_cleavages: args.missed_cleavages,
-        min_length: args.min_length,
-        max_length: args.max_length,
-        min_charge: args.min_charge,
-        max_charge: args.max_charge,
-        fixed_mods,
-        variable_mods,
-        max_variable_mods: args.max_variable_mods,
-        max_fragments: args.max_fragments,
         config_out: config_out.as_deref(),
-        generate_decoys: args.decoys,
+        stream: library::StreamOptions {
+            model: parse_model_source(&args.artifact.model)?,
+            fasta: &args.fasta,
+            activation: args.artifact.activation.as_deref(),
+            ms_context: ms_context.as_ref(),
+            chrom_context: args.context.chrom_context.as_deref(),
+            min_intensity: args.min_intensity,
+            missed_cleavages: args.missed_cleavages,
+            min_length: args.min_length,
+            max_length: args.max_length,
+            min_charge: args.min_charge,
+            max_charge: args.max_charge,
+            fixed_mods,
+            variable_mods,
+            max_variable_mods: args.max_variable_mods,
+            max_fragments: args.max_fragments,
+            generate_decoys: args.decoys,
+        },
     })?;
     eprintln!(
         "{} proteins -> {} peptides -> {} precursors ({} decoys) -> {} fragments -> {}",
-        stats.proteins, stats.peptides, stats.precursors, stats.decoys, stats.fragments, args.out
+        stats.proteins,
+        stats.peptides,
+        stats.precursors,
+        stats.decoys,
+        stats.fragments,
+        args.out.display()
     );
     Ok(())
 }
@@ -502,6 +532,24 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `.config.json` appends to the whole name, so which format the sidecar describes stays
+    /// visible and the two files sort next to each other.
+    #[test]
+    fn the_sidecar_defaults_beside_the_library_it_describes() {
+        for (out, expected) in [
+            ("lib.tsv", "lib.tsv.config.json"),
+            ("lib.mzspeclib.txt", "lib.mzspeclib.txt.config.json"),
+            ("lib.mzspeclib.txt.gz", "lib.mzspeclib.txt.gz.config.json"),
+            ("no-extension", "no-extension.config.json"),
+        ] {
+            assert_eq!(
+                append_suffix(Path::new(out), ".config.json"),
+                PathBuf::from(expected),
+                "{out}"
+            );
+        }
+    }
 
     #[test]
     fn ms_context_reads_a_bare_name_as_a_setup_and_four_parts_as_factors() {

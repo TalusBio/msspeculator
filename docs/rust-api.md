@@ -83,31 +83,35 @@ worker queues, and writes DIA-NN TSV or mzSpecLib output. `LibraryStats` reports
 proteins, peptides, precursors, fragments, and decoy precursors.
 
 ```rust,no_run
+use std::path::Path;
+
 use msspeculator_core::{BuiltinModel, ModelSource};
-use msspeculator_inference::{write_library, LibraryOptions};
+use msspeculator_inference::{write_library, LibraryOptions, StreamOptions};
 
 fn run() -> anyhow::Result<()> {
     let fixed_mods = vec!["C[UNIMOD:4]".to_string()];
     let variable_mods = vec!["M[UNIMOD:35]".to_string()];
     let stats = write_library(&LibraryOptions {
-        model: ModelSource::Builtin(BuiltinModel::SmallV0),
-        fasta: "proteome.fasta",
-        out: "library.tsv",
-        activation: None,
-        ms_context: None,
-        chrom_context: None,
-        min_intensity: 0.01,
-        missed_cleavages: 2,
-        min_length: 7,
-        max_length: 40,
-        min_charge: 2,
-        max_charge: 4,
-        fixed_mods: &fixed_mods,
-        variable_mods: &variable_mods,
-        max_variable_mods: 1,
-        max_fragments: None,
-        config_out: Some("library.tsv.config.json"),
-        generate_decoys: false,
+        out: Path::new("library.tsv"),
+        config_out: Some(Path::new("library.tsv.config.json")),
+        stream: StreamOptions {
+            model: ModelSource::Builtin(BuiltinModel::SmallV0),
+            fasta: Path::new("proteome.fasta"),
+            activation: None,
+            ms_context: None,
+            chrom_context: None,
+            min_intensity: 0.01,
+            missed_cleavages: 2,
+            min_length: 7,
+            max_length: 40,
+            min_charge: 2,
+            max_charge: 4,
+            fixed_mods: &fixed_mods,
+            variable_mods: &variable_mods,
+            max_variable_mods: 1,
+            max_fragments: None,
+            generate_decoys: false,
+        },
     })?;
     println!("{} precursors", stats.precursors);
     Ok(())
@@ -119,6 +123,43 @@ select mzSpecLib text; other suffixes select DIA-NN TSV. Add `.gz` to compress e
 Output order is unspecified because workers finish independently. The writer validates and caps
 each precursor before serialization. The generated provenance records the package version and
 source commit, along with the resolved model, input FASTA, and settings.
+
+## Receive rows without writing a file
+
+To keep the spectra in your own process instead, implement `LibrarySink` and call
+`stream_library`, which takes `StreamOptions`: `LibraryOptions` minus the two fields that only
+mean something when there is a file.
+
+```rust,no_run
+use msspeculator_inference::{stream_library, LibraryProvenance, LibrarySink, SpectrumRow};
+
+struct Indexer {
+    precursors: usize,
+}
+
+impl LibrarySink for Indexer {
+    fn header(&mut self, provenance: &LibraryProvenance) -> anyhow::Result<()> {
+        // The same provenance a written library carries, so an in-memory index can
+        // record what produced it without a sidecar.
+        println!("model {}", provenance.inputs.model);
+        Ok(())
+    }
+
+    fn spectrum(&mut self, row: &SpectrumRow<'_>) -> anyhow::Result<()> {
+        // `row` borrows from the prediction it came out of; copy anything you keep.
+        self.precursors += 1;
+        Ok(())
+    }
+
+    fn finish(&mut self) -> anyhow::Result<()> {
+        Ok(())
+    }
+}
+```
+
+The sink is moved onto the writer thread while workers predict, which is why `LibrarySink`
+requires `Send`. `provenance.output` is `None` here: there is no path, no suffix-chosen format,
+and no compression to report.
 
 Set `generate_decoys: true` to add pseudo-reversed decoys. Internal residues are reversed while
 the first and last residues stay fixed, so `PEPTIDEK` becomes `PEDITPEK`. A decoy is skipped when

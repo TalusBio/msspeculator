@@ -5,8 +5,13 @@
 
 pub mod library;
 pub mod mzspeclib;
+pub mod provenance;
 
-pub use library::{write_library, LibraryOptions, LibraryStats};
+pub use library::{
+    stream_library, write_library, LibraryOptions, LibrarySink, LibraryStats, Peak, SpectrumRow,
+    StreamOptions,
+};
 pub use msspeculator_core::{
     Artifact, BuiltinModel, ModelSource, MsContext, Prediction, PreparedContext,
 };
+pub use provenance::LibraryProvenance;
