@@ -182,6 +182,10 @@ pub struct Output {
     /// so they sit beside `path` in the document rather than under a nested key.
     #[serde(flatten, skip_serializing_if = "Option::is_none")]
     pub counts: Option<Counts>,
+    /// Absent until the run finishes, for the same reason as the counts and flattened the same
+    /// way.
+    #[serde(flatten, skip_serializing_if = "Option::is_none")]
+    pub timing: Option<Timing>,
 }
 
 /// What the run produced. One struct rather than four `Option` fields set together, so "counts
@@ -194,6 +198,32 @@ pub struct Counts {
     pub precursors: usize,
     pub fragments: usize,
     pub decoys: usize,
+}
+
+/// How long the run took, split where digestion hands off to prediction.
+///
+/// Recorded beside the counts because a progress bar showing it is gone the moment the terminal
+/// scrolls, and "this build took 70 seconds, the last one took 700" is a question asked weeks
+/// later. Rounded to milliseconds: nothing downstream can act on a finer number, and full `f64`
+/// seconds would churn the sidecar's text on every rebuild.
+#[derive(Clone, Debug, serde::Serialize)]
+#[non_exhaustive]
+pub struct Timing {
+    pub seconds_digesting: f64,
+    pub seconds_predicting: f64,
+}
+
+fn seconds(duration: std::time::Duration) -> f64 {
+    (duration.as_secs_f64() * 1000.0).round() / 1000.0
+}
+
+impl From<&LibraryStats> for Timing {
+    fn from(stats: &LibraryStats) -> Self {
+        Self {
+            seconds_digesting: seconds(stats.digest),
+            seconds_predicting: seconds(stats.predict),
+        }
+    }
 }
 
 impl From<&LibraryStats> for Counts {
@@ -349,6 +379,7 @@ pub(crate) fn write_sidecar(
     let mut provenance = provenance.clone();
     if let Some(output) = provenance.output.as_mut() {
         output.counts = Some(stats.into());
+        output.timing = Some(stats.into());
     }
     std::fs::write(
         path,
@@ -432,6 +463,7 @@ mod tests {
                 format: "diann-tsv",
                 compressed: false,
                 counts: None,
+                timing: None,
             }),
         }
     }
@@ -555,6 +587,7 @@ mod tests {
             precursors: 3,
             fragments: 4,
             decoys: 5,
+            ..LibraryStats::default()
         };
         let counts = Counts::from(&stats);
         let json = serde_json::to_value(&counts).unwrap();
@@ -567,5 +600,19 @@ mod tests {
         ] {
             assert_eq!(json[key], expected, "{key}");
         }
+    }
+
+    /// The durable half of what a progress bar showed: the bar is gone when the terminal
+    /// scrolls, and "this build took 70 seconds, the last one took 700" gets asked weeks later.
+    #[test]
+    fn the_sidecar_records_each_phase_to_the_millisecond() {
+        let stats = LibraryStats {
+            digest: std::time::Duration::from_micros(1_500_400),
+            predict: std::time::Duration::from_micros(70_000_999),
+            ..LibraryStats::default()
+        };
+        let json = serde_json::to_value(Timing::from(&stats)).unwrap();
+        assert_eq!(json["seconds_digesting"], 1.5);
+        assert_eq!(json["seconds_predicting"], 70.001);
     }
 }

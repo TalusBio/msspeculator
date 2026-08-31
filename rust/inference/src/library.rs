@@ -4,6 +4,7 @@ use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use msspeculator_core::peptide::{ModSpec, Peptide, Site};
@@ -13,6 +14,7 @@ use msspeculator_core::{
     PreparedContext,
 };
 
+use crate::progress::{Phase, ProgressFn, Reporter};
 use crate::provenance::{resolve_provenance, write_sidecar, LibraryProvenance, Output};
 
 const VALID_AA: &str = "GASPVTCLINDQKEMHFRYW";
@@ -46,6 +48,13 @@ pub struct StreamOptions<'a> {
     /// Add pseudo-reversed peptide decoys. Decoys whose stripped sequence is already a target are
     /// skipped, as are duplicate decoy sequences.
     pub generate_decoys: bool,
+    /// Called as the build advances, or `None` to report nothing.
+    ///
+    /// Updates arrive once per FASTA record while digesting and once per dispatched inference
+    /// batch while predicting, plus a closing update for each phase. A build therefore reports
+    /// thousands of times rather than millions, so a callback that only moves a bar needs no
+    /// throttle of its own. [`Progress`](crate::Progress) says what each phase counts.
+    pub progress: Option<&'a ProgressFn<'a>>,
 }
 
 /// Generating a library and writing it to a file.
@@ -215,49 +224,15 @@ pub struct LibraryStats {
     pub fragments: usize,
     /// Number of decoy precursor spectra written.
     pub decoys: usize,
-}
-
-fn parse_fasta(path: &Path) -> Result<Vec<(String, String)>> {
-    let reader = BufReader::new(
-        File::open(path).with_context(|| format!("opening FASTA {}", path.display()))?,
-    );
-    let mut records = Vec::new();
-    let mut id: Option<String> = None;
-    let mut seq = String::new();
-    for (line_no, line) in reader.lines().enumerate() {
-        let line = line.with_context(|| format!("reading {}:{}", path.display(), line_no + 1))?;
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        if let Some(header) = line.strip_prefix('>') {
-            if let Some(old_id) = id.replace(
-                header
-                    .split_whitespace()
-                    .next()
-                    .context("empty FASTA header")?
-                    .to_string(),
-            ) {
-                records.push((old_id, std::mem::take(&mut seq)));
-            }
-        } else {
-            if id.is_none() {
-                bail!(
-                    "{}:{} has sequence before the first FASTA header",
-                    path.display(),
-                    line_no + 1
-                );
-            }
-            seq.push_str(&line.to_ascii_uppercase());
-        }
-    }
-    if let Some(id) = id {
-        records.push((id, seq));
-    }
-    if records.is_empty() {
-        bail!("FASTA {} contains no records", path.display());
-    }
-    Ok(records)
+    /// Wall time spent reading and digesting the FASTA.
+    ///
+    /// Split from the rest because the two halves scale on different things: digestion grows
+    /// with the proteome, prediction with the precursor count and the model. A build that got
+    /// slower is a different problem depending on which number moved.
+    pub digest: Duration,
+    /// Wall time from the end of digestion to the last spectrum handed to the sink, including
+    /// loading the model.
+    pub predict: Duration,
 }
 
 fn digest_tryptic(sequence: &str, missed: usize, min_len: usize, max_len: usize) -> Vec<String> {
@@ -289,19 +264,99 @@ fn digest_tryptic(sequence: &str, missed: usize, min_len: usize, max_len: usize)
     out
 }
 
-fn peptide_proteins(
-    records: &[(String, String)],
+/// Read the FASTA and digest it in one pass, reporting bytes consumed as it goes.
+///
+/// Digesting each record as it is read, rather than after the whole file, means the FASTA is
+/// never held whole: a protein's sequence is dropped once its peptides are recorded, so peak
+/// memory is the peptide map plus one protein instead of the peptide map plus every protein. The
+/// single pass is also what lets one monotone byte counter describe the phase; two passes over
+/// the same bytes would each run a progress bar from empty to full.
+///
+/// Returns the record count alongside the map, since a protein contributing no peptide in the
+/// length range is still a protein the run read.
+fn digest_fasta(
+    path: &Path,
     missed: usize,
     min_len: usize,
     max_len: usize,
-) -> BTreeMap<String, BTreeSet<String>> {
+    reporter: Reporter<'_>,
+) -> Result<(usize, BTreeMap<String, BTreeSet<String>>)> {
+    let file = File::open(path).with_context(|| format!("opening FASTA {}", path.display()))?;
+    // The progress denominator, read once. A file whose length will not come back still digests;
+    // it reports against zero, which `Progress::fraction` already answers as 0.0.
+    let total = file.metadata().map(|meta| meta.len()).unwrap_or(0);
+    let mut reader = BufReader::new(file);
     let mut peptides: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    for (protein, sequence) in records {
-        for peptide in digest_tryptic(sequence, missed, min_len, max_len) {
-            peptides.entry(peptide).or_default().insert(protein.clone());
+    let mut proteins = 0usize;
+    let mut id: Option<String> = None;
+    let mut seq = String::new();
+    let mut consumed = 0u64;
+    let mut line_no = 0usize;
+    let mut line = String::new();
+    // `read_line` rather than `lines()`, so `consumed` counts the bytes the file holds rather
+    // than the bytes left over after a split has discarded every line ending.
+    loop {
+        line.clear();
+        let read = reader
+            .read_line(&mut line)
+            .with_context(|| format!("reading {}:{}", path.display(), line_no + 1))?;
+        if read == 0 {
+            break;
+        }
+        consumed += read as u64;
+        line_no += 1;
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if let Some(header) = trimmed.strip_prefix('>') {
+            let accession = header
+                .split_whitespace()
+                .next()
+                .context("empty FASTA header")?
+                .to_string();
+            if let Some(previous) = id.replace(accession) {
+                digest_into(&mut peptides, &previous, &seq, missed, min_len, max_len);
+                seq.clear();
+                proteins += 1;
+                reporter.at(Phase::Digesting, consumed, total);
+            }
+        } else {
+            if id.is_none() {
+                bail!(
+                    "{}:{} has sequence before the first FASTA header",
+                    path.display(),
+                    line_no
+                );
+            }
+            seq.push_str(&trimmed.to_ascii_uppercase());
         }
     }
-    peptides
+    if let Some(id) = id {
+        digest_into(&mut peptides, &id, &seq, missed, min_len, max_len);
+        proteins += 1;
+    }
+    if proteins == 0 {
+        bail!("FASTA {} contains no records", path.display());
+    }
+    reporter.at(Phase::Digesting, total, total);
+    Ok((proteins, peptides))
+}
+
+fn digest_into(
+    peptides: &mut BTreeMap<String, BTreeSet<String>>,
+    protein: &str,
+    sequence: &str,
+    missed: usize,
+    min_len: usize,
+    max_len: usize,
+) {
+    for peptide in digest_tryptic(sequence, missed, min_len, max_len) {
+        peptides
+            .entry(peptide)
+            .or_default()
+            .insert(protein.to_string());
+    }
 }
 
 fn rule_sites(sequence: &str, rule: &ModificationRule) -> Vec<Site> {
@@ -649,11 +704,16 @@ fn write_predicted_batch(
     Ok(())
 }
 
+/// Bucket one peptidoform by length, dispatching the bucket once it is a full batch.
+///
+/// Reports whether a batch went out, which is the pipeline's own rhythm and so the cadence
+/// progress is reported at: the queue is bounded, so a dispatch is also the moment the producer
+/// is most likely to have just waited on a worker.
 fn queue_pending(
     pending: &mut BTreeMap<usize, Vec<PendingPeptide>>,
     work_tx: &mpsc::SyncSender<Option<Vec<PendingPeptide>>>,
     item: PendingPeptide,
-) -> Result<()> {
+) -> Result<bool> {
     let length = item.peptide.sequence.len();
     let ready = {
         let bucket = pending.entry(length).or_default();
@@ -664,8 +724,9 @@ fn queue_pending(
         work_tx
             .send(Some(batch))
             .context("sending inference batch")?;
+        return Ok(true);
     }
-    Ok(())
+    Ok(false)
 }
 
 /// Generate a library and hand every spectrum to `sink`, writing no file.
@@ -715,6 +776,7 @@ pub fn write_library(opts: &LibraryOptions<'_>) -> Result<LibraryStats> {
         format: format.name(),
         compressed,
         counts: None,
+        timing: None,
     };
     let (stats, provenance) = run_library(&opts.stream, Some(output), make_sink)?;
     if let Some(path) = opts.config_out {
@@ -774,23 +836,33 @@ fn run_library(
             }
         }
     }
-    let records = parse_fasta(opts.fasta)?;
-    let peptides = peptide_proteins(
-        &records,
+    let reporter = Reporter::new(opts.progress);
+    let digest_started = Instant::now();
+    let (proteins, peptides) = digest_fasta(
+        opts.fasta,
         opts.missed_cleavages,
         opts.min_length,
         opts.max_length,
-    );
+        reporter,
+    )?;
     if peptides.is_empty() {
         bail!("FASTA digest produced no peptides");
     }
+    let digest = digest_started.elapsed();
+    let predict_started = Instant::now();
+    // The denominator for the rest of the build. Peptides rather than precursors: a peptide's
+    // precursor count depends on how many modified forms it turns out to have, which is only
+    // known once it is enumerated, and a total that is still being discovered is no total at all.
+    let total_peptides = peptides.len() as u64;
+    reporter.at(Phase::Loading, 0, 1);
     let model = msspeculator_core::load_source(opts.model.clone())?;
+    reporter.at(Phase::Loading, 1, 1);
     let mut artifact = model.artifact;
     apply_activation_override(&mut artifact, opts.activation)?;
     let context = PreparedContext::new(&artifact, opts.ms_context, opts.chrom_context)?;
     let charges = (opts.min_charge..=opts.max_charge).collect::<Vec<_>>();
     let stats = LibraryStats {
-        proteins: records.len(),
+        proteins,
         peptides: peptides.len(),
         ..LibraryStats::default()
     };
@@ -860,8 +932,9 @@ fn run_library(
     let mut decoy_sequences = BTreeSet::new();
     let mut next_decoy_pair_id = 1usize;
     let mut pending: BTreeMap<usize, Vec<PendingPeptide>> = BTreeMap::new();
-    for (sequence, proteins) in peptides {
-        let protein_group = proteins.into_iter().collect::<Vec<_>>().join(";");
+    let mut peptides_done = 0u64;
+    for (sequence, protein_set) in peptides {
+        let protein_group = protein_set.into_iter().collect::<Vec<_>>().join(";");
         let target_forms = modified_forms(
             &sequence,
             &fixed_rules,
@@ -879,8 +952,9 @@ fn run_library(
             next_decoy_pair_id += 1;
             pair_id
         });
+        let mut dispatched = false;
         for (peptide, diann_sequence) in target_forms {
-            queue_pending(
+            dispatched |= queue_pending(
                 &mut pending,
                 &work_tx,
                 PendingPeptide {
@@ -895,7 +969,7 @@ fn run_library(
             if emit_decoy {
                 let decoy_peptide = pseudo_reverse_peptide(&peptide);
                 let decoy_diann = render_diann(&decoy_peptide.sequence, &decoy_peptide.mods);
-                queue_pending(
+                dispatched |= queue_pending(
                     &mut pending,
                     &work_tx,
                     PendingPeptide {
@@ -908,6 +982,10 @@ fn run_library(
                     },
                 )?;
             }
+        }
+        peptides_done += 1;
+        if dispatched {
+            reporter.at(Phase::Predicting, peptides_done, total_peptides);
         }
     }
     for batch in pending.into_values().filter(|batch| !batch.is_empty()) {
@@ -925,15 +1003,22 @@ fn run_library(
             .map_err(|_| anyhow::anyhow!("inference worker panicked"))?;
     }
     drop(result_tx);
-    let stats = writer_handle
+    let mut stats = writer_handle
         .join()
         .map_err(|_| anyhow::anyhow!("library writer panicked"))??;
+    stats.digest = digest;
+    stats.predict = predict_started.elapsed();
+    // The closing update, after the join rather than after the last peptide was queued: the
+    // producer runs a bounded distance ahead of the workers, so a bar that reached 100% when
+    // enumeration ended would claim the library was finished while it was still being written.
+    reporter.at(Phase::Predicting, total_peptides, total_peptides);
     Ok((stats, provenance))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::progress::Progress;
     /// A scratch path that removes itself, so the tests need no dev-dependency for it.
     struct Scratch(std::path::PathBuf);
 
@@ -1026,7 +1111,100 @@ mod tests {
             max_variable_mods: 0,
             max_fragments: None,
             generate_decoys: false,
+            progress: None,
         }
+    }
+
+    /// A FASTA big enough to report digestion more than once, since one record only ever
+    /// produces the closing update.
+    fn several_proteins() -> Scratch {
+        let scratch = Scratch::new("several.fasta");
+        let mut text = String::new();
+        // Each one digests to itself at the fixture's fixed length of 9: no internal cleavage
+        // site, so a protein contributes exactly one peptide and the totals stay readable.
+        for (i, sequence) in ["PEPTIDEMR", "SAMPLETID", "TESTINGVK"].iter().enumerate() {
+            text.push_str(&format!(">protein_{i} description\n{sequence}\n"));
+        }
+        std::fs::write(&scratch.0, text).unwrap();
+        scratch
+    }
+
+    /// What a caller needs from the callback: the phases in order, each one monotone, and a
+    /// closing update that only lands once the library really is finished.
+    #[test]
+    fn progress_walks_the_phases_in_order_and_ends_at_the_total() {
+        let fasta = several_proteins();
+        let seen = Mutex::new(Vec::new());
+        let report = |progress: Progress| seen.lock().unwrap().push(progress);
+        let mut opts = stream_options(fasta.path());
+        opts.progress = Some(&report);
+
+        let stats = stream_library(
+            &opts,
+            CollectingSink(Arc::new(Mutex::new(Collected::default()))),
+        )
+        .unwrap();
+
+        let seen = seen.into_inner().unwrap();
+        let order: Vec<Phase> = seen.iter().map(|p| p.phase).collect();
+        let first = |phase: Phase| order.iter().position(|&p| p == phase).unwrap();
+        assert!(first(Phase::Digesting) < first(Phase::Loading));
+        assert!(first(Phase::Loading) < first(Phase::Predicting));
+
+        for phase in [Phase::Digesting, Phase::Loading, Phase::Predicting] {
+            let updates: Vec<&Progress> = seen.iter().filter(|p| p.phase == phase).collect();
+            assert!(!updates.is_empty(), "{phase:?} never reported");
+            assert!(
+                updates.windows(2).all(|w| w[0].done <= w[1].done),
+                "{phase:?} went backwards"
+            );
+            let last = updates.last().unwrap();
+            assert_eq!(last.done, last.total, "{phase:?} did not finish");
+            assert!(last.total > 0, "{phase:?} reported no total");
+        }
+
+        // Digestion is billed in bytes of the file it read, prediction in the peptides that came
+        // out of it, so the totals are checkable against something other than themselves.
+        let digesting = seen.iter().find(|p| p.phase == Phase::Digesting).unwrap();
+        assert_eq!(
+            digesting.total,
+            std::fs::metadata(fasta.path()).unwrap().len()
+        );
+        let predicting = seen.iter().find(|p| p.phase == Phase::Predicting).unwrap();
+        assert_eq!(predicting.total, stats.peptides as u64);
+    }
+
+    #[test]
+    fn a_build_records_how_long_each_half_took() {
+        let fasta = tiny_fasta();
+        let stats = stream_library(
+            &stream_options(fasta.path()),
+            CollectingSink(Arc::new(Mutex::new(Collected::default()))),
+        )
+        .unwrap();
+        assert!(stats.predict > std::time::Duration::ZERO);
+        // Digesting one nine-residue protein can land inside a clock tick, so the claim is that
+        // the two are recorded separately, not that either is large.
+        assert!(stats.digest < stats.digest + stats.predict);
+    }
+
+    /// The digest reads bytes rather than lines, so the line endings and the missing final
+    /// newline that a real FASTA arrives with have to leave the same peptides behind.
+    #[test]
+    fn digestion_survives_crlf_and_a_missing_final_newline() {
+        let scratch = Scratch::new("crlf.fasta");
+        std::fs::write(
+            &scratch.0,
+            ">protein_one d\r\nPEPTIDEMR\r\n\r\n>protein_two d\r\nSAMPLETID",
+        )
+        .unwrap();
+        let (proteins, peptides) =
+            digest_fasta(scratch.path(), 0, 9, 9, Reporter::new(None)).unwrap();
+        assert_eq!(proteins, 2);
+        assert_eq!(
+            peptides.keys().collect::<Vec<_>>(),
+            vec!["PEPTIDEMR", "SAMPLETID"]
+        );
     }
 
     /// The point of the split: a library reaches a caller's own sink with no file anywhere, and
