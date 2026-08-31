@@ -50,7 +50,6 @@ enabled = false
 
 [diagnostics]
 enabled = true
-teacher = "fake"
 butterflies = 2
 every_n_epochs = 0
 interval_minutes = 0
@@ -265,9 +264,12 @@ def test_final_checkpoint_metadata_records_early_stop_inputs_and_step():
             current_epoch=4,
         ),
         last_validation_step=120,
+        export_ms2_max_abs_diff=4.5e-6,
     )
     metadata = _final_training_metadata(module)
     assert metadata["global_step"] == 123
+    # Carried into the checkpoint so the artifact states whether its own export still agreed.
+    assert metadata["export_ms2_max_abs_diff"] == pytest.approx(4.5e-6)
     assert metadata["validation"] == {
         "metric": "mean_per_dataset_spectral_angle",
         "values": {

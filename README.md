@@ -40,21 +40,40 @@ cargo run --release -p msspeculator-cli -- \
 ```
 
 The output is DIA-NN TSV by default. Use a `.mzspeclib.txt` suffix for mzSpecLib text and add
-`.gz` to compress either format. The CLI also supports single-peptide JSON prediction and a
-model-health report. Run `cargo run -p msspeculator-cli -- --help` for all options.
+`.gz` to compress either format. The CLI also supports single-peptide JSON prediction. Run
+`cargo run -p msspeculator-cli -- --help` for all options.
+
+## Checking a model
+
+`run-doctor` asks two questions of a set of weights and needs no corpus, no network, and no
+Python:
+
+```bash
+cargo run --release -p msspeculator-cli -- run-doctor --model model.safetensors --out doctor
+```
+
+Retention is scored against the Biognosys iRT standards (slope, intercept, R², MAE). Fragmentation
+is scored against three vendored experimental spectra, reported as a spectral angle per spectrum;
+see [the panel's provenance](data/reference_peptides/README.md). A model that is not trained shows
+a flat retention slope and a low spectral angle, so the report distinguishes "wrong scale" from
+"wrong spectrum".
 
 Rust applications can call the same length-batched, queued inference path without spawning a
 process. See the [Rust API guide](docs/rust-api.md).
 
-## Python inference
+## From a training checkpoint
 
-Use a trained checkpoint to write a Parquet library:
+Training writes a `.ckpt`, which the Rust CLI cannot read. Export it to portable weights first:
 
 ```bash
 uv sync --locked --no-dev --extra torch-cpu
-uv run msspeculator predict --model model.ckpt \
-  --fasta proteome.fasta -o library.parquet --device auto
+uv run msspeculator export-rust --model model.ckpt -o model.safetensors
+cargo run --release -p msspeculator-cli -- \
+  library --model model.safetensors --fasta proteome.fasta --out library.tsv
 ```
+
+There is no Python prediction command. Inference is Rust so it can run where a Python runtime
+cannot; see [ADR 0001](docs/adr/0001-inference-targets-portable-rust.md).
 
 ## More
 

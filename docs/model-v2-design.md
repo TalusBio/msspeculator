@@ -103,6 +103,6 @@ defaults, no `resolve_ce`, no fabricated NCE.
   while row 0 (iRT) stays put.
 - freeze_backbone: only MSContextEncoder + ChromRunbook params receive grad.
 - Checkpoint round-trip: encoder + runbook + dataset_index reload and reproduce predictions.
-- Parity guard: predict path (`predict/fast.py`, CLI `--ms-context`/`--nce`) maps to the new factors.
+- Parity guard: the Rust predict path (CLI `--ms-context`/`--nce`) maps to the new factors.
 - Named setup: a row fitted in Rust and addressed by name predicts what the same vector predicts
   through the torch path, and an unknown name is refused rather than served from row 0.

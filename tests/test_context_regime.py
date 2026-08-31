@@ -257,6 +257,12 @@ def test_fit_from_prebuilt_datasets_trains_and_reports_metrics(tmp_path, capsys)
     assert "val/pool/irt_mae" in metrics
     assert "val/pool/rawrt_mae" in metrics
     assert metrics["val/pool/n"] == 2
+    # The epoch's weights are exported and re-read through the Rust runtime, so a run reports
+    # whether what it will ship still predicts what it trained.
+    assert (tmp_path / "latest.safetensors").exists()
+    assert "latest.safetensors" in mirrored
+    assert module.export_ms2_max_abs_diff is not None
+    assert module.export_ms2_max_abs_diff < 1e-3
     assert "val_spectral_angle" not in metrics
     assert "latest.ckpt" in mirrored
     assert "best.ckpt" in mirrored

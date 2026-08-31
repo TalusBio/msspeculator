@@ -90,25 +90,12 @@ struct Group {
 /// the fifty-odd cells and the rest are taken at face value as near-zero, which is what the
 /// intensity floor measured on real files supports.
 fn cosine(a: &Array2<f32>, b: &Array2<f32>) -> f32 {
-    let mut dot = 0.0f64;
-    let mut na = 0.0f64;
-    let mut nb = 0.0f64;
-    for (x, y) in a.iter().zip(b.iter()) {
-        dot += (*x as f64) * (*y as f64);
-        na += (*x as f64) * (*x as f64);
-        nb += (*y as f64) * (*y as f64);
-    }
-    if na <= 0.0 || nb <= 0.0 {
-        return 0.0;
-    }
-    (dot / (na.sqrt() * nb.sqrt())) as f32
+    crate::similarity::cosine(a.iter().copied(), b.iter().copied())
 }
 
-/// Normalized spectral contrast angle in [0, 1], 1 = identical. The reporting metric, matching
-/// `msspeculator.distill.losses.spectral_angle`.
+/// Normalized spectral contrast angle in [0, 1], 1 = identical.
 fn spectral_angle(a: &Array2<f32>, b: &Array2<f32>) -> f32 {
-    let cos = cosine(a, b).clamp(-1.0, 1.0);
-    1.0 - 2.0 * cos.acos() / std::f32::consts::PI
+    crate::similarity::spectral_angle(a.iter().copied(), b.iter().copied())
 }
 
 /// Build the encoded groups for one split.

@@ -51,6 +51,7 @@ from ..models.student import StudentModel
 from ..teacher.base import PrecursorLabels
 from .dataset import BatchIterable, LabeledBatch, MSFactors, collate_with_labels, iter_batch_indices
 from .lightning import build_trainer
+from .portable_snapshot import export_beside, export_drift
 from .losses import labeled_mse, mod_align_loss, ms2_cosine_loss, spectral_angle
 
 
@@ -180,6 +181,11 @@ class RealSpeclibModule(L.LightningModule):
             raise ValueError("residue_substitution_probability must be between 0 and 1")
         self.residue_substitution_probability = residue_substitution_probability
         self.last_validation_step: int | None = None
+        # Largest MS2 disagreement between this module and the Rust runtime reading its own
+        # export, refreshed each epoch. None until the first epoch ends, or when the check could
+        # not run. Declared here so it is ordinary instance state rather than something a
+        # callback grows on the module mid-run.
+        self.export_ms2_max_abs_diff: float | None = None
         # dataset name -> spectral-angle counts on the shared grid, rebuilt each validation check.
         # Kept as plain state rather than a logged scalar: the point is the shape of the
         # distribution, which is what makes it comparable to the teacher and the ceiling.
@@ -729,10 +735,27 @@ class _RealCheckpoint(L.Callback):
         )
         if self.artifact_mirror is not None:
             self.artifact_mirror(self.directory / name)
+        # Portable weights beside every checkpoint. A run that ends on an unexported checkpoint
+        # leaves whoever picks it up a torch install away from being able to use it.
+        export_beside(self.directory / name, self.artifact_mirror)
 
     def on_train_epoch_end(self, trainer: L.Trainer, pl_module: RealSpeclibModule) -> None:
         # This snapshot is available even when validation is disabled or crashes afterwards.
         self._save("latest.ckpt", trainer, pl_module)
+        # Once per epoch, not per checkpoint: the question is whether this epoch's weights survive
+        # the export, and validation can write several checkpoints within one epoch.
+        drift = export_drift(self.directory / "latest.safetensors", pl_module.model)
+        if drift is not None:
+            # Neither `pl_module.log` nor `callback_metrics` works from here. The train epoch
+            # loop has torn down its result collection by the time a callback sees this hook, so
+            # `log` raises, and `callback_metrics` is a property recomputed from that collection,
+            # so writing to it is discarded. The module carries it instead, and the trainer's own
+            # logger gets it directly.
+            pl_module.export_ms2_max_abs_diff = drift
+            if trainer.logger is not None:
+                trainer.logger.log_metrics(
+                    {"export/ms2_max_abs_diff": drift}, step=int(trainer.global_step)
+                )
 
     def on_validation_epoch_end(self, trainer: L.Trainer, pl_module: RealSpeclibModule) -> None:
         if trainer.sanity_checking:

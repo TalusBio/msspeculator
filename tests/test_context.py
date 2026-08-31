@@ -118,8 +118,8 @@ def test_checkpoint_loads_from_fsspec_uri(tmp_path):
 
 
 def test_context_aware_predict_changes_ms2_not_rt():
-    """TorchRunner with a ms_context shifts MS2 but leaves RT and CCS (context-free) alone."""
-    from msspeculator.predict.fast import TorchRunner, _bucket_arrays
+    """An ms_context shifts MS2 but leaves RT and CCS (context-free) alone."""
+    import msspeculator_rs as rs
 
     m = build_student("small").eval()
     m.set_norm(30.0, 10.0, 400.0, 50.0)
@@ -137,9 +137,35 @@ def test_context_aware_predict_changes_ms2_not_rt():
     )
 
     precs = [Precursor(Peptide("PEPTIDEK"), 2, "t"), Precursor(Peptide("ACDEFGHK"), 2, "t")]
-    tok, mc, mm, mp, mn, ch, _ = _bucket_arrays(precs, 8)
-    ms2_base, rt_base, ccs_base = TorchRunner(m).run(tok, mc, mm, mp, mn, ch)
-    ms2_ctx, rt_ctx, ccs_ctx = TorchRunner(m, ms_context=ms_vec).run(tok, mc, mm, mp, mn, ch)
+    a = rs.bucket_arrays([p.peptide for p in precs], [p.charge for p in precs], 8)
+    dense = [
+        torch.from_numpy(a[key])
+        for key in (
+            "tokens",
+            "mod_comp",
+            "mod_mass",
+            "mod_present",
+            "mod_has_composition",
+            "charge",
+        )
+    ]
+
+    def run(ms_context):
+        # One context vector broadcast over the bucket, which is how a caller conditions a whole
+        # batch on one acquisition setup.
+        ctx = None
+        if ms_context is not None:
+            ctx = (
+                torch.as_tensor(ms_context, dtype=torch.float32)
+                .reshape(1, -1)
+                .expand(len(precs), -1)
+            )
+        with torch.no_grad():
+            ms2, rt, ccs = m.forward_dense(*dense, ms_context=ctx)
+        return ms2.numpy(), rt.numpy(), ccs.numpy()
+
+    ms2_base, rt_base, ccs_base = run(None)
+    ms2_ctx, rt_ctx, ccs_ctx = run(ms_vec)
 
     assert not (ms2_base == ms2_ctx).all()  # MS context moved MS2
     assert (rt_base == rt_ctx).all()  # RT is context-free (no chrom context)

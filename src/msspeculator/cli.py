@@ -1,34 +1,30 @@
-"""``msspeculator`` command-line interface.
+"""``msspeculator`` command-line interface: preparation and training.
 
-    run      config.toml           -> trained model (+ optional bench)
-    predict  model + FASTA          -> library.parquet
-    prepare  config.toml             -> deterministic shard assets
+    prepare      config.toml   -> deterministic shard assets
+    run          config.toml   -> trained checkpoint
+    export-rust  checkpoint    -> portable weights (.safetensors)
 
-``run`` drives the whole Lightning pipeline from one :class:`RunConfig` (pretrain -> train ->
-export -> bench, each stage toggleable); see :mod:`msspeculator.distill.pipeline`. ``predict``
-is standalone inference: generate a spectral library from an already-trained model.
+``run`` drives the whole Lightning pipeline from one :class:`RunConfig`, with each regime
+toggleable; see :mod:`msspeculator.distill.pipeline`.
+
+Inference is not here. Prediction and spectral-library generation live in the Rust CLI, which
+reads the portable weights ``export-rust`` writes; see ``docs/adr/0001``.
 """
 
 from __future__ import annotations
 
 import importlib.util
-import time
 from dataclasses import replace
 from pathlib import Path
 from typing import Optional
 
 import typer
 
-from .data.config import DigestConfig, SplitConfig
-from .data.digest import digest_fasta
-from .data.precursors import enumerate_precursors, frame_to_precursors
-
 # torch, pandas and the training pipeline are imported inside the commands that use them, as the
 # other commands here already do. At module scope they made `msspeculator prepare` load the whole
 # training stack: an ETL worker paid seconds of import and a GB of memory for a path that never
 # touches a tensor. Torch is also an optional dependency (the `torch` extra), so importing it here
 # would make every command require an install the preparation commands do not need.
-from .util import resolve_device
 
 
 def _require_torch(command: str) -> None:
@@ -263,123 +259,6 @@ def run(
     typer.echo(f"done -> {cfg.out}/summary.json")
 
 
-@app.command()
-def predict(
-    model: Path = typer.Option(..., exists=True, readable=True, help="Checkpoint (.ckpt)."),
-    out: Path = typer.Option(..., "--out", "-o", help="Output library parquet."),
-    fasta: Optional[Path] = typer.Option(None, exists=True, help="Digest this FASTA to predict."),
-    precursors: Optional[Path] = typer.Option(None, exists=True, help="Or use a precursor table."),
-    min_intensity: float = 0.01,
-    batch_size: int = 4096,
-    device: str = typer.Option("auto", help="auto | cpu | mps | cuda."),
-    nce: Optional[float] = typer.Option(
-        None, help="Collision energy for context-aware MS2 (needs a ckpt with a saved encoder)."
-    ),
-    ms_context: Optional[str] = typer.Option(
-        None,
-        "--ms-context",
-        help=(
-            "Full acquisition context 'INSTRUMENT::DETECTOR::FRAGMENTATION::ENERGY', "
-            "e.g. Lumos::FTMS::HCD::30, or the bare name of a fitted acquisition setup."
-        ),
-    ),
-    enzyme: str = "trypsin",
-    missed: int = 2,
-    min_len: int = 7,
-    max_len: int = 30,
-    min_charge: int = 2,
-    max_charge: int = 4,
-    max_var_mods: int = 1,
-) -> None:
-    """Predict a spectral library from a trained student (vectorized, length-bucketed)."""
-    _require_torch("predict")
-    import pandas as pd
-    import torch
-
-    from .models.registry import load_checkpoint
-    from .predict.fast import TorchRunner, predict_library_fast
-    from .predict.library import write_library
-
-    if (fasta is None) == (precursors is None):
-        raise typer.BadParameter("provide exactly one of --fasta or --precursors")
-
-    if fasta is not None:
-        dcfg = DigestConfig(
-            enzyme=enzyme,
-            missed_cleavages=missed,
-            min_length=min_len,
-            max_length=max_len,
-            min_charge=min_charge,
-            max_charge=max_charge,
-            max_variable_mods=max_var_mods,
-        )
-        precs = enumerate_precursors(digest_fasta(fasta, dcfg), dcfg, SplitConfig())
-    else:
-        precs = frame_to_precursors(pd.read_parquet(precursors))
-
-    # Resolve MS context. `--ms-context` is either four `::`-separated factors or the bare name of
-    # a setup fitted into the checkpoint; the separator tells them apart, exactly as in the Rust
-    # CLI. `--nce` is a shorthand for unknown categoricals + energy only.
-    instrument, detector, fragmentation, setup = "", "", "", None
-    if ms_context is not None and "::" not in ms_context:
-        setup = ms_context
-    elif ms_context is not None:
-        parts = ms_context.split("::")
-        if len(parts) != 4:
-            raise typer.BadParameter(
-                "--ms-context must be 'INSTRUMENT::DETECTOR::FRAGMENTATION::ENERGY' "
-                "or the bare name of a fitted acquisition setup"
-            )
-        instrument, detector, fragmentation, nce = parts[0], parts[1], parts[2], float(parts[3])
-
-    ms_ctx_vec = None
-    if nce is not None or setup is not None:
-        from .models.registry import load_context
-
-        ctx = load_context(model)
-        if ctx is None or ctx.encoder is None:
-            raise typer.BadParameter(
-                f"{model} has no saved acquisition encoder; can't condition MS2"
-            )
-        enc = ctx.encoder
-        try:
-            setup_id = torch.tensor([0 if setup is None else enc.setup_row(setup)])
-        except KeyError as exc:
-            raise typer.BadParameter(str(exc)) from None
-        ms_ctx_vec = (
-            enc(
-                torch.tensor([enc.instrument_id(instrument)]),
-                torch.tensor([enc.detector_id(detector)]),
-                torch.tensor([enc.fragmentation_id(fragmentation)]),
-                None if nce is None else torch.tensor([float(nce)]),
-                setup_id=setup_id,
-            )
-            .detach()
-            .numpy()[0]
-        )
-        described = (
-            setup
-            if setup is not None
-            else (f"{instrument or '-'}::{detector or '-'}::{fragmentation or '-'}::{nce}")
-        )
-        typer.echo(
-            f"context-aware: {described} "
-            f"-> ms_context |v|={float((ms_ctx_vec**2).sum() ** 0.5):.3f}"
-        )
-    runner = TorchRunner(load_checkpoint(model), resolve_device(device), ms_context=ms_ctx_vec)
-
-    t0 = time.perf_counter()
-    lib = predict_library_fast(runner, precs, batch_size=batch_size, min_intensity=min_intensity)
-    dt = time.perf_counter() - t0
-    out.parent.mkdir(parents=True, exist_ok=True)
-    write_library(lib, out)
-    rate = len(precs) / dt if dt > 0 else float("inf")
-    typer.echo(
-        f"{len(precs)} precursors -> {len(lib)} fragment rows in {dt:.2f}s "
-        f"({rate:,.0f} precursors/s) -> {out}"
-    )
-
-
 @app.command(name="export-rust")
 def export_rust(
     model: Path = typer.Option(..., exists=True, readable=True, help="Checkpoint (.ckpt)."),
@@ -392,42 +271,6 @@ def export_rust(
     out.parent.mkdir(parents=True, exist_ok=True)
     export_safetensors(model, out)
     typer.echo(f"exported -> {out}")
-
-
-@app.command()
-def diagnose(
-    model: Path = typer.Option(..., exists=True, readable=True, help="Checkpoint (.ckpt)."),
-    out: Path = typer.Option(..., "--out", "-o", help="Diagnostic output directory."),
-    teacher: str = typer.Option("alphapeptdeep", help="Reference teacher name."),
-    butterflies: int = typer.Option(3, min=1, help="Number of reference spectra."),
-    device: str = typer.Option("cpu", help="auto | cpu | mps | cuda"),
-) -> None:
-    """Render the same fixed diagnostic panel used during training for one checkpoint."""
-    _require_torch("diagnose")
-    from .models.context import MSContextEncoder
-    from .models.registry import load_checkpoint, load_context
-    from .teacher import get_teacher
-    from .training_diagnostics import TrainingDiagnosticRenderer
-
-    resolved = resolve_device(device)
-    student = load_checkpoint(model, map_location=str(resolved)).to(resolved)
-    context = load_context(model, map_location=str(resolved))
-    encoder = context.encoder if context is not None else None
-    if encoder is None:
-        encoder = MSContextEncoder(context_dim=student.cfg.context_dim)
-    encoder = encoder.to(resolved)
-    teacher_kwargs = {} if teacher == "fake" else {"device": "cpu", "instrument": "Lumos"}
-    renderer = TrainingDiagnosticRenderer(
-        out,
-        get_teacher(teacher, **teacher_kwargs),
-        butterflies=butterflies,
-    )
-    result = renderer.render(student, encoder, "checkpoint")
-    for name, path in result.paths.items():
-        typer.echo(f"{name} -> {path}")
-    typer.echo(
-        "metrics: " + ", ".join(f"{name}={value:.4f}" for name, value in result.metrics.items())
-    )
 
 
 if __name__ == "__main__":

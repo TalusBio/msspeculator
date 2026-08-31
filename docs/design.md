@@ -65,7 +65,6 @@ src/msspeculator/etl/        catalog, archive conversion, manifests, finalizatio
 src/msspeculator/teacher/    AlphaPeptDeep and fake teachers
 src/msspeculator/models/     architectures, presets, contexts, checkpoints
 src/msspeculator/distill/    pretrain/train loops and validation
-src/msspeculator/predict/    Python library generation
 rust/core/                    shared chemistry, encoding, artifact, inference
 rust/inference/               FASTA orchestration and library writers
 rust/cli/                     command-line wrapper

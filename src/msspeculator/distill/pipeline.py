@@ -1,4 +1,4 @@
-"""One config-driven Lightning pipeline: pretrain -> train -> bench.
+"""One config-driven Lightning pipeline: pretrain -> train.
 
 A single :class:`RunConfig` replaces the old per-stage CLI + hand-rolled trainer. Every stage
 is independently toggleable; the model and the shared :class:`MSContextEncoder` are built once
@@ -13,10 +13,9 @@ Stages:
   special mode.
 - **train**, real-speclib sink over a prepared Parquet manifest, streamed from local storage or
   object storage, with per-dataset ``chrom_context`` and factor-driven ``ms_context``.
-- **bench**, library-generation throughput on a FASTA digest.
 
-Inference (predict a library from a finished model) is deliberately NOT here. It is the
-standalone ``predict`` command.
+Inference is not here. A finished run writes portable weights, and the Rust CLI generates
+libraries from them; see ``docs/adr/0001``.
 """
 
 from __future__ import annotations
@@ -36,13 +35,11 @@ import fsspec
 import lightning as L
 import torch
 
-from ..data.config import DigestConfig, SplitConfig
-from ..data.digest import digest_fasta, resolve_fasta
+from ..data.config import DigestConfig
+from ..data.digest import resolve_fasta
 from ..data.prepared import PreparedManifest, PreparedStreamingDataset
-from ..data.precursors import enumerate_precursors
 from ..models.context import ChromRunbook, MSContextEncoder
 from ..models.registry import PRESETS, build_student, load_checkpoint, load_context, save_checkpoint
-from ..predict.fast import TorchRunner, predict_library_fast
 from ..teacher import get_teacher
 from .context_regime import establish_rt_norm, fit_realspeclib_datasets
 from .stream_pretrain import StreamMix, StreamPretrainCfg, fit_stream_pretrain
@@ -226,13 +223,6 @@ def _train_cfg(raw: dict) -> TrainCfg:
 
 
 @dataclass
-class BenchCfg:
-    enabled: bool = False
-    fasta: str = ""
-    repeats: int = 3
-
-
-@dataclass
 class TrackingCfg:
     """Optional Weights & Biases experiment tracking for both training stages."""
 
@@ -260,12 +250,11 @@ class TrackingCfg:
 class DiagnosticsCfg:
     """Low-frequency longitudinal plots for representations, iRT, and reference spectra.
 
-    Disabled by default because plotting and the AlphaPeptDeep reference teacher are optional
-    dependencies. Enable it for production training runs installed with ``tracking,teacher``.
+    Disabled by default because plotting is an optional dependency. The butterflies draw against
+    the vendored experimental panel, so enabling this needs no teacher installed.
     """
 
     enabled: bool = False
-    teacher: str | None = None  # defaults to the pretrain teacher
     butterflies: int = 3
     every_n_epochs: int = 1  # 0 disables epoch renders
     interval_minutes: float = 60.0  # 0 disables wall-clock renders
@@ -294,10 +283,9 @@ class RunConfig:
     dropout: float | None = None
     device: str = "auto"
     seed: int = 0
-    model_in: str | None = None  # optional checkpoint to initialize pretrain/train/bench
+    model_in: str | None = None  # optional checkpoint to initialize pretrain/train
     pretrain: PretrainCfg = field(default_factory=PretrainCfg)
     train: TrainCfg = field(default_factory=TrainCfg)
-    bench: BenchCfg = field(default_factory=BenchCfg)
     tracking: TrackingCfg = field(default_factory=TrackingCfg)
     diagnostics: DiagnosticsCfg = field(default_factory=DiagnosticsCfg)
     augmentation: AugmentationCfg = field(default_factory=AugmentationCfg)
@@ -325,7 +313,6 @@ class RunConfig:
             },
             pretrain=PretrainCfg(sources=sources, **pre),
             train=_train_cfg(raw.get("train", {})),
-            bench=BenchCfg(**raw.get("bench", {})),
             tracking=TrackingCfg(**raw.get("tracking", {})),
             diagnostics=DiagnosticsCfg(**raw.get("diagnostics", {})),
             augmentation=AugmentationCfg(**raw.get("augmentation", {})),
@@ -557,6 +544,9 @@ def _final_training_metadata(module) -> dict:
             # None when the run finished without ever validating; see the callback's `_save`.
             "validated_at_step": module.last_validation_step,
         },
+        # Travels with the checkpoint because it is a claim about the checkpoint: whoever picks
+        # this artifact up can see whether its export still predicted what it predicts.
+        "export_ms2_max_abs_diff": module.export_ms2_max_abs_diff,
     }
 
 
@@ -642,12 +632,11 @@ def _runbook_for_datasets(
     return book
 
 
-def _diagnostic_renderer(cfg: RunConfig, teacher, out: Path):
+def _diagnostic_renderer(cfg: RunConfig, out: Path):
     from ..training_diagnostics import DiagnosticAcquisition, TrainingDiagnosticRenderer
 
     return TrainingDiagnosticRenderer(
         out / "diagnostics",
-        teacher,
         acquisition=DiagnosticAcquisition(
             instrument=cfg.pretrain.instrument,
             detector=cfg.pretrain.detector,
@@ -684,17 +673,7 @@ def _run_pretrain(
     mixes = _stream_mixes(p, log)
     kw = {} if p.teacher == "fake" else {"device": p.device, "instrument": p.instrument}
     teacher = get_teacher(p.teacher, **kw)
-    diagnostic_teacher = teacher
-    if cfg.diagnostics.enabled and cfg.diagnostics.teacher not in (None, p.teacher):
-        diagnostic_kw = (
-            {}
-            if cfg.diagnostics.teacher == "fake"
-            else {"device": p.device, "instrument": p.instrument}
-        )
-        diagnostic_teacher = get_teacher(cfg.diagnostics.teacher, **diagnostic_kw)
-    renderer = (
-        _diagnostic_renderer(cfg, diagnostic_teacher, out) if cfg.diagnostics.enabled else None
-    )
+    renderer = _diagnostic_renderer(cfg, out) if cfg.diagnostics.enabled else None
     spc = StreamPretrainCfg(
         mixes=mixes,
         nce_range=(p.nce_min, p.nce_max),
@@ -834,15 +813,7 @@ def run_pipeline(cfg: RunConfig, log=print) -> dict:
     if cfg.train.enabled:
         assert encoder is not None, "need_encoder covers cfg.train.enabled"
         if cfg.diagnostics.enabled and diagnostic_renderer is None:
-            teacher_name = cfg.diagnostics.teacher or cfg.pretrain.teacher
-            teacher_kw = (
-                {}
-                if teacher_name == "fake"
-                else {"device": cfg.pretrain.device, "instrument": cfg.pretrain.instrument}
-            )
-            diagnostic_renderer = _diagnostic_renderer(
-                cfg, get_teacher(teacher_name, **teacher_kw), out
-            )
+            diagnostic_renderer = _diagnostic_renderer(cfg, out)
         if not cfg.train.prepared_prefix:
             raise ValueError("[train] requires prepared_prefix; run the prepared ETL first")
         if cfg.train.model_threads < 1:
@@ -964,9 +935,6 @@ def run_pipeline(cfg: RunConfig, log=print) -> dict:
         mirror(ckpt)
     log(f"saved {ckpt}")
 
-    if cfg.bench.enabled and cfg.bench.fasta:
-        summary["bench"] = _bench(model, cfg.bench, log)
-
     summary_path = out / "summary.json"
     summary_path.write_text(json.dumps(summary, indent=2, default=str))
     if mirror is not None:
@@ -995,27 +963,11 @@ def _energy_curve(encoder, ce_min: float, ce_max: float, n: int = 5) -> dict[str
     return {f"{c:.1f}": round(float(v), 4) for c, v in zip(ces, norms)}
 
 
-def _bench(model, cfg: BenchCfg, log) -> dict:
-    dcfg = DigestConfig()
-    precs = enumerate_precursors(digest_fasta(cfg.fasta, dcfg), dcfg, SplitConfig())
-    runner = TorchRunner(model, "cpu")
-    predict_library_fast(runner, precs[: min(2000, len(precs))])  # warmup
-    best = float("inf")
-    for _ in range(cfg.repeats):
-        t = time.perf_counter()
-        lib = predict_library_fast(runner, precs)
-        best = min(best, time.perf_counter() - t)
-    rate = len(precs) / best if best > 0 else float("inf")
-    log(f"[bench] {len(precs)} precursors, {len(lib)} rows, best {best:.3f}s -> {rate:,.0f}/s")
-    return {"precursors": len(precs), "rows": len(lib), "best_s": best, "rate": rate}
-
-
 __all__ = [
     "RunConfig",
     "DigestSource",
     "PretrainCfg",
     "TrainCfg",
-    "BenchCfg",
     "TrackingCfg",
     "DiagnosticsCfg",
     "run_pipeline",
