@@ -25,7 +25,7 @@ const INFERENCE_BATCH_SIZE: usize = 64;
 pub struct StreamOptions<'a> {
     /// Built-in or file-backed model. The CLI converts its string option before calling this API.
     pub model: ModelSource,
-    pub fasta: &'a str,
+    pub fasta: &'a Path,
     pub activation: Option<&'a str>,
     pub ms_context: Option<&'a MsContext>,
     pub chrom_context: Option<&'a str>,
@@ -53,24 +53,24 @@ pub struct StreamOptions<'a> {
 /// those questions to answer and wants [`StreamOptions`] instead.
 pub struct LibraryOptions<'a> {
     pub stream: StreamOptions<'a>,
-    pub out: &'a str,
+    pub out: &'a Path,
     /// Where to write the resolved-configuration sidecar, or `None` to skip it.
-    pub config_out: Option<&'a str>,
+    pub config_out: Option<&'a Path>,
 }
 
 /// The file half of a run, resolved once so the format is decided in exactly one place.
 struct ResolvedOutput<'a> {
-    path: &'a str,
+    path: &'a Path,
     format: LibraryFormat,
     compressed: bool,
 }
 
 impl<'a> ResolvedOutput<'a> {
-    fn new(path: &'a str) -> Self {
+    fn new(path: &'a Path) -> Self {
         Self {
             path,
             format: LibraryFormat::for_output(path),
-            compressed: path.ends_with(".gz"),
+            compressed: path.extension().is_some_and(|ext| ext == "gz"),
         }
     }
 }
@@ -103,7 +103,12 @@ pub enum LibraryFormat {
 }
 
 impl LibraryFormat {
-    pub fn for_output(out: &str) -> Self {
+    /// Non-UTF-8 paths fall back to the default rather than erroring: a path this crate cannot
+    /// read as text still names a file the OS will happily create.
+    pub fn for_output(out: &Path) -> Self {
+        let Some(out) = out.to_str() else {
+            return Self::DiannTsv;
+        };
         let stem = out.strip_suffix(".gz").unwrap_or(out);
         if stem.ends_with(".mzspeclib.txt") || stem.ends_with(".mzspeclib") {
             Self::MzSpecLib
@@ -159,46 +164,163 @@ pub struct SpectrumRow<'a> {
     pub peaks: Vec<Peak<'a>>,
 }
 
-/// Everything that determined a library's contents: what generated it, from what, with which
-/// knobs as resolved rather than as typed.
+/// What produced a library, and from what.
 ///
-/// Roughly:
-///
-/// ```json
-/// {"generator": {"tool": "...", "version": "...", "commit": "..."},
-///  "inputs":    {"model": "...", "model_blake2b_256": "...",
-///                "fasta": "...", "fasta_blake2b_256": "..."},
-///  "digestion": {"enzyme": "...", "missed_cleavages": 0, "min_length": 7, ...},
-///  "modifications": {"fixed": [], "variable": [], "max_variable_mods": 1},
-///  "context":   {"ms": null, "chrom": null},
-///  "retention": {"normalized": {"term": "MS:1000896|...", "anchor_check": {...}}, "raw": null},
-///  "fragments": {"min_intensity": 0.01, "max_fragments": null},
-///  "decoys":    {"enabled": false, "method": "pseudo-reverse", ...},
-///  "output":    {"path": "...", "format": "...", "compressed": false}}
-/// ```
-///
-/// `output` is null when a caller supplied its own sink, since there is then no path, no
-/// suffix-chosen format, and no compression to report.
-///
-/// Held as JSON rather than a struct because [`crate::mzspeclib`] walks it generically, turning
-/// every leaf into an `msspeculator:<dotted.key>` attribute. That is what lets a new key reach a
-/// published library without a format-version bump, and a typed mirror of this shape would have
-/// to be updated in lockstep to keep the same property. Reach for [`Self::as_json`].
-#[derive(Clone, Debug)]
-pub struct LibraryProvenance(serde_json::Value);
-
-impl LibraryProvenance {
-    /// The underlying JSON, for a sink that carries provenance verbatim or stores it whole.
-    pub fn as_json(&self) -> &serde_json::Value {
-        &self.0
-    }
+/// Serialized whole into an mzSpecLib header and into the sidecar beside a written library, so
+/// the copy inside the file and the copy next to it cannot disagree. Field names are the JSON
+/// keys; renaming one changes published output.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct LibraryProvenance {
+    pub generator: Generator,
+    pub inputs: Inputs,
+    pub digestion: Digestion,
+    pub modifications: Modifications,
+    pub context: Contexts,
+    pub retention: Retention,
+    pub fragments: FragmentPolicy,
+    pub decoys: DecoyPolicy,
+    /// Absent when a caller supplied its own sink: there is then no path, no suffix-chosen
+    /// format, and no compression, and inventing values for them would put claims in the
+    /// provenance that nothing produced.
+    pub output: Option<Output>,
 }
 
-/// Assemble one directly. A real run gets its provenance from the generator; this is for a sink
-/// author testing what their `header` does with one.
-impl From<serde_json::Value> for LibraryProvenance {
-    fn from(value: serde_json::Value) -> Self {
-        Self(value)
+/// Which build of which tool wrote this.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct Generator {
+    pub tool: &'static str,
+    pub version: &'static str,
+    pub commit: &'static str,
+}
+
+/// The two inputs, each with the digest of the bytes actually read.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct Inputs {
+    /// The spec as asked for, which for a bundled model is a name rather than a path. A temp path
+    /// is not an identity; the digest is, and it is computed from the loaded bytes either way.
+    pub model: String,
+    pub model_blake2b_256: String,
+    pub fasta: String,
+    pub fasta_blake2b_256: String,
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct Digestion {
+    pub enzyme: &'static str,
+    pub missed_cleavages: usize,
+    pub min_length: usize,
+    pub max_length: usize,
+    pub min_charge: i64,
+    pub max_charge: i64,
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct Modifications {
+    pub fixed: Vec<String>,
+    pub variable: Vec<String>,
+    pub max_variable_mods: usize,
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct Contexts {
+    pub ms: Option<MsContextProvenance>,
+    pub chrom: Option<String>,
+}
+
+/// The acquisition context as requested: a fitted setup by name, or factors spelled out.
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(untagged)]
+pub enum MsContextProvenance {
+    Named {
+        setup: String,
+    },
+    Factors {
+        instrument: String,
+        detector: String,
+        fragmentation: String,
+        energy: Option<f32>,
+    },
+}
+
+/// What the retention numbers in this library actually are.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct Retention {
+    pub normalized: NormalizedRetention,
+    /// Present only under a chromatography context, where `rt` is a duration instead of an index.
+    pub raw: Option<RawRetention>,
+}
+
+/// The normalized value is an index, not a duration, even though the vocabulary makes us declare
+/// it in minutes; so the file says so in plain text rather than leaving a reader to infer it from
+/// a unit that cannot be right.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct NormalizedRetention {
+    pub term: &'static str,
+    pub kind: &'static str,
+    pub scale: &'static str,
+    pub anchor_check: AnchorCheck,
+}
+
+/// Which index is a property of the corpus the model trained on, so the scale is stated as the
+/// convention that defines it and then checked: predicting the two anchors says whether this
+/// artifact is on that scale. An artifact from another corpus reports `on_scale: false` and its
+/// own numbers rather than inheriting a claim that happens to be true of ours.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct AnchorCheck {
+    pub on_scale: bool,
+    pub max_abs_error: f64,
+    pub anchors: Vec<Anchor>,
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct Anchor {
+    pub peptide: String,
+    pub expected: f64,
+    pub predicted: f64,
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct RawRetention {
+    pub term: &'static str,
+    pub unit: &'static str,
+    pub chrom_context: String,
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct FragmentPolicy {
+    pub min_intensity: f64,
+    pub max_fragments: Option<usize>,
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct DecoyPolicy {
+    pub enabled: bool,
+    pub method: &'static str,
+    pub protein_prefix: &'static str,
+    pub collision_policy: &'static str,
+}
+
+/// Where the library went, and the counts that came out. The counts are filled in by the sidecar
+/// writer, since they are only known once the last spectrum has been written.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct Output {
+    pub path: String,
+    pub format: &'static str,
+    pub compressed: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proteins: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub peptides: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub precursors: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fragments: Option<usize>,
+}
+
+impl LibraryProvenance {
+    /// Flatten to JSON, which is how both the mzSpecLib header and the sidecar carry it.
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::to_value(self).expect("provenance is plain data and always serializes")
     }
 }
 
@@ -733,8 +855,8 @@ pub fn stream_library(
 /// Generate a library and write it to `opts.out`, picking the format from the path.
 pub fn write_library(opts: &LibraryOptions<'_>) -> Result<LibraryStats> {
     let output = ResolvedOutput::new(opts.out);
-    let file =
-        File::create(output.path).with_context(|| format!("creating library {}", output.path))?;
+    let file = File::create(output.path)
+        .with_context(|| format!("creating library {}", output.path.display()))?;
     // A `.gz` suffix compresses in the writer thread rather than in a second pass, so the
     // uncompressed library never exists on disk; which is the whole point when a shard is
     // gigabytes and the scratch volume is not.
@@ -969,9 +1091,9 @@ fn run_library(
 ///
 /// Identity rather than integrity: two libraries generated from the same digests and the same
 /// settings are the same library, which is what makes a published one reproducible.
-fn file_digest(path: &str) -> Result<String> {
+fn file_digest(path: &Path) -> Result<String> {
     use blake2::digest::{Update, VariableOutput};
-    let mut file = File::open(path).with_context(|| format!("hashing {path}"))?;
+    let mut file = File::open(path).with_context(|| format!("hashing {}", path.display()))?;
     let mut hasher = blake2::Blake2bVar::new(32).expect("32 is a valid blake2b output length");
     let mut buffer = vec![0u8; 1 << 20];
     loop {
@@ -999,129 +1121,114 @@ fn resolve_config(
     artifact: &Artifact,
     model_digest: &str,
 ) -> Result<LibraryProvenance> {
-    let ms_context = match opts.ms_context {
-        Some(msspeculator_core::MsContext::Named(name)) => serde_json::json!({"setup": name}),
-        Some(msspeculator_core::MsContext::Factors {
-            instrument,
-            detector,
-            fragmentation,
-            energy,
-        }) => serde_json::json!({
-            "instrument": instrument,
-            "detector": detector,
-            "fragmentation": fragmentation,
-            "energy": energy,
-        }),
-        None => serde_json::Value::Null,
-    };
-    // What the retention numbers in this library actually are. The normalized value is an index,
-    // not a duration, even though the vocabulary makes us declare it in minutes; so the file
-    // says so in plain text rather than leaving a reader to infer it from a unit that cannot be
-    // right.
-    //
-    // Which index is a property of the corpus the model trained on, so the scale is stated as the
-    // convention that defines it and then checked: predicting the two anchors says whether this
-    // artifact is on that scale. An artifact from another corpus reports `on_scale: false` and its
-    // own numbers rather than inheriting a claim that happens to be true of ours.
     let anchors = msspeculator_core::landmarks::check_retention_scale(artifact)?;
-    let normalized_retention = serde_json::json!({
-        "term": "MS:1000896|normalized retention time",
-        "kind": "dimensionless index, minutes-like",
-        "scale": msspeculator_core::landmarks::SCALE_DESCRIPTION,
-        "anchor_check": {
-            "on_scale": anchors.on_scale(),
-            "max_abs_error": anchors.max_abs_error,
-            "anchors": anchors
-                .anchors
-                .iter()
-                .map(|(peptide, expected, predicted)| serde_json::json!({
-                    "peptide": peptide,
-                    "expected": expected,
-                    "predicted": predicted,
-                }))
-                .collect::<Vec<_>>(),
+    Ok(LibraryProvenance {
+        generator: Generator {
+            tool: "msspeculator-cli library",
+            version: env!("CARGO_PKG_VERSION"),
+            commit: env!("MSSPECULATOR_GIT_COMMIT"),
         },
-    });
-    let raw_retention = match opts.chrom_context {
-        Some(name) => serde_json::json!({
-            "term": "MS:1000894|retention time",
-            "unit": "minute",
-            "chrom_context": name,
-        }),
-        None => serde_json::Value::Null,
-    };
-    Ok(LibraryProvenance(serde_json::json!({
-        "generator": {
-            "tool": "msspeculator-cli library",
-            "version": env!("CARGO_PKG_VERSION"),
-            "commit": env!("MSSPECULATOR_GIT_COMMIT"),
+        inputs: Inputs {
+            model: opts.model.spec(),
+            model_blake2b_256: model_digest.to_string(),
+            fasta: opts.fasta.display().to_string(),
+            fasta_blake2b_256: file_digest(opts.fasta)?,
         },
-        "inputs": {
-            // The spec as asked for, which for a bundled model is a name rather than a path. A
-            // temp path is not an identity; the digest is, and it is computed from the bytes that
-            // were actually loaded either way.
-            "model": opts.model.spec(),
-            "model_blake2b_256": model_digest,
-            "fasta": opts.fasta,
-            "fasta_blake2b_256": file_digest(opts.fasta)?,
+        digestion: Digestion {
+            enzyme: "trypsin",
+            missed_cleavages: opts.missed_cleavages,
+            min_length: opts.min_length,
+            max_length: opts.max_length,
+            min_charge: opts.min_charge,
+            max_charge: opts.max_charge,
         },
-        "digestion": {
-            "enzyme": "trypsin",
-            "missed_cleavages": opts.missed_cleavages,
-            "min_length": opts.min_length,
-            "max_length": opts.max_length,
-            "min_charge": opts.min_charge,
-            "max_charge": opts.max_charge,
+        modifications: Modifications {
+            fixed: opts.fixed_mods.to_vec(),
+            variable: opts.variable_mods.to_vec(),
+            max_variable_mods: opts.max_variable_mods,
         },
-        "modifications": {
-            "fixed": opts.fixed_mods,
-            "variable": opts.variable_mods,
-            "max_variable_mods": opts.max_variable_mods,
-        },
-        "context": {
-            "ms": ms_context,
-            "chrom": opts.chrom_context,
-        },
-        "retention": {
-            "normalized": normalized_retention,
-            "raw": raw_retention,
-        },
-        "fragments": {
-            "min_intensity": opts.min_intensity,
-            "max_fragments": opts.max_fragments,
-        },
-        "decoys": {
-            "enabled": opts.generate_decoys,
-            "method": "pseudo-reverse",
-            "protein_prefix": "DECOY_",
-            "collision_policy": "skip_if_stripped_sequence_is_a_target_or_duplicate",
-        },
-        // Absent when the caller supplied its own sink: there is no path, no suffix-chosen
-        // format, and no compression to report, and inventing values for them would put claims
-        // in the provenance that nothing produced.
-        "output": match output {
-            Some(output) => serde_json::json!({
-                "path": output.path,
-                "format": output.format.name(),
-                "compressed": output.compressed,
+        context: Contexts {
+            ms: opts.ms_context.map(|context| match context {
+                msspeculator_core::MsContext::Named(name) => MsContextProvenance::Named {
+                    setup: name.clone(),
+                },
+                msspeculator_core::MsContext::Factors {
+                    instrument,
+                    detector,
+                    fragmentation,
+                    energy,
+                } => MsContextProvenance::Factors {
+                    instrument: instrument.clone(),
+                    detector: detector.clone(),
+                    fragmentation: fragmentation.clone(),
+                    energy: *energy,
+                },
             }),
-            None => serde_json::Value::Null,
+            chrom: opts.chrom_context.map(str::to_string),
         },
-    })))
+        retention: Retention {
+            normalized: NormalizedRetention {
+                term: "MS:1000896|normalized retention time",
+                kind: "dimensionless index, minutes-like",
+                scale: msspeculator_core::landmarks::SCALE_DESCRIPTION,
+                anchor_check: AnchorCheck {
+                    on_scale: anchors.on_scale(),
+                    max_abs_error: anchors.max_abs_error,
+                    anchors: anchors
+                        .anchors
+                        .iter()
+                        .map(|(peptide, expected, predicted)| Anchor {
+                            peptide: peptide.to_string(),
+                            expected: *expected,
+                            predicted: *predicted,
+                        })
+                        .collect(),
+                },
+            },
+            raw: opts.chrom_context.map(|name| RawRetention {
+                term: "MS:1000894|retention time",
+                unit: "minute",
+                chrom_context: name.to_string(),
+            }),
+        },
+        fragments: FragmentPolicy {
+            min_intensity: opts.min_intensity,
+            max_fragments: opts.max_fragments,
+        },
+        decoys: DecoyPolicy {
+            enabled: opts.generate_decoys,
+            method: "pseudo-reverse",
+            protein_prefix: "DECOY_",
+            collision_policy: "skip_if_stripped_sequence_is_a_target_or_duplicate",
+        },
+        output: output.map(|output| Output {
+            path: output.path.display().to_string(),
+            format: output.format.name(),
+            compressed: output.compressed,
+            proteins: None,
+            peptides: None,
+            precursors: None,
+            fragments: None,
+        }),
+    })
 }
 
 /// Write the resolved configuration, plus the counts that came out, beside the library.
-fn write_config(path: &str, provenance: &LibraryProvenance, stats: &LibraryStats) -> Result<()> {
-    let mut config = provenance.as_json().clone();
-    let output = config["output"]
-        .as_object_mut()
-        .expect("resolve_config writes an object under `output`");
-    output.insert("proteins".into(), stats.proteins.into());
-    output.insert("peptides".into(), stats.peptides.into());
-    output.insert("precursors".into(), stats.precursors.into());
-    output.insert("fragments".into(), stats.fragments.into());
-    std::fs::write(path, serde_json::to_string_pretty(&config)? + "\n")
-        .with_context(|| format!("writing {path}"))
+fn write_config(path: &Path, provenance: &LibraryProvenance, stats: &LibraryStats) -> Result<()> {
+    // The counts are only known once the last spectrum is written, so they are filled in here
+    // rather than left as a second document a reader has to join against the first.
+    let mut provenance = provenance.clone();
+    if let Some(output) = provenance.output.as_mut() {
+        output.proteins = Some(stats.proteins);
+        output.peptides = Some(stats.peptides);
+        output.precursors = Some(stats.precursors);
+        output.fragments = Some(stats.fragments);
+    }
+    std::fs::write(
+        path,
+        serde_json::to_string_pretty(&provenance.to_json())? + "\n",
+    )
+    .with_context(|| format!("writing {}", path.display()))
 }
 
 #[cfg(test)]
@@ -1145,8 +1252,8 @@ mod tests {
             Self(path)
         }
 
-        fn str(&self) -> &str {
-            self.0.to_str().expect("scratch path is utf-8")
+        fn path(&self) -> &std::path::Path {
+            &self.0
         }
     }
 
@@ -1169,7 +1276,7 @@ mod tests {
 
     impl LibrarySink for CollectingSink {
         fn header(&mut self, provenance: &LibraryProvenance) -> Result<()> {
-            self.config_seen.send(provenance.as_json().clone()).unwrap();
+            self.config_seen.send(provenance.to_json()).unwrap();
             Ok(())
         }
 
@@ -1192,7 +1299,7 @@ mod tests {
         scratch
     }
 
-    fn stream_options(fasta: &str) -> StreamOptions<'_> {
+    fn stream_options(fasta: &Path) -> StreamOptions<'_> {
         StreamOptions {
             model: ModelSource::Builtin(msspeculator_core::BuiltinModel::SmallV0),
             fasta,
@@ -1222,7 +1329,7 @@ mod tests {
         let (finish_tx, finishes) = mpsc::channel();
 
         let stats = stream_library(
-            &stream_options(fasta.str()),
+            &stream_options(fasta.path()),
             CollectingSink {
                 rows: row_tx,
                 config_seen: config_tx,
@@ -1264,7 +1371,7 @@ mod tests {
         let (finish_tx, _finishes) = mpsc::channel();
 
         let streamed = stream_library(
-            &stream_options(fasta.str()),
+            &stream_options(fasta.path()),
             CollectingSink {
                 rows: row_tx,
                 config_seen: config_tx,
@@ -1273,8 +1380,8 @@ mod tests {
         )
         .unwrap();
         let written = write_library(&LibraryOptions {
-            stream: stream_options(fasta.str()),
-            out: out.str(),
+            stream: stream_options(fasta.path()),
+            out: out.path(),
             config_out: None,
         })
         .unwrap();
@@ -1283,7 +1390,7 @@ mod tests {
         assert_eq!(streamed.fragments, written.fragments);
         assert_eq!(streamed.peptides, written.peptides);
         // And the file path really did produce a DIA-NN table, not an empty file.
-        let text = std::fs::read_to_string(out.str()).unwrap();
+        let text = std::fs::read_to_string(out.path()).unwrap();
         assert!(text.starts_with("ModifiedPeptide\t"), "{text:.80}");
         assert_eq!(text.lines().count(), 1 + written.fragments);
         assert_eq!(rows.iter().count(), streamed.precursors);
@@ -1360,14 +1467,14 @@ mod tests {
     fn output_suffix_picks_the_format_through_compression() {
         for path in ["lib.mzspeclib.txt", "lib.mzspeclib.txt.gz", "lib.mzspeclib"] {
             assert_eq!(
-                LibraryFormat::for_output(path),
+                LibraryFormat::for_output(Path::new(path)),
                 LibraryFormat::MzSpecLib,
                 "{path}"
             );
         }
         for path in ["lib.tsv", "lib.tsv.gz", "lib", "mzspeclib.tsv"] {
             assert_eq!(
-                LibraryFormat::for_output(path),
+                LibraryFormat::for_output(Path::new(path)),
                 LibraryFormat::DiannTsv,
                 "{path}"
             );

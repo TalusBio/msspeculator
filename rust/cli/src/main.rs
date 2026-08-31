@@ -1,6 +1,6 @@
 //! msspeculator Rust inference CLI: FASTA libraries, peptide prediction, and model diagnostics.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use anyhow::Result;
@@ -432,11 +432,11 @@ fn run_library(args: LibraryArgs) -> Result<()> {
         None => Some(format!("{}.config.json", args.out)),
     };
     let stats = library::write_library(&library::LibraryOptions {
-        out: &args.out,
-        config_out: config_out.as_deref(),
+        out: Path::new(&args.out),
+        config_out: config_out.as_deref().map(Path::new),
         stream: library::StreamOptions {
             model: parse_model_source(&args.artifact.model)?,
-            fasta: &args.fasta,
+            fasta: Path::new(&args.fasta),
             activation: args.artifact.activation.as_deref(),
             ms_context: ms_context.as_ref(),
             chrom_context: args.context.chrom_context.as_deref(),
