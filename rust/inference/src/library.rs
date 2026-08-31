@@ -18,11 +18,14 @@ const CCS_IM_COEF: f64 = 1059.62245;
 const IM_GAS_MASS: f64 = 28.0;
 const INFERENCE_BATCH_SIZE: usize = 64;
 
-pub struct LibraryOptions<'a> {
+/// Everything that decides what the library *contains*, with nothing about where it goes.
+///
+/// Split from [`LibraryOptions`] so a caller with its own [`LibrarySink`] can generate a library
+/// without inventing an output path to satisfy fields it will never use. See [`stream_library`].
+pub struct StreamOptions<'a> {
     /// Built-in or file-backed model. The CLI converts its string option before calling this API.
     pub model: ModelSource,
     pub fasta: &'a str,
-    pub out: &'a str,
     pub activation: Option<&'a str>,
     pub ms_context: Option<&'a MsContext>,
     pub chrom_context: Option<&'a str>,
@@ -38,11 +41,38 @@ pub struct LibraryOptions<'a> {
     /// Emit at most this many of the strongest fragments per precursor, or all of them when
     /// `None`. Applied after `min_intensity`, so both bound the transition list independently.
     pub max_fragments: Option<usize>,
-    /// Where to write the resolved-configuration sidecar, or `None` to skip it.
-    pub config_out: Option<&'a str>,
     /// Add pseudo-reversed peptide decoys. Decoys whose stripped sequence is already a target are
     /// skipped, as are duplicate decoy sequences.
     pub generate_decoys: bool,
+}
+
+/// Generating a library and writing it to a file.
+///
+/// The file is what makes the extra fields meaningful: the path picks the format and the
+/// compression, and names the sidecar's subject. A caller supplying its own sink has none of
+/// those questions to answer and wants [`StreamOptions`] instead.
+pub struct LibraryOptions<'a> {
+    pub stream: StreamOptions<'a>,
+    pub out: &'a str,
+    /// Where to write the resolved-configuration sidecar, or `None` to skip it.
+    pub config_out: Option<&'a str>,
+}
+
+/// The file half of a run, resolved once so the format is decided in exactly one place.
+struct ResolvedOutput<'a> {
+    path: &'a str,
+    format: LibraryFormat,
+    compressed: bool,
+}
+
+impl<'a> ResolvedOutput<'a> {
+    fn new(path: &'a str) -> Self {
+        Self {
+            path,
+            format: LibraryFormat::for_output(path),
+            compressed: path.ends_with(".gz"),
+        }
+    }
 }
 
 /// Apply a runtime activation override used for controlled inference benchmarks.
@@ -129,11 +159,58 @@ pub struct SpectrumRow<'a> {
     pub peaks: Vec<Peak<'a>>,
 }
 
+/// Everything that determined a library's contents: what generated it, from what, with which
+/// knobs as resolved rather than as typed.
+///
+/// Roughly:
+///
+/// ```json
+/// {"generator": {"tool": "...", "version": "...", "commit": "..."},
+///  "inputs":    {"model": "...", "model_blake2b_256": "...",
+///                "fasta": "...", "fasta_blake2b_256": "..."},
+///  "digestion": {"enzyme": "...", "missed_cleavages": 0, "min_length": 7, ...},
+///  "modifications": {"fixed": [], "variable": [], "max_variable_mods": 1},
+///  "context":   {"ms": null, "chrom": null},
+///  "retention": {"normalized": {"term": "MS:1000896|...", "anchor_check": {...}}, "raw": null},
+///  "fragments": {"min_intensity": 0.01, "max_fragments": null},
+///  "decoys":    {"enabled": false, "method": "pseudo-reverse", ...},
+///  "output":    {"path": "...", "format": "...", "compressed": false}}
+/// ```
+///
+/// `output` is null when a caller supplied its own sink, since there is then no path, no
+/// suffix-chosen format, and no compression to report.
+///
+/// Held as JSON rather than a struct because [`crate::mzspeclib`] walks it generically, turning
+/// every leaf into an `msspeculator:<dotted.key>` attribute. That is what lets a new key reach a
+/// published library without a format-version bump, and a typed mirror of this shape would have
+/// to be updated in lockstep to keep the same property. Reach for [`Self::as_json`].
+#[derive(Clone, Debug)]
+pub struct LibraryProvenance(serde_json::Value);
+
+impl LibraryProvenance {
+    /// The underlying JSON, for a sink that carries provenance verbatim or stores it whole.
+    pub fn as_json(&self) -> &serde_json::Value {
+        &self.0
+    }
+}
+
+/// Assemble one directly. A real run gets its provenance from the generator; this is for a sink
+/// author testing what their `header` does with one.
+impl From<serde_json::Value> for LibraryProvenance {
+    fn from(value: serde_json::Value) -> Self {
+        Self(value)
+    }
+}
+
 /// A library serialization: one header, then one entry per precursor, in prediction order.
-pub trait LibrarySink {
-    /// `config` is the resolved configuration from [`resolve_config`], for formats that can carry
-    /// their own provenance. A format with nowhere to put it ignores the argument.
-    fn header(&mut self, config: &serde_json::Value) -> Result<()>;
+///
+/// `Send` because prediction and serialization run on separate threads: workers predict while the
+/// sink writes, so the sink is moved into the writer thread. A sink that cannot cross that move
+/// would serialize the two halves of the job against each other.
+pub trait LibrarySink: Send {
+    /// Called once, before any spectrum, with what produced this library. A format that has
+    /// nowhere to record provenance ignores the argument; one that does can embed it whole.
+    fn header(&mut self, provenance: &LibraryProvenance) -> Result<()>;
     fn spectrum(&mut self, row: &SpectrumRow<'_>) -> Result<()>;
     /// Flush the stream. Called once, after the last spectrum: a buffered library that is never
     /// flushed is a truncated library.
@@ -144,8 +221,8 @@ struct DiannSink<W: Write> {
     writer: W,
 }
 
-impl<W: Write> LibrarySink for DiannSink<W> {
-    fn header(&mut self, _config: &serde_json::Value) -> Result<()> {
+impl<W: Write + Send> LibrarySink for DiannSink<W> {
+    fn header(&mut self, _provenance: &LibraryProvenance) -> Result<()> {
         writeln!(self.writer, "ModifiedPeptide\tStrippedPeptide\tPrecursorMz\tPrecursorCharge\tTr_recalibrated\tIonMobility\tProteinID\tDecoy\tFragmentMz\tFragmentType\tFragmentNumber\tFragmentCharge\tFragmentLossType\tRelativeIntensity")?;
         Ok(())
     }
@@ -640,7 +717,58 @@ fn queue_pending(
     Ok(())
 }
 
+/// Generate a library and hand every spectrum to `sink`, writing no file.
+///
+/// The counterpart to [`write_library`] for a caller that has somewhere better to put the rows
+/// than a file it would immediately parse back. The sink sees the same [`SpectrumRow`] values the
+/// bundled DIA-NN and mzSpecLib writers see, already validated and capped, and its `header`
+/// receives the resolved configuration, so a caller keeps the provenance without the sidecar.
+pub fn stream_library(
+    opts: &StreamOptions<'_>,
+    sink: impl LibrarySink + 'static,
+) -> Result<LibraryStats> {
+    run_library(opts, None, Box::new(sink)).map(|(stats, _)| stats)
+}
+
+/// Generate a library and write it to `opts.out`, picking the format from the path.
 pub fn write_library(opts: &LibraryOptions<'_>) -> Result<LibraryStats> {
+    let output = ResolvedOutput::new(opts.out);
+    let file =
+        File::create(output.path).with_context(|| format!("creating library {}", output.path))?;
+    // A `.gz` suffix compresses in the writer thread rather than in a second pass, so the
+    // uncompressed library never exists on disk; which is the whole point when a shard is
+    // gigabytes and the scratch volume is not.
+    let stream: Box<dyn Write + Send> = if output.compressed {
+        Box::new(flate2::write::GzEncoder::new(
+            file,
+            flate2::Compression::default(),
+        ))
+    } else {
+        Box::new(file)
+    };
+    let writer = BufWriter::new(stream);
+    let sink: Box<dyn LibrarySink> = match output.format {
+        LibraryFormat::DiannTsv => Box::new(DiannSink { writer }),
+        LibraryFormat::MzSpecLib => {
+            Box::new(crate::mzspeclib::MzSpecLibSink::new(writer, output.path))
+        }
+    };
+    let (stats, config) = run_library(&opts.stream, Some(&output), sink)?;
+    if let Some(path) = opts.config_out {
+        write_config(path, &config, &stats)?;
+    }
+    Ok(stats)
+}
+
+/// The whole job, with the output half optional.
+///
+/// Returns the resolved configuration alongside the counts because the sidecar needs both, and
+/// resolving it twice would let the copy inside the library disagree with the copy beside it.
+fn run_library(
+    opts: &StreamOptions<'_>,
+    output: Option<&ResolvedOutput<'_>>,
+    sink: Box<dyn LibrarySink>,
+) -> Result<(LibraryStats, LibraryProvenance)> {
     if !(0.0..=1.0).contains(&opts.min_intensity) {
         bail!(
             "min_intensity must be in [0, 1], got {}",
@@ -724,35 +852,13 @@ pub fn write_library(opts: &LibraryOptions<'_>) -> Result<LibraryStats> {
     // Copied out of `opts` before the threads start: the writer closure is `move`, so borrowing
     // `opts` there would outlive it.
     let max_fragments = opts.max_fragments;
-    let format = LibraryFormat::for_output(opts.out);
-    let out_path = opts.out.to_string();
     // Resolved before the first spectrum because an mzSpecLib header carries it, and a header is
     // the first thing on the stream. The sidecar reuses the same value, so the copy bundled in
     // the library and the copy beside it are the same copy.
-    let config = resolve_config(opts, format, &artifact, &model.digest)?;
+    let config = resolve_config(opts, output, &artifact, &model.digest)?;
     let header_config = config.clone();
-    let writer_file =
-        File::create(opts.out).with_context(|| format!("creating library {}", opts.out))?;
-    // A `.gz` suffix compresses in the writer thread rather than in a second pass, so the
-    // uncompressed library never exists on disk; which is the whole point when a shard is
-    // gigabytes and the scratch volume is not.
-    let compress = opts.out.ends_with(".gz");
     let writer_handle = thread::spawn(move || -> Result<LibraryStats> {
-        let stream: Box<dyn Write> = if compress {
-            Box::new(flate2::write::GzEncoder::new(
-                writer_file,
-                flate2::Compression::default(),
-            ))
-        } else {
-            Box::new(writer_file)
-        };
-        let writer = BufWriter::new(stream);
-        let mut sink: Box<dyn LibrarySink> = match format {
-            LibraryFormat::DiannTsv => Box::new(DiannSink { writer }),
-            LibraryFormat::MzSpecLib => {
-                Box::new(crate::mzspeclib::MzSpecLibSink::new(writer, &out_path))
-            }
-        };
+        let mut sink = sink;
         sink.header(&header_config)?;
         let mut stats = stats;
         for result in result_rx {
@@ -856,10 +962,7 @@ pub fn write_library(opts: &LibraryOptions<'_>) -> Result<LibraryStats> {
     let stats = writer_handle
         .join()
         .map_err(|_| anyhow::anyhow!("library writer panicked"))??;
-    if let Some(path) = opts.config_out {
-        write_config(path, &config, &stats)?;
-    }
-    Ok(stats)
+    Ok((stats, config))
 }
 
 /// blake2b-256 of a file's bytes, hex, streamed so a multi-GB input is not held in memory.
@@ -891,11 +994,11 @@ fn file_digest(path: &str) -> Result<String> {
 /// nobody can regenerate or trust, which is why this value is both embedded (mzSpecLib) and
 /// written beside the library (sidecar) rather than reassembled per format.
 fn resolve_config(
-    opts: &LibraryOptions<'_>,
-    format: LibraryFormat,
+    opts: &StreamOptions<'_>,
+    output: Option<&ResolvedOutput<'_>>,
     artifact: &Artifact,
     model_digest: &str,
-) -> Result<serde_json::Value> {
+) -> Result<LibraryProvenance> {
     let ms_context = match opts.ms_context {
         Some(msspeculator_core::MsContext::Named(name)) => serde_json::json!({"setup": name}),
         Some(msspeculator_core::MsContext::Factors {
@@ -947,7 +1050,7 @@ fn resolve_config(
         }),
         None => serde_json::Value::Null,
     };
-    Ok(serde_json::json!({
+    Ok(LibraryProvenance(serde_json::json!({
         "generator": {
             "tool": "msspeculator-cli library",
             "version": env!("CARGO_PKG_VERSION"),
@@ -993,17 +1096,23 @@ fn resolve_config(
             "protein_prefix": "DECOY_",
             "collision_policy": "skip_if_stripped_sequence_is_a_target_or_duplicate",
         },
-        "output": {
-            "path": opts.out,
-            "format": format.name(),
-            "compressed": opts.out.ends_with(".gz"),
+        // Absent when the caller supplied its own sink: there is no path, no suffix-chosen
+        // format, and no compression to report, and inventing values for them would put claims
+        // in the provenance that nothing produced.
+        "output": match output {
+            Some(output) => serde_json::json!({
+                "path": output.path,
+                "format": output.format.name(),
+                "compressed": output.compressed,
+            }),
+            None => serde_json::Value::Null,
         },
-    }))
+    })))
 }
 
 /// Write the resolved configuration, plus the counts that came out, beside the library.
-fn write_config(path: &str, config: &serde_json::Value, stats: &LibraryStats) -> Result<()> {
-    let mut config = config.clone();
+fn write_config(path: &str, provenance: &LibraryProvenance, stats: &LibraryStats) -> Result<()> {
+    let mut config = provenance.as_json().clone();
     let output = config["output"]
         .as_object_mut()
         .expect("resolve_config writes an object under `output`");
@@ -1018,6 +1127,167 @@ fn write_config(path: &str, config: &serde_json::Value, stats: &LibraryStats) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::mpsc::Sender;
+
+    /// A scratch path that removes itself, so the tests need no dev-dependency for it.
+    struct Scratch(std::path::PathBuf);
+
+    impl Scratch {
+        fn new(name: &str) -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "msspeculator-{}-{}-{name}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            Self(path)
+        }
+
+        fn str(&self) -> &str {
+            self.0.to_str().expect("scratch path is utf-8")
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    /// What an embedding caller looks like: keeps the rows, writes nothing.
+    ///
+    /// Rows borrow from the prediction they came out of, so anything retained past `spectrum`
+    /// has to be copied. Sending across a channel is the shape a consumer wanting to index
+    /// spectra as they arrive would use, and it exercises the `Send` bound.
+    struct CollectingSink {
+        rows: Sender<(String, i64, usize)>,
+        config_seen: Sender<serde_json::Value>,
+        finished: Sender<()>,
+    }
+
+    impl LibrarySink for CollectingSink {
+        fn header(&mut self, provenance: &LibraryProvenance) -> Result<()> {
+            self.config_seen.send(provenance.as_json().clone()).unwrap();
+            Ok(())
+        }
+
+        fn spectrum(&mut self, row: &SpectrumRow<'_>) -> Result<()> {
+            self.rows
+                .send((row.proforma.to_string(), row.charge, row.peaks.len()))
+                .unwrap();
+            Ok(())
+        }
+
+        fn finish(&mut self) -> Result<()> {
+            self.finished.send(()).unwrap();
+            Ok(())
+        }
+    }
+
+    fn tiny_fasta() -> Scratch {
+        let scratch = Scratch::new("tiny.fasta");
+        std::fs::write(&scratch.0, ">protein_one description\nPEPTIDEMR\n").unwrap();
+        scratch
+    }
+
+    fn stream_options(fasta: &str) -> StreamOptions<'_> {
+        StreamOptions {
+            model: ModelSource::Builtin(msspeculator_core::BuiltinModel::SmallV0),
+            fasta,
+            activation: None,
+            ms_context: None,
+            chrom_context: None,
+            min_intensity: 0.01,
+            missed_cleavages: 0,
+            min_length: 9,
+            max_length: 9,
+            min_charge: 2,
+            max_charge: 2,
+            fixed_mods: &[],
+            variable_mods: &[],
+            max_variable_mods: 0,
+            max_fragments: None,
+            generate_decoys: false,
+        }
+    }
+
+    /// The point of the split: a library reaches a caller's own sink with no file anywhere.
+    #[test]
+    fn stream_library_hands_rows_to_a_caller_supplied_sink() {
+        let fasta = tiny_fasta();
+        let (row_tx, rows) = mpsc::channel();
+        let (config_tx, configs) = mpsc::channel();
+        let (finish_tx, finishes) = mpsc::channel();
+
+        let stats = stream_library(
+            &stream_options(fasta.str()),
+            CollectingSink {
+                rows: row_tx,
+                config_seen: config_tx,
+                finished: finish_tx,
+            },
+        )
+        .unwrap();
+
+        let collected: Vec<_> = rows.iter().collect();
+        assert_eq!(collected.len(), stats.precursors);
+        assert_eq!(collected[0].0, "PEPTIDEMR");
+        assert_eq!(collected[0].1, 2);
+        assert!(collected[0].2 > 0, "a spectrum with no peaks");
+        assert_eq!(
+            stats.fragments,
+            collected.iter().map(|row| row.2).sum::<usize>()
+        );
+        // The sink is told the stream ended, or a buffering consumer never commits its last batch.
+        assert_eq!(finishes.iter().count(), 1);
+
+        // Provenance still reaches the caller even with no sidecar to write it to, and the
+        // output block is absent rather than describing a file that was never created.
+        let config = configs.recv().unwrap();
+        assert_eq!(config["output"], serde_json::Value::Null);
+        assert_eq!(config["inputs"]["model"], "builtin:small-v0");
+        assert!(
+            config["inputs"]["fasta_blake2b_256"].is_string(),
+            "{config}"
+        );
+    }
+
+    /// The two entry points must not drift into producing different libraries.
+    #[test]
+    fn streaming_and_writing_agree_on_the_rows() {
+        let fasta = tiny_fasta();
+        let out = Scratch::new("library.tsv");
+        let (row_tx, rows) = mpsc::channel();
+        let (config_tx, _configs) = mpsc::channel();
+        let (finish_tx, _finishes) = mpsc::channel();
+
+        let streamed = stream_library(
+            &stream_options(fasta.str()),
+            CollectingSink {
+                rows: row_tx,
+                config_seen: config_tx,
+                finished: finish_tx,
+            },
+        )
+        .unwrap();
+        let written = write_library(&LibraryOptions {
+            stream: stream_options(fasta.str()),
+            out: out.str(),
+            config_out: None,
+        })
+        .unwrap();
+
+        assert_eq!(streamed.precursors, written.precursors);
+        assert_eq!(streamed.fragments, written.fragments);
+        assert_eq!(streamed.peptides, written.peptides);
+        // And the file path really did produce a DIA-NN table, not an empty file.
+        let text = std::fs::read_to_string(out.str()).unwrap();
+        assert!(text.starts_with("ModifiedPeptide\t"), "{text:.80}");
+        assert_eq!(text.lines().count(), 1 + written.fragments);
+        assert_eq!(rows.iter().count(), streamed.precursors);
+    }
 
     #[test]
     fn tryptic_digest_honors_proline_and_missed_cleavages() {

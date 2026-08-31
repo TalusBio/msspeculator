@@ -17,7 +17,7 @@ use std::path::Path;
 use anyhow::Result;
 use serde_json::Value;
 
-use crate::library::{LibrarySink, SpectrumRow};
+use crate::library::{LibraryProvenance, LibrarySink, SpectrumRow};
 
 /// The format version of the grammar emitted here, not of our library.
 const FORMAT_VERSION: &str = "1.0";
@@ -100,8 +100,9 @@ fn annotation(ion: &str, ordinal: i64, charge: i64) -> String {
     }
 }
 
-impl<W: Write> LibrarySink for MzSpecLibSink<W> {
-    fn header(&mut self, config: &Value) -> Result<()> {
+impl<W: Write + Send> LibrarySink for MzSpecLibSink<W> {
+    fn header(&mut self, provenance: &LibraryProvenance) -> Result<()> {
+        let config = provenance.as_json();
         writeln!(self.writer, "<mzSpecLib>")?;
         writeln!(
             self.writer,
@@ -337,12 +338,15 @@ mod tests {
     /// `irt` present means a chromatography context was applied, so `rt` is a gradient time.
     fn rendered(irt: Option<f32>) -> String {
         let mut sink = MzSpecLibSink::new(Vec::new(), "out/lib.mzspeclib.txt.gz");
-        sink.header(&serde_json::json!({
-            "generator": {"version": "0.1.0", "commit": "abc123"},
-            "inputs": {"model": "m.safetensors", "fasta": null},
-            "fragments": {"max_fragments": 15},
-            "modifications": {"variable": ["M[UNIMOD:35]"]},
-        }))
+        sink.header(
+            &serde_json::json!({
+                "generator": {"version": "0.1.0", "commit": "abc123"},
+                "inputs": {"model": "m.safetensors", "fasta": null},
+                "fragments": {"max_fragments": 15},
+                "modifications": {"variable": ["M[UNIMOD:35]"]},
+            })
+            .into(),
+        )
         .unwrap();
         sink.spectrum(&row_with_irt(irt)).unwrap();
         String::from_utf8(sink.writer).unwrap()
@@ -433,7 +437,7 @@ mod tests {
     #[test]
     fn decoy_spectra_claim_the_decoy_attribute_set() {
         let mut sink = MzSpecLibSink::new(Vec::new(), "out/lib.mzspeclib.txt");
-        sink.header(&serde_json::json!({"generator": {"version": "0.1.0"}}))
+        sink.header(&serde_json::json!({"generator": {"version": "0.1.0"}}).into())
             .unwrap();
         let mut row = row();
         row.decoy = true;
@@ -454,7 +458,7 @@ mod tests {
         decoy.decoy = true;
         decoy.decoy_pair_id = Some(7);
         let mut sink = MzSpecLibSink::new(Vec::new(), "out/lib.mzspeclib.txt");
-        sink.header(&serde_json::json!({})).unwrap();
+        sink.header(&serde_json::json!({}).into()).unwrap();
         sink.spectrum(&target).unwrap();
         sink.spectrum(&decoy).unwrap();
         let text = String::from_utf8(sink.writer).unwrap();
