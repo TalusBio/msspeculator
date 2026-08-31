@@ -8,7 +8,6 @@
 
 use std::collections::HashMap;
 use std::fs::File;
-use std::hash::{Hash, Hasher};
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::sync::Arc;
@@ -37,18 +36,6 @@ pub(crate) const DECOY_PREFIX: &str = "DECOY_";
 pub struct FastaId<'a> {
     prefix: &'static str,
     id: &'a str,
-}
-
-impl FastaId<'_> {
-    /// Whether this is the decoy spelling of the protein.
-    pub fn is_decoy(&self) -> bool {
-        !self.prefix.is_empty()
-    }
-
-    /// The identifier as the FASTA spelled it, without the decoy prefix.
-    pub fn as_written(&self) -> &str {
-        self.id
-    }
 }
 
 impl std::fmt::Display for FastaId<'_> {
@@ -104,11 +91,6 @@ impl<'a> Residues<'a> {
         self.source.is_empty()
     }
 
-    /// Whether these residues are the reversed reading rather than the peptide as digested.
-    pub fn is_reversed(&self) -> bool {
-        self.reversed
-    }
-
     pub fn iter(self) -> impl ExactSizeIterator<Item = u8> + 'a {
         let bytes = self.source.as_bytes();
         let length = bytes.len();
@@ -145,9 +127,10 @@ impl std::fmt::Display for Residues<'_> {
 /// A list rather than a joined string. DIA-NN's `;` separator is a property of that one format,
 /// so only its writer should have to know about it; a group that arrives pre-joined has to be
 /// split apart again by everything else, on a delimiter a FASTA identifier is free to contain.
-/// One representation, not two. A group is always a table of identifiers plus the indices of this
-/// peptide's members, which is what the digest holds; a caller assembling a row by hand builds the
-/// same shape rather than a parallel one, so there is no arrangement that only the tests execute.
+///
+/// One representation: a table of identifiers plus this peptide's indices into it, which is what
+/// the digest holds. A caller assembling a row by hand builds the same shape rather than a
+/// parallel one, so no arrangement is executed only by tests.
 #[derive(Clone, Copy)]
 pub struct ProteinGroup<'a> {
     identifiers: &'a [String],
@@ -170,15 +153,7 @@ impl<'a> ProteinGroup<'a> {
         }
     }
 
-    pub fn len(&self) -> usize {
-        self.members.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.members.is_empty()
-    }
-
-    /// The proteins, in the order the FASTA listed them.
+    /// The proteins, ordered by identifier.
     ///
     /// Takes `self` rather than `&self`, which `Copy` makes free, so the iterator outlives the
     /// group it came from and a caller can hand it straight to a `for` or a `join`.
@@ -204,12 +179,8 @@ struct Span {
 struct Proteome {
     /// All residues concatenated, uppercased, with no separators between proteins.
     residues: String,
-    /// Accession per protein, in the order the FASTA listed them.
+    /// One entry per distinct identifier, in the order the FASTA first listed it.
     accessions: Vec<String>,
-    /// Where each protein's residues are. Deliberately not a prefix sum: two accessions with
-    /// byte-identical sequences share one span, so a database concatenated with a contaminant
-    /// panel, or one carrying a protein under two names, stores those residues once.
-    spans: Vec<Span>,
 }
 
 impl Proteome {
@@ -239,6 +210,8 @@ pub(crate) struct DigestRules {
 /// atomic increment rather than a copy of the peptide and its protein names.
 pub(crate) struct Digest {
     proteome: Proteome,
+    /// FASTA records read, which a repeated identifier makes larger than the identifier table.
+    records: usize,
     /// One entry per distinct peptide sequence, ordered by residues. The order is what makes a
     /// rerun assign the same decoy pair ids to the same peptides.
     peptides: Vec<DigestedPeptide>,
@@ -254,7 +227,7 @@ impl Digest {
     /// record's residues go straight into the blob, and the peptides it yields are recorded as
     /// spans before the next record is read. Grouping the spans by sequence happens once at the
     /// end, on a table that holds no strings at all.
-    pub(crate) fn read(path: &Path, rules: &DigestRules, reporter: Reporter<'_>) -> Result<Self> {
+    pub(crate) fn read(path: &Path, rules: &DigestRules, reporter: &Reporter<'_>) -> Result<Self> {
         let file = File::open(path).with_context(|| format!("opening FASTA {}", path.display()))?;
         // The progress denominator, read once. A file whose length will not come back still
         // digests; it reports against zero, which `Progress::fraction` answers as 0.0.
@@ -314,7 +287,7 @@ impl Digest {
     }
 
     pub(crate) fn proteins(&self) -> usize {
-        self.proteome.accessions.len()
+        self.records
     }
 
     pub(crate) fn peptides(&self) -> usize {
@@ -388,9 +361,13 @@ struct Builder<'a> {
     /// Every tryptic peptide the digest found, with the protein it came from, before grouping.
     /// Duplicates are expected: grouping them is what discovers a shared peptide.
     found: Vec<(Span, u32)>,
-    /// Sequence hash to the proteins already holding those residues, so an exactly repeated
-    /// protein sequence is stored once. Holds hashes and indices, never a copy of a sequence.
-    by_sequence: HashMap<u64, Vec<u32>>,
+    /// Identifier to its index, so one identifier is one entry in the table however many records
+    /// carry it. Without this a FASTA listing a protein twice under one name puts that name in a
+    /// group twice, and a search engine counting protein evidence double-counts it.
+    by_identifier: HashMap<String, u32>,
+    /// Records read, which is not `accessions.len()` once a FASTA repeats an identifier. Reported
+    /// as the protein count because it is what the file contained.
+    records: usize,
 }
 
 impl<'a> Builder<'a> {
@@ -400,62 +377,56 @@ impl<'a> Builder<'a> {
             proteome: Proteome {
                 residues: String::new(),
                 accessions: Vec::new(),
-                spans: Vec::new(),
             },
             found: Vec::new(),
-            by_sequence: HashMap::new(),
+            by_identifier: HashMap::new(),
+            records: 0,
         }
     }
 
     fn protein(&mut self, accession: String, sequence: &str) -> Result<()> {
-        let span = self.intern(sequence)?;
-        let protein = u32::try_from(self.proteome.accessions.len())
-            .map_err(|_| anyhow::anyhow!("FASTA holds more than {} proteins", u32::MAX))?;
-        self.proteome.accessions.push(accession);
-        self.proteome.spans.push(span);
-        for peptide in tryptic_spans(self.proteome.slice(span), span.start, self.rules) {
+        let start = u32::try_from(self.proteome.residues.len()).map_err(|_| too_many_residues())?;
+        self.proteome.residues.push_str(sequence);
+        let end = u32::try_from(self.proteome.residues.len()).map_err(|_| too_many_residues())?;
+        let protein = self.identifier(accession)?;
+        self.records += 1;
+        for peptide in tryptic_spans(
+            &self.proteome.residues[start as usize..end as usize],
+            start,
+            self.rules,
+        ) {
             self.found.push((peptide, protein));
         }
         Ok(())
     }
 
-    /// Place a protein's residues in the blob, reusing the span of an identical sequence.
-    fn intern(&mut self, sequence: &str) -> Result<Span> {
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        sequence.hash(&mut hasher);
-        let key = hasher.finish();
-        if let Some(candidates) = self.by_sequence.get(&key) {
-            // A hash match is a candidate, not an answer: compare the residues before sharing a
-            // span, or a collision would silently merge two different proteins.
-            for &protein in candidates {
-                let span = self.proteome.spans[protein as usize];
-                if self.proteome.slice(span) == sequence {
-                    return Ok(span);
-                }
-            }
+    /// The table index for one identifier, assigning it on first sight.
+    fn identifier(&mut self, accession: String) -> Result<u32> {
+        if let Some(&protein) = self.by_identifier.get(&accession) {
+            return Ok(protein);
         }
-        let start = u32::try_from(self.proteome.residues.len()).map_err(|_| too_many_residues())?;
-        self.proteome.residues.push_str(sequence);
-        let end = u32::try_from(self.proteome.residues.len()).map_err(|_| too_many_residues())?;
-        self.by_sequence
-            .entry(key)
-            .or_default()
-            .push(self.proteome.accessions.len() as u32);
-        Ok(Span { start, end })
+        let protein =
+            u32::try_from(self.proteome.accessions.len()).map_err(|_| too_many_proteins())?;
+        self.by_identifier.insert(accession.clone(), protein);
+        self.proteome.accessions.push(accession);
+        Ok(protein)
     }
 
     /// Group the found peptides by their residues, which is what discovers that one peptide came
     /// from several proteins.
     fn finish(mut self, path: &Path) -> Result<Digest> {
-        if self.proteome.accessions.is_empty() {
+        if self.records == 0 {
             bail!("FASTA {} contains no records", path.display());
         }
         let proteome = self.proteome;
+        let records = self.records;
+        // Ordered by residues, then by identifier text rather than by table index, so a group
+        // reads alphabetically however the FASTA happened to list its records. The identifier
+        // comparison only runs when two peptides are the same, which is rare.
         self.found.sort_unstable_by(|a, b| {
-            proteome
-                .slice(a.0)
-                .cmp(proteome.slice(b.0))
-                .then(a.1.cmp(&b.1))
+            proteome.slice(a.0).cmp(proteome.slice(b.0)).then_with(|| {
+                proteome.accessions[a.1 as usize].cmp(&proteome.accessions[b.1 as usize])
+            })
         });
 
         let mut peptides = Vec::new();
@@ -467,9 +438,9 @@ impl<'a> Builder<'a> {
                 .is_some_and(|last: &DigestedPeptide| proteome.slice(last.residues) == residues);
             if same_peptide {
                 let last = peptides.last_mut().expect("just checked");
-                // Sorted by protein within a peptide, so a protein listed twice for the same
-                // peptide (a repeated sequence, or a missed cleavage reaching the same span)
-                // lands next to itself.
+                // Identifiers are interned, so one identifier is one index and the sort above
+                // puts every repeat of it next to itself: a protein reached twice for the same
+                // peptide is listed once.
                 if memberships.last() != Some(&protein) {
                     memberships.push(protein);
                     last.proteins.end = memberships.len() as u32;
@@ -488,6 +459,7 @@ impl<'a> Builder<'a> {
         }
         Ok(Digest {
             proteome,
+            records,
             peptides,
             memberships,
         })
@@ -497,6 +469,14 @@ impl<'a> Builder<'a> {
 fn too_many_residues() -> anyhow::Error {
     anyhow::anyhow!(
         "FASTA holds more than {} residues, which is more than this digest can address",
+        u32::MAX
+    )
+}
+
+fn too_many_proteins() -> anyhow::Error {
+    anyhow::anyhow!(
+        "FASTA holds more than {} distinct protein identifiers, which is more than this digest \
+         can address",
         u32::MAX
     )
 }
@@ -538,29 +518,7 @@ fn tryptic_spans(sequence: &str, base: u32, rules: &DigestRules) -> Vec<Span> {
 mod tests {
     use super::*;
 
-    /// A scratch path that removes itself, so the tests need no dev-dependency for it.
-    struct Scratch(std::path::PathBuf);
-
-    impl Scratch {
-        fn new(name: &str, contents: &str) -> Self {
-            // Counted as well as named, because the tests run in parallel and several of them
-            // ask for the same name: without this, one test's `Drop` deletes another's file.
-            static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-            let path = std::env::temp_dir().join(format!(
-                "msspeculator-proteome-{}-{}-{name}",
-                std::process::id(),
-                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-            ));
-            std::fs::write(&path, contents).unwrap();
-            Self(path)
-        }
-    }
-
-    impl Drop for Scratch {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_file(&self.0);
-        }
-    }
+    use crate::scratch::Scratch;
 
     fn rules(missed: usize, min: usize, max: usize) -> DigestRules {
         DigestRules {
@@ -571,14 +529,14 @@ mod tests {
     }
 
     fn digest(contents: &str, rules: DigestRules) -> Arc<Digest> {
-        let scratch = Scratch::new("digest.fasta", contents);
-        Arc::new(Digest::read(&scratch.0, &rules, Reporter::new(None)).unwrap())
+        let scratch = Scratch::holding("digest.fasta", contents);
+        Arc::new(Digest::read(scratch.path(), &rules, &Reporter::new(None)).unwrap())
     }
 
     /// `unwrap_err` would need `Digest: Debug`, and a `Debug` that prints a whole proteome is a
     /// worse failure message than none.
     fn read_err(path: &Path) -> anyhow::Error {
-        match Digest::read(path, &rules(0, 5, 30), Reporter::new(None)) {
+        match Digest::read(path, &rules(0, 5, 30), &Reporter::new(None)) {
             Err(error) => error,
             Ok(digest) => panic!("expected a refusal, got {} peptides", digest.peptides()),
         }
@@ -625,21 +583,35 @@ mod tests {
         assert_eq!(group(&unique, false), ["first"]);
     }
 
-    /// The reason the span table is not a prefix sum: a contaminant panel concatenated onto a
-    /// database repeats whole sequences, and there is no reason to store them twice.
+    /// A self-concatenated database, or one carrying a protein under a name it already used, must
+    /// not put that name in a group twice: a search engine counting protein evidence would count
+    /// it twice too.
     #[test]
-    fn an_identical_sequence_under_two_accessions_is_stored_once() {
+    fn a_repeated_identifier_is_one_member_of_a_group() {
         let digest = digest(
-            ">first d\nPEPTIDEKSAMPLERTAILR\n>second d\nPEPTIDEKSAMPLERTAILR\n",
+            ">dup d\nPEPTIDEKSAMPLERTAILR\n>dup d\nPEPTIDEKSAMPLERTAILR\n>bbb d\nPEPTIDEKQQQQQR\n",
             rules(0, 5, 30),
         );
-        assert_eq!(digest.proteins(), 2);
-        assert_eq!(digest.proteome.residues.len(), 20);
-        assert_eq!(digest.proteome.spans[0], digest.proteome.spans[1]);
-        let peptide = peptides(&digest)
+        // Three records, two distinct identifiers.
+        assert_eq!(digest.proteins(), 3);
+        let shared = peptides(&digest)
             .find(|p| p.residues() == "PEPTIDEK")
             .unwrap();
-        assert_eq!(group(&peptide, false), ["first", "second"]);
+        assert_eq!(group(&shared, false), ["bbb", "dup"]);
+    }
+
+    /// Alphabetical, not FASTA order, so a regenerated library does not diff against an older one
+    /// on every shared peptide just because the records were reordered.
+    #[test]
+    fn a_group_is_ordered_by_identifier_not_by_position() {
+        let digest = digest(
+            ">zzz d\nPEPTIDEKQQQQQR\n>aaa d\nPEPTIDEKWWWWWR\n",
+            rules(0, 5, 30),
+        );
+        let shared = peptides(&digest)
+            .find(|p| p.residues() == "PEPTIDEK")
+            .unwrap();
+        assert_eq!(group(&shared, false), ["aaa", "zzz"]);
     }
 
     #[test]
@@ -671,6 +643,23 @@ mod tests {
         assert!(digest.contains(Residues::pseudo_reversed("PEDITPEK")));
     }
 
+    /// The property `run_library`'s decoy check rests on; see the comment there.
+    #[test]
+    fn pseudo_reverse_is_an_involution() {
+        let reverse = |s: &str| Residues::pseudo_reversed(s).to_string();
+        for sequence in [
+            "PEPTIDEK",
+            "AK",
+            "K",
+            "",
+            "AAK",
+            "PEPTIDERPEPTIDEK",
+            "MCMCMCMR",
+        ] {
+            assert_eq!(reverse(&reverse(sequence)), sequence, "{sequence}");
+        }
+    }
+
     #[test]
     fn reversed_residues_pin_the_termini_and_need_no_string() {
         let read = |residues: Residues<'_>| residues.iter().map(|b| b as char).collect::<String>();
@@ -688,15 +677,15 @@ mod tests {
 
     #[test]
     fn a_fasta_with_no_records_is_refused() {
-        let scratch = Scratch::new("empty.fasta", "\n\n");
-        let error = read_err(&scratch.0);
+        let scratch = Scratch::holding("empty.fasta", "\n\n");
+        let error = read_err(scratch.path());
         assert!(error.to_string().contains("no records"), "{error}");
     }
 
     #[test]
     fn residues_before_a_header_are_refused_with_the_line() {
-        let scratch = Scratch::new("headerless.fasta", "PEPTIDEK\n>p d\nSAMPLER\n");
-        let error = read_err(&scratch.0);
+        let scratch = Scratch::holding("headerless.fasta", "PEPTIDEK\n>p d\nSAMPLER\n");
+        let error = read_err(scratch.path());
         assert!(error.to_string().contains(":1"), "{error}");
     }
 }

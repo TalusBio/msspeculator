@@ -3,6 +3,10 @@
 //! This crate owns FASTA digestion, modification enumeration, bounded producer/worker queues,
 //! and output sinks. The model and peptide math remain in [`msspeculator_core`].
 
+#[cfg(test)]
+mod scratch;
+
+mod diann;
 pub mod library;
 pub mod mzspeclib;
 pub mod progress;

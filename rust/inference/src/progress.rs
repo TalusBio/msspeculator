@@ -5,6 +5,8 @@
 //! came out of it. [`Phase`] is what lets one callback report all of them without a `done` that
 //! means something different from one update to the next.
 
+use std::cell::Cell;
+
 /// Which part of a library build an update describes.
 ///
 /// The phases run in this order and never interleave, so a caller can treat a phase change as
@@ -31,15 +33,26 @@ impl Phase {
         }
     }
 
-    /// What this phase counts, and how well it knows it.
-    fn measure(self) -> (&'static str, Exactness) {
+    /// Plural noun naming what `done` and `total` count, or empty for a phase that measures
+    /// nothing.
+    pub fn unit(self) -> &'static str {
         match self {
-            Self::Digesting => ("bytes", Exactness::Exact),
-            Self::Loading => ("models", Exactness::Exact),
+            Self::Digesting => "bytes",
+            Self::Loading => "",
+            Self::Predicting => "peptides",
+        }
+    }
+
+    /// How well this phase knows what it reports.
+    pub fn exactness(self) -> Exactness {
+        match self {
+            Self::Digesting => Exactness::Exact,
+            // Nothing is counted, so nothing is exact.
+            Self::Loading => Exactness::Approximate,
             // The producer enumerates ahead of the workers, bounded by the depth of the work
             // queue, so `done` leads what has actually been predicted by at most a few thousand
             // peptidoforms. Exact at the closing update, which lands after the writer finishes.
-            Self::Predicting => ("peptides", Exactness::Approximate),
+            Self::Predicting => Exactness::Approximate,
         }
     }
 }
@@ -59,40 +72,21 @@ pub enum Exactness {
 
 /// How far a library build has got.
 ///
-/// `done` and `total` are always in the same unit, and `unit` names it, so a renderer can write a
-/// line for a phase it has never heard of.
+/// What the numbers count and how far to trust them are properties of the [`Phase`], reachable
+/// through [`Phase::unit`] and [`Phase::exactness`]: storing them here too would be two fields
+/// that can disagree with a third.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[non_exhaustive]
 pub struct Progress {
     pub phase: Phase,
     /// Units completed. Monotone within a phase, and restarts from zero at a phase change.
     pub done: u64,
-    /// The value `done` reaches when this phase ends, or `0` for a phase with no measurable
-    /// size. Known before the phase starts, so an ETA is available from the first update.
+    /// The value `done` reaches when this phase ends, or `0` for a phase that measures nothing.
+    /// Known before the phase starts, so an ETA is available from the first update.
     pub total: u64,
-    /// Plural noun naming what `done` and `total` count: `bytes`, `peptides`.
-    pub unit: &'static str,
-    pub exactness: Exactness,
 }
 
 impl Progress {
-    /// Build an update, deriving the unit and the exactness from the phase.
-    ///
-    /// Public despite the struct's `#[non_exhaustive]`, because a downstream crate testing its
-    /// own progress handling has to synthesize these. The attribute is there so a later field
-    /// does not break that crate, not to stop it writing a test.
-    pub fn new(phase: Phase, done: u64, total: u64) -> Self {
-        let (unit, exactness) = phase.measure();
-        Self {
-            phase,
-            done,
-            total,
-            unit,
-            exactness,
-        }
-    }
-
-    /// Completed fraction in `0.0..=1.0`, and `0.0` for a phase with no measurable size.
+    /// Completed fraction in `0.0..=1.0`, and `0.0` for a phase that measures nothing.
     pub fn fraction(self) -> f64 {
         if self.total == 0 {
             0.0
@@ -104,34 +98,49 @@ impl Progress {
 
 /// What a caller hands to [`StreamOptions::progress`](crate::library::StreamOptions::progress).
 ///
-/// `Fn` rather than `FnMut` so a caller sharing state with it needs no wrapper of its own: an
-/// `AtomicU64` captured by reference is enough. `Send + Sync` because those bounds can be relaxed
-/// later without breaking a caller and cannot be added later at all; today every update comes
-/// from the thread that called [`write_library`](crate::write_library).
-///
-/// The lifetime is spelled out because a bare trait-object alias would default to `'static`,
-/// which would rule out the closure this is for: one borrowing a progress bar off the caller's
-/// own stack.
+/// `Send + Sync` because those bounds can be relaxed later without breaking a caller and cannot be
+/// added later at all. The lifetime is spelled out because a bare trait-object alias would default
+/// to `'static`, ruling out a closure that borrows a progress bar off the caller's stack.
 pub type ProgressFn<'a> = dyn Fn(Progress) + Send + Sync + 'a;
 
-/// The reporting end of a build, so the pipeline says `at(...)` instead of repeating the
-/// `if let Some(callback)` that a build with no callback needs.
-#[derive(Clone, Copy)]
+/// One update per this many, so a proteome reports thousands of times rather than millions. The
+/// exact value does not matter; that the pipeline does not pick it is what matters.
+const REPORT_EVERY: u32 = 64;
+
+/// The reporting end of a build: the one place that knows whether anyone is listening and how
+/// often to speak.
+///
+/// The rate lives here rather than at the call sites, so the cadence is a decision instead of a
+/// side effect of whatever the inference batch size happens to be.
 pub(crate) struct Reporter<'a> {
     callback: Option<&'a ProgressFn<'a>>,
+    /// Updates suppressed since the last one that went out. A `Cell`, not an atomic: every update
+    /// comes from the producer thread.
+    since: Cell<u32>,
 }
 
 impl<'a> Reporter<'a> {
     pub(crate) fn new(callback: Option<&'a ProgressFn<'a>>) -> Self {
-        Self { callback }
+        Self {
+            callback,
+            since: Cell::new(0),
+        }
     }
 
     pub(crate) fn at(&self, phase: Phase, done: u64, total: u64) {
-        if let Some(callback) = self.callback {
-            // Clamped here rather than at every call site: `done` is counted from what the
-            // pipeline consumed, and a FASTA that grew between the metadata read and the last
-            // line would otherwise report past the end.
-            callback(Progress::new(phase, done.min(total), total));
+        let Some(callback) = self.callback else {
+            return;
+        };
+        // Clamped rather than trusted: `done` counts what the pipeline consumed, and a FASTA that
+        // grew between the metadata read and the last line would report past the end.
+        let done = done.min(total);
+        // A phase boundary always goes out. A bar that never reaches 100%, or starts at 40%
+        // because the first updates were swallowed, is worse than one that moves in steps.
+        let boundary = done == 0 || done >= total;
+        let since = self.since.get() + 1;
+        self.since.set(if boundary { 0 } else { since });
+        if boundary || since.is_multiple_of(REPORT_EVERY) {
+            callback(Progress { phase, done, total });
         }
     }
 }
@@ -140,9 +149,13 @@ impl<'a> Reporter<'a> {
 mod tests {
     use super::*;
 
+    fn progress(phase: Phase, done: u64, total: u64) -> Progress {
+        Progress { phase, done, total }
+    }
+
     #[test]
     fn fraction_is_bounded_and_survives_a_phase_with_no_size() {
-        let at = |done, total| Progress::new(Phase::Digesting, done, total).fraction();
+        let at = |done, total| progress(Phase::Digesting, done, total).fraction();
         assert_eq!(at(0, 0), 0.0);
         assert_eq!(at(1, 4), 0.25);
         assert_eq!(at(4, 4), 1.0);
@@ -152,24 +165,47 @@ mod tests {
     #[test]
     fn every_phase_names_what_it_counts() {
         for phase in [Phase::Digesting, Phase::Loading, Phase::Predicting] {
-            let progress = Progress::new(phase, 0, 1);
-            assert!(!progress.unit.is_empty(), "{phase:?} has no unit");
             assert!(!phase.label().is_empty(), "{phase:?} has no label");
         }
-        assert_eq!(Progress::new(Phase::Digesting, 0, 1).unit, "bytes");
-        assert_eq!(
-            Progress::new(Phase::Predicting, 0, 1).exactness,
-            Exactness::Approximate
-        );
+        assert_eq!(Phase::Digesting.unit(), "bytes");
+        assert_eq!(Phase::Digesting.exactness(), Exactness::Exact);
+        assert_eq!(Phase::Predicting.exactness(), Exactness::Approximate);
+        // Loading counts nothing, so it names nothing; the empty unit is what pairs with the
+        // `total: 0` it reports.
+        assert_eq!(Phase::Loading.unit(), "");
+    }
+
+    fn collect(updates: impl Fn(&Reporter<'_>)) -> Vec<Progress> {
+        let seen = std::sync::Mutex::new(Vec::new());
+        let callback = |progress: Progress| seen.lock().unwrap().push(progress);
+        updates(&Reporter::new(Some(&callback)));
+        seen.into_inner().unwrap()
     }
 
     #[test]
     fn a_reporter_without_a_callback_is_silent_and_one_with_it_clamps() {
         Reporter::new(None).at(Phase::Predicting, 5, 1);
+        assert_eq!(collect(|r| r.at(Phase::Predicting, 5, 1))[0].done, 1);
+    }
 
-        let seen = std::sync::Mutex::new(Vec::new());
-        let callback = |progress: Progress| seen.lock().unwrap().push(progress);
-        Reporter::new(Some(&callback)).at(Phase::Predicting, 5, 1);
-        assert_eq!(seen.lock().unwrap()[0].done, 1);
+    /// The cadence is the reporter's decision, so it is the reporter's test: intermediate
+    /// updates thin out, but neither end of a phase is ever swallowed.
+    #[test]
+    fn a_phase_reports_both_ends_and_thins_out_between_them() {
+        let total = u64::from(REPORT_EVERY) * 4;
+        let seen = collect(|reporter| {
+            for done in 0..=total {
+                reporter.at(Phase::Predicting, done, total);
+            }
+        });
+        assert_eq!(seen.first().unwrap().done, 0);
+        assert_eq!(seen.last().unwrap().done, total);
+        assert!(seen.len() > 2, "no update between the ends: {}", seen.len());
+        assert!(
+            seen.len() < total as usize / 8,
+            "barely thinned: {} of {total}",
+            seen.len()
+        );
+        assert!(seen.windows(2).all(|w| w[0].done < w[1].done));
     }
 }

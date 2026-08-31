@@ -484,7 +484,9 @@ fn run_library(args: LibraryArgs) -> Result<()> {
             progress: Some(&report),
         },
     })?;
-    line.finish();
+    // No explicit wipe: `ProgressLine`'s `Drop` restores the terminal on the error path too,
+    // which is the path that has it drawn.
+    drop(line);
     eprintln!(
         "{} proteins -> {} peptides -> {} precursors ({} decoys) -> {} fragments -> {} in {:.1}s ({:.1}s digesting)",
         stats.proteins,

@@ -128,52 +128,33 @@ source commit, along with the resolved model, input FASTA, and settings.
 ## Report progress
 
 Set `progress` to watch a build that takes minutes. The callback receives a `Progress` carrying
-the `Phase`, `done` and `total`, the `unit` those two count, and whether the count is `Exact`.
+the `Phase`, `done` and `total`; what those count and how far to trust them are properties of the
+phase, through `Phase::unit` and `Phase::exactness`.
 
 ```rust,no_run
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Instant;
+use msspeculator_inference::Progress;
 
-use msspeculator_inference::{Exactness, Progress};
-
-fn watch(started: &Instant, logged: &AtomicU64, progress: Progress) {
-    let about = match progress.exactness {
-        Exactness::Exact => "",
-        Exactness::Approximate => "about ",
-    };
-    // Updates arrive once per FASTA record and once per dispatched inference batch, which suits
-    // a bar but not a log, so a line is throttled on its own clock. An atomic rather than a
-    // mutex: the callback is `Fn`, and a dropped update is followed by a better one.
-    let now = started.elapsed().as_secs();
-    let previous = logged.load(Ordering::Relaxed);
-    if now.saturating_sub(previous) < 10 {
-        return;
-    }
-    if logged
-        .compare_exchange(previous, now, Ordering::Relaxed, Ordering::Relaxed)
-        .is_err()
-    {
-        return;
-    }
+fn watch(progress: Progress) {
     println!(
-        "{}: {about}{}/{} {} ({:.0}%)",
+        "{}: {}/{} {}",
         progress.phase.label(),
         progress.done,
         progress.total,
-        progress.unit,
-        progress.fraction() * 100.0,
+        progress.phase.unit(),
     );
 }
 ```
 
-Pass it as `progress: Some(&|p| watch(&started, &logged, p))`.
-
 The phases run in order and never interleave. `Digesting` counts FASTA bytes consumed and
-`Predicting` counts digested peptides; `Loading` is announced rather than measured, because
-reading an artifact is a single call that reports nothing on the way through. Prediction is
+`Predicting` counts digested peptides; `Loading` reports `0/0`, because reading an artifact is a
+single call that measures nothing, and a renderer should show its label alone. Prediction is
 `Approximate` because the producer enumerates ahead of the workers by the depth of the work
-queue; its closing update lands only after the last spectrum reaches the sink, so 100% means
+queue; only the closing update lands after the last spectrum reaches the sink, so 100% means
 written rather than queued.
+
+Updates are bounded — thousands over a build, not millions, and both ends of every phase always
+arrive — but they are not tied to any clock. A callback that moves a bar needs nothing else; one
+that writes a log line should throttle on its own.
 
 `LibraryStats` reports `digest` and `predict` as `Duration`s once the build finishes, and
 `write_library` records them in the sidecar as `seconds_digesting` and `seconds_predicting`.
@@ -224,9 +205,15 @@ A peptide from several proteins carries them all. `SpectrumRow.proteins` is a `P
 which iterates `FastaId` values borrowed from the digest, so a peptide in ten proteins allocates
 nothing. A `FastaId` is the first whitespace-delimited token of the FASTA description line,
 unparsed: for a UniProt FASTA that is `sp|P00001|A_HUMAN`, which is a database, an accession and
-an entry name run together, so it is deliberately not called an accession. DIA-NN output joins
-the group with `;` because its format has one protein column; mzSpecLib writes one
+an entry name run together, so it is deliberately not called an accession. Identifiers are
+deduplicated, so a FASTA listing a protein twice under one name contributes one member, and a
+group is ordered by identifier rather than by position in the file. DIA-NN output joins the group
+with `;` because its format has one protein column; mzSpecLib writes one
 `MS:1000885|protein accession` line per member, which is the form a reader can take apart again.
+
+`SpectrumRow` likewise carries `peptide: &Peptide` and `stripped: Residues` rather than either
+format's spelling of them: DIA-NN's writer renders `PEPC(UniMod:4)IDER`, mzSpecLib uses the
+ProForma string in `proforma`.
 
 Set `generate_decoys: true` to add pseudo-reversed decoys. Internal residues are reversed while
 the first and last residues stay fixed, so `PEPTIDEK` becomes `PEDITPEK`. A decoy is skipped when

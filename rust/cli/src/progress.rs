@@ -1,7 +1,7 @@
 //! The CLI's progress reporting, on top of the inference crate's callback.
 
 use std::io::{IsTerminal, Write};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use msspeculator_inference::{Exactness, Progress};
@@ -15,14 +15,24 @@ const REDRAW: Duration = Duration::from_millis(100);
 const LOG_INTERVAL: Duration = Duration::from_secs(10);
 
 /// How the build reports itself.
+#[derive(Clone, Copy)]
 enum Style {
     /// One line rewritten in place, for a terminal.
     Live,
     /// A new line each interval, for a file. `\r` into a redirected stream produces one
     /// enormous line, so the two cases cannot share a renderer.
     Logged,
-    /// Nothing, for `--no-progress`.
-    Silent,
+}
+
+/// Restoring the terminal is the type's job, not the caller's.
+///
+/// `write_library` returns early on any failure, so an explicit call at the end of the happy path
+/// leaves the live line on screen exactly when something has gone wrong — and anyhow then appends
+/// `Error: ...` to the end of a half-drawn progress bar.
+impl Drop for ProgressLine {
+    fn drop(&mut self) {
+        self.wipe();
+    }
 }
 
 /// The CLI's progress reporter.
@@ -32,67 +42,74 @@ enum Style {
 /// rendering is dropped rather than queued. Dropping one is right for a status line; the next
 /// one is along in milliseconds and carries a better number.
 pub struct ProgressLine {
-    style: Style,
+    /// `None` when reporting is off, which is the absence of a style rather than one of them.
+    style: Option<Style>,
     started: Instant,
     /// Milliseconds since `started` at the last rendered update.
     rendered: AtomicU64,
-    /// Whether anything is currently on the terminal line, so `finish` knows to wipe it.
-    live: AtomicU64,
+    /// Whether anything is currently on the terminal line, so the wipe knows to run.
+    live: AtomicBool,
 }
 
 impl ProgressLine {
     /// Report to stderr, picking the style from what stderr turned out to be.
     pub fn for_stderr(enabled: bool) -> Self {
         let style = match (enabled, std::io::stderr().is_terminal()) {
-            (false, _) => Style::Silent,
-            (true, true) => Style::Live,
-            (true, false) => Style::Logged,
+            (false, _) => None,
+            (true, true) => Some(Style::Live),
+            (true, false) => Some(Style::Logged),
         };
         Self {
             style,
             started: Instant::now(),
             rendered: AtomicU64::new(0),
-            live: AtomicU64::new(0),
+            live: AtomicBool::new(false),
         }
     }
 
     pub fn update(&self, progress: Progress) {
-        let interval = match self.style {
-            Style::Silent => return,
+        let Some(style) = self.style else { return };
+        let interval = match style {
             Style::Live => REDRAW,
             Style::Logged => LOG_INTERVAL,
         };
-        let now = self.started.elapsed().as_millis() as u64;
-        let previous = self.rendered.load(Ordering::Relaxed);
-        if now.saturating_sub(previous) < interval.as_millis() as u64 {
+        let Some(now) = self.claim(interval) else {
             return;
-        }
-        // Losing the swap means another update is already rendering this instant; skip rather
-        // than render twice.
-        if self
-            .rendered
-            .compare_exchange(previous, now, Ordering::Relaxed, Ordering::Relaxed)
-            .is_err()
-        {
-            return;
-        }
+        };
         let mut stderr = std::io::stderr().lock();
-        let _ = match self.style {
-            Style::Silent => return,
+        let _ = match style {
             Style::Live => {
-                self.live.store(1, Ordering::Relaxed);
-                // Padded to a fixed width so a shorter line cannot leave the tail of a longer
-                // one behind it, which is the failure `\r` alone always has.
-                write!(stderr, "\r{:<78}", self.render(progress, now))
+                self.live.store(true, Ordering::Relaxed);
+                // Padded *and truncated* to a fixed width: padding stops a shorter line leaving
+                // the tail of a longer one behind, and without the truncation a line that
+                // overflows the width has exactly the problem the padding exists to prevent.
+                write!(stderr, "\r{:<78.78}", self.render(progress, now))
             }
             Style::Logged => writeln!(stderr, "{}", self.render(progress, now)),
         };
         let _ = stderr.flush();
     }
 
+    /// Whether this update gets to render, and the clock reading it renders with.
+    ///
+    /// Losing the exchange means another update is already rendering this instant; that one is
+    /// dropped rather than queued, which is right for a status line. The next is along in
+    /// milliseconds with a better number.
+    fn claim(&self, interval: Duration) -> Option<u64> {
+        let now = self.started.elapsed().as_millis() as u64;
+        let previous = self.rendered.load(Ordering::Relaxed);
+        if now.saturating_sub(previous) < interval.as_millis() as u64 {
+            return None;
+        }
+        self.rendered
+            .compare_exchange(previous, now, Ordering::Relaxed, Ordering::Relaxed)
+            .ok()
+            .map(|_| now)
+    }
+
     /// Wipe the in-place line, so whatever the CLI prints next starts on a clean one.
-    pub fn finish(&self) {
-        if self.live.swap(0, Ordering::Relaxed) == 1 {
+    fn wipe(&self) {
+        if self.live.swap(false, Ordering::Relaxed) {
             let mut stderr = std::io::stderr().lock();
             let _ = write!(stderr, "\r{:<78}\r", "");
             let _ = stderr.flush();
@@ -109,7 +126,7 @@ impl ProgressLine {
                 duration(elapsed_ms)
             );
         }
-        let approximately = match progress.exactness {
+        let approximately = match progress.phase.exactness() {
             Exactness::Exact => "",
             Exactness::Approximate => "~",
         };
@@ -120,7 +137,7 @@ impl ProgressLine {
             approximately,
             grouped(progress.done),
             grouped(progress.total),
-            progress.unit,
+            progress.phase.unit(),
             duration(elapsed_ms),
             remaining(progress, elapsed_ms),
         )
@@ -173,7 +190,11 @@ mod tests {
     use msspeculator_inference::Phase;
 
     fn progress(done: u64, total: u64) -> Progress {
-        Progress::new(Phase::Predicting, done, total)
+        Progress {
+            phase: Phase::Predicting,
+            done,
+            total,
+        }
     }
 
     #[test]
@@ -212,15 +233,21 @@ mod tests {
     #[test]
     fn a_phase_with_no_measurable_size_shows_the_clock_and_no_percentage() {
         let line = ProgressLine::for_stderr(false);
-        let rendered = line.render(Progress::new(Phase::Digesting, 0, 0), 5_000);
-        assert_eq!(rendered, "digesting (5s elapsed)");
+        // The shape `Phase::Loading` actually reports, which is why this branch is live rather
+        // than reachable only from a hand-built update.
+        let loading = Progress {
+            phase: Phase::Loading,
+            done: 0,
+            total: 0,
+        };
+        assert_eq!(line.render(loading, 5_000), "loading (5s elapsed)");
     }
 
     #[test]
     fn a_silent_line_renders_nothing_and_needs_no_terminal() {
         let line = ProgressLine::for_stderr(false);
         line.update(progress(1, 2));
-        line.finish();
         assert_eq!(line.rendered.load(Ordering::Relaxed), 0);
+        assert!(!line.live.load(Ordering::Relaxed));
     }
 }

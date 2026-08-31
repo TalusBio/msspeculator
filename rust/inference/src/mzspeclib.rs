@@ -309,12 +309,16 @@ mod tests {
     static IDENTIFIERS: std::sync::LazyLock<Vec<String>> =
         std::sync::LazyLock::new(|| vec!["P1".to_string(), "P2".to_string()]);
     static MEMBERS: [u32; 2] = [0, 1];
+    static PEPTIDE: std::sync::LazyLock<msspeculator_core::peptide::Peptide> =
+        std::sync::LazyLock::new(|| {
+            msspeculator_core::peptide::Peptide::new("PEPTIDEK".to_string(), Vec::new())
+        });
 
     fn row() -> SpectrumRow<'static> {
         SpectrumRow {
             stripped: Residues::target("PEPTIDEK"),
             proteins: ProteinGroup::new(&IDENTIFIERS, &MEMBERS, false),
-            diann_sequence: "PEPTIDEK",
+            peptide: &PEPTIDE,
             proforma: "PEPTIDEK",
             decoy: false,
             decoy_pair_id: None,
