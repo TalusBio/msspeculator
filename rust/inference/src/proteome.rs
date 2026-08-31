@@ -73,7 +73,14 @@ pub struct Residues<'a> {
 }
 
 impl<'a> Residues<'a> {
-    pub(crate) fn target(source: &'a str) -> Self {
+    /// The peptide as digested.
+    ///
+    /// Public, like [`Self::pseudo_reversed`], because a caller assembling a [`SpectrumRow`] for
+    /// its own tests needs both; the pipeline calls exactly these two, so there is no third
+    /// arrangement that only a test executes.
+    ///
+    /// [`SpectrumRow`]: crate::SpectrumRow
+    pub fn target(source: &'a str) -> Self {
         Self {
             source,
             reversed: false,
@@ -82,7 +89,7 @@ impl<'a> Residues<'a> {
 
     /// The pseudo-reversed reading of the same peptide: first and last residue pinned so the
     /// decoy keeps its tryptic context, everything between them backwards.
-    pub(crate) fn pseudo_reversed(source: &'a str) -> Self {
+    pub fn pseudo_reversed(source: &'a str) -> Self {
         Self {
             source,
             reversed: true,
@@ -138,46 +145,37 @@ impl std::fmt::Display for Residues<'_> {
 /// A list rather than a joined string. DIA-NN's `;` separator is a property of that one format,
 /// so only its writer should have to know about it; a group that arrives pre-joined has to be
 /// split apart again by everything else, on a delimiter a FASTA identifier is free to contain.
+/// One representation, not two. A group is always a table of identifiers plus the indices of this
+/// peptide's members, which is what the digest holds; a caller assembling a row by hand builds the
+/// same shape rather than a parallel one, so there is no arrangement that only the tests execute.
 #[derive(Clone, Copy)]
 pub struct ProteinGroup<'a> {
-    members: Members<'a>,
+    identifiers: &'a [String],
+    members: &'a [u32],
     prefix: &'static str,
 }
 
-/// Where a group's identifiers come from.
-///
-/// Two representations behind one interface: the pipeline hands out indices into the digest's
-/// table so a peptide in ten proteins allocates nothing, while a caller assembling a row by hand
-/// has a plain list and no table to index into.
-#[derive(Clone, Copy)]
-enum Members<'a> {
-    Indexed {
-        identifiers: &'a [String],
-        members: &'a [u32],
-    },
-    Listed(&'a [&'a str]),
-}
-
 impl<'a> ProteinGroup<'a> {
-    /// Build a group from a list of identifiers, for a caller assembling a [`SpectrumRow`] itself.
+    /// Build a group, for a caller assembling a [`SpectrumRow`] itself.
+    ///
+    /// `members` indexes `identifiers`, so the same identifier table can back many peptides;
+    /// a group standing alone passes `&[0, 1, ..]`.
     ///
     /// [`SpectrumRow`]: crate::SpectrumRow
-    pub fn from_list(identifiers: &'a [&'a str], decoy: bool) -> Self {
+    pub fn new(identifiers: &'a [String], members: &'a [u32], decoy: bool) -> Self {
         Self {
-            members: Members::Listed(identifiers),
+            identifiers,
+            members,
             prefix: if decoy { DECOY_PREFIX } else { "" },
         }
     }
 
     pub fn len(&self) -> usize {
-        match self.members {
-            Members::Indexed { members, .. } => members.len(),
-            Members::Listed(identifiers) => identifiers.len(),
-        }
+        self.members.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.len() == 0
+        self.members.is_empty()
     }
 
     /// The proteins, in the order the FASTA listed them.
@@ -185,16 +183,9 @@ impl<'a> ProteinGroup<'a> {
     /// Takes `self` rather than `&self`, which `Copy` makes free, so the iterator outlives the
     /// group it came from and a caller can hand it straight to a `for` or a `join`.
     pub fn iter(self) -> impl Iterator<Item = FastaId<'a>> {
-        let prefix = self.prefix;
-        (0..self.len()).map(move |i| FastaId {
-            prefix,
-            id: match self.members {
-                Members::Indexed {
-                    identifiers,
-                    members,
-                } => &identifiers[members[i] as usize],
-                Members::Listed(identifiers) => identifiers[i],
-            },
+        self.members.iter().map(move |&member| FastaId {
+            prefix: self.prefix,
+            id: &self.identifiers[member as usize],
         })
     }
 }
@@ -382,13 +373,11 @@ impl PeptideRef {
     /// peptide, so it belongs to the same proteins and differs only in carrying the prefix.
     pub(crate) fn proteins(&self, decoy: bool) -> ProteinGroup<'_> {
         let span = self.digest.peptides[self.index as usize].proteins;
-        ProteinGroup {
-            members: Members::Indexed {
-                identifiers: &self.digest.proteome.accessions,
-                members: &self.digest.memberships[span.start as usize..span.end as usize],
-            },
-            prefix: if decoy { DECOY_PREFIX } else { "" },
-        }
+        ProteinGroup::new(
+            &self.digest.proteome.accessions,
+            &self.digest.memberships[span.start as usize..span.end as usize],
+            decoy,
+        )
     }
 }
 

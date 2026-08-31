@@ -304,10 +304,16 @@ mod tests {
         SpectrumRow { irt, ..row() }
     }
 
+    /// The same shape the digest hands out: an identifier table plus this peptide's indices into
+    /// it, so the writer tests run the arrangement production runs.
+    static IDENTIFIERS: std::sync::LazyLock<Vec<String>> =
+        std::sync::LazyLock::new(|| vec!["P1".to_string(), "P2".to_string()]);
+    static MEMBERS: [u32; 2] = [0, 1];
+
     fn row() -> SpectrumRow<'static> {
         SpectrumRow {
             stripped: Residues::target("PEPTIDEK"),
-            proteins: ProteinGroup::from_list(&["P1", "P2"], false),
+            proteins: ProteinGroup::new(&IDENTIFIERS, &MEMBERS, false),
             diann_sequence: "PEPTIDEK",
             proforma: "PEPTIDEK",
             decoy: false,
