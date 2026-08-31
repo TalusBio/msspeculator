@@ -3,8 +3,14 @@
 //! This crate owns FASTA digestion, modification enumeration, bounded producer/worker queues,
 //! and output sinks. The model and peptide math remain in [`msspeculator_core`].
 
+#[cfg(test)]
+mod scratch;
+
+mod diann;
 pub mod library;
 pub mod mzspeclib;
+pub mod progress;
+mod proteome;
 pub mod provenance;
 
 pub use library::{
@@ -14,4 +20,6 @@ pub use library::{
 pub use msspeculator_core::{
     Artifact, BuiltinModel, ModelSource, MsContext, Prediction, PreparedContext,
 };
+pub use progress::{Exactness, Phase, Progress, ProgressFn};
+pub use proteome::{FastaId, ProteinGroup, Residues};
 pub use provenance::LibraryProvenance;

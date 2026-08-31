@@ -111,6 +111,7 @@ fn run() -> anyhow::Result<()> {
             max_variable_mods: 1,
             max_fragments: None,
             generate_decoys: false,
+            progress: None,
         },
     })?;
     println!("{} precursors", stats.precursors);
@@ -123,6 +124,40 @@ select mzSpecLib text; other suffixes select DIA-NN TSV. Add `.gz` to compress e
 Output order is unspecified because workers finish independently. The writer validates and caps
 each precursor before serialization. The generated provenance records the package version and
 source commit, along with the resolved model, input FASTA, and settings.
+
+## Report progress
+
+Set `progress` to watch a build that takes minutes. The callback receives a `Progress` carrying
+the `Phase`, `done` and `total`; what those count and how far to trust them are properties of the
+phase, through `Phase::unit` and `Phase::exactness`.
+
+```rust,no_run
+use msspeculator_inference::Progress;
+
+fn watch(progress: Progress) {
+    println!(
+        "{}: {}/{} {}",
+        progress.phase.label(),
+        progress.done,
+        progress.total,
+        progress.phase.unit(),
+    );
+}
+```
+
+The phases run in order and never interleave. `Digesting` counts FASTA bytes consumed and
+`Predicting` counts digested peptides; `Loading` reports `0/0`, because reading an artifact is a
+single call that measures nothing, and a renderer should show its label alone. Prediction is
+`Approximate` because the producer enumerates ahead of the workers by the depth of the work
+queue; only the closing update lands after the last spectrum reaches the sink, so 100% means
+written rather than queued.
+
+Updates are bounded — thousands over a build, not millions, and both ends of every phase always
+arrive — but they are not tied to any clock. A callback that moves a bar needs nothing else; one
+that writes a log line should throttle on its own.
+
+`LibraryStats` reports `digest` and `predict` as `Duration`s once the build finishes, and
+`write_library` records them in the sidecar as `seconds_digesting` and `seconds_predicting`.
 
 ## Receive rows without writing a file
 
@@ -147,6 +182,11 @@ impl LibrarySink for Indexer {
 
     fn spectrum(&mut self, row: &SpectrumRow<'_>) -> anyhow::Result<()> {
         // `row` borrows from the prediction it came out of; copy anything you keep.
+        // `row.proteins` is a list, not a joined string: each `FastaId` displays with the
+        // `DECOY_` prefix already applied when the spectrum is a decoy.
+        for protein in row.proteins.iter() {
+            println!("{protein}");
+        }
         self.precursors += 1;
         Ok(())
     }
@@ -161,9 +201,24 @@ The sink is moved onto the writer thread while workers predict, which is why `Li
 requires `Send`. `provenance.output` is `None` here: there is no path, no suffix-chosen format,
 and no compression to report.
 
+A peptide from several proteins carries them all. `SpectrumRow.proteins` is a `ProteinGroup`,
+which iterates `FastaId` values borrowed from the digest, so a peptide in ten proteins allocates
+nothing. A `FastaId` is the first whitespace-delimited token of the FASTA description line,
+unparsed: for a UniProt FASTA that is `sp|P00001|A_HUMAN`, which is a database, an accession and
+an entry name run together, so it is deliberately not called an accession. Identifiers are
+deduplicated, so a FASTA listing a protein twice under one name contributes one member, and a
+group is ordered by identifier rather than by position in the file. DIA-NN output joins the group
+with `;` because its format has one protein column; mzSpecLib writes one
+`MS:1000885|protein accession` line per member, which is the form a reader can take apart again.
+
+`SpectrumRow` likewise carries `peptide: &Peptide` and `stripped: Residues` rather than either
+format's spelling of them: DIA-NN's writer renders `PEPC(UniMod:4)IDER`, mzSpecLib uses the
+ProForma string in `proforma`.
+
 Set `generate_decoys: true` to add pseudo-reversed decoys. Internal residues are reversed while
 the first and last residues stay fixed, so `PEPTIDEK` becomes `PEDITPEK`. A decoy is skipped when
-that stripped sequence is already a target or another decoy. DIA-NN rows use `Decoy=1` and a
+that stripped sequence is already a target; two decoys cannot collide with each other, because
+reversing twice returns the original and the map is therefore injective. DIA-NN rows use `Decoy=1` and a
 `DECOY_` protein prefix. mzSpecLib entries claim a `Decoy` spectrum attribute set and use the
 PSI-MS [`unnatural peptidoform decoy spectrum`](https://github.com/HUPO-PSI/psi-ms-CV/blob/master/psi-ms.obo)
 origin term.

@@ -260,8 +260,8 @@ impl<W: Write + Send> LibrarySink for MzSpecLibSink<W> {
         )?;
         // The protein group is one attribute per member, not one joined string: a reader that
         // wants the group can rebuild it, and one that wants an accession cannot unjoin it.
-        for accession in row.protein_group.split(';') {
-            writeln!(self.writer, "MS:1000885|protein accession={accession}")?;
+        for protein in row.proteins.iter() {
+            writeln!(self.writer, "MS:1000885|protein accession={protein}")?;
         }
         writeln!(self.writer, "<Peaks>")?;
         // Peak lists are m/z ordered here; our fragments come out in (position, ion type) order.
@@ -298,16 +298,27 @@ impl<W: Write + Send> LibrarySink for MzSpecLibSink<W> {
 mod tests {
     use super::*;
     use crate::library::{Peak, SpectrumRow};
+    use crate::proteome::{ProteinGroup, Residues};
 
     fn row_with_irt(irt: Option<f32>) -> SpectrumRow<'static> {
         SpectrumRow { irt, ..row() }
     }
 
+    /// The same shape the digest hands out: an identifier table plus this peptide's indices into
+    /// it, so the writer tests run the arrangement production runs.
+    static IDENTIFIERS: std::sync::LazyLock<Vec<String>> =
+        std::sync::LazyLock::new(|| vec!["P1".to_string(), "P2".to_string()]);
+    static MEMBERS: [u32; 2] = [0, 1];
+    static PEPTIDE: std::sync::LazyLock<msspeculator_core::peptide::Peptide> =
+        std::sync::LazyLock::new(|| {
+            msspeculator_core::peptide::Peptide::new("PEPTIDEK".to_string(), Vec::new())
+        });
+
     fn row() -> SpectrumRow<'static> {
         SpectrumRow {
-            stripped: "PEPTIDEK",
-            protein_group: "P1;P2",
-            diann_sequence: "PEPTIDEK",
+            stripped: Residues::target("PEPTIDEK"),
+            proteins: ProteinGroup::new(&IDENTIFIERS, &MEMBERS, false),
+            peptide: &PEPTIDE,
             proforma: "PEPTIDEK",
             decoy: false,
             decoy_pair_id: None,

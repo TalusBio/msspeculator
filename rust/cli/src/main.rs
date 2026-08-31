@@ -11,6 +11,7 @@ use msspeculator_core::{
 use serde_json::json;
 
 mod diagnostics;
+mod progress;
 use msspeculator_inference::library;
 
 #[derive(Parser)]
@@ -229,6 +230,10 @@ struct LibraryArgs {
     /// Add pseudo-reversed decoy precursors. Decoys colliding with target sequences are skipped.
     #[arg(long)]
     decoys: bool,
+    /// Suppress the progress line. It already goes quiet when stderr is not a terminal, so this
+    /// is for a log that should carry only the summary.
+    #[arg(long)]
+    no_progress: bool,
 }
 
 #[derive(clap::Args)]
@@ -454,6 +459,8 @@ fn run_library(args: LibraryArgs) -> Result<()> {
         &args.variable_mod
     };
     let config_out = args.sidecar_path();
+    let line = progress::ProgressLine::for_stderr(!args.no_progress);
+    let report = |progress| line.update(progress);
     let stats = library::write_library(&library::LibraryOptions {
         out: &args.out,
         config_out: config_out.as_deref(),
@@ -474,16 +481,22 @@ fn run_library(args: LibraryArgs) -> Result<()> {
             max_variable_mods: args.max_variable_mods,
             max_fragments: args.max_fragments,
             generate_decoys: args.decoys,
+            progress: Some(&report),
         },
     })?;
+    // No explicit wipe: `ProgressLine`'s `Drop` restores the terminal on the error path too,
+    // which is the path that has it drawn.
+    drop(line);
     eprintln!(
-        "{} proteins -> {} peptides -> {} precursors ({} decoys) -> {} fragments -> {}",
+        "{} proteins -> {} peptides -> {} precursors ({} decoys) -> {} fragments -> {} in {:.1}s ({:.1}s digesting)",
         stats.proteins,
         stats.peptides,
         stats.precursors,
         stats.decoys,
         stats.fragments,
-        args.out.display()
+        args.out.display(),
+        (stats.digest + stats.predict).as_secs_f64(),
+        stats.digest.as_secs_f64(),
     );
     Ok(())
 }

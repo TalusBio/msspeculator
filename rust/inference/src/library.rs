@@ -1,9 +1,10 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fs::File;
-use std::io::{BufRead, BufReader, BufWriter, Write};
+use std::io::{BufWriter, Write};
 use std::path::Path;
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use msspeculator_core::peptide::{ModSpec, Peptide, Site};
@@ -13,9 +14,10 @@ use msspeculator_core::{
     PreparedContext,
 };
 
+use crate::progress::{Phase, ProgressFn, Reporter};
+use crate::proteome::{peptides, Digest, DigestRules, PeptideRef, ProteinGroup, Residues};
 use crate::provenance::{resolve_provenance, write_sidecar, LibraryProvenance, Output};
 
-const VALID_AA: &str = "GASPVTCLINDQKEMHFRYW";
 const CCS_IM_COEF: f64 = 1059.62245;
 const IM_GAS_MASS: f64 = 28.0;
 const INFERENCE_BATCH_SIZE: usize = 64;
@@ -43,9 +45,43 @@ pub struct StreamOptions<'a> {
     /// Emit at most this many of the strongest fragments per precursor, or all of them when
     /// `None`. Applied after `min_intensity`, so both bound the transition list independently.
     pub max_fragments: Option<usize>,
-    /// Add pseudo-reversed peptide decoys. Decoys whose stripped sequence is already a target are
-    /// skipped, as are duplicate decoy sequences.
+    /// Add pseudo-reversed peptide decoys. A decoy whose stripped sequence is already a target is
+    /// skipped; two decoys cannot collide with each other, since reversing is an involution.
     pub generate_decoys: bool,
+    /// Called as the build advances, or `None` to report nothing.
+    ///
+    /// Bounded, but not tied to any clock: a build reports thousands of times rather than
+    /// millions, and each phase reports both of its ends. A callback that writes a log line wants
+    /// its own throttle. [`Progress`](crate::Progress) says what each phase counts.
+    pub progress: Option<&'a ProgressFn<'a>>,
+}
+
+impl StreamOptions<'_> {
+    /// The settings that can be refused without reading anything, checked on the type that holds
+    /// them so a caller can ask before committing to a run.
+    pub fn validate(&self) -> Result<()> {
+        if !(0.0..=1.0).contains(&self.min_intensity) {
+            bail!(
+                "min_intensity must be in [0, 1], got {}",
+                self.min_intensity
+            );
+        }
+        if self.min_charge < 1 || self.max_charge < self.min_charge {
+            bail!(
+                "invalid charge range {}..={}",
+                self.min_charge,
+                self.max_charge
+            );
+        }
+        if self.min_length < 2 || self.max_length < self.min_length {
+            bail!(
+                "invalid peptide length range {}..={}",
+                self.min_length,
+                self.max_length
+            );
+        }
+        Ok(())
+    }
 }
 
 /// Generating a library and writing it to a file.
@@ -128,10 +164,17 @@ pub struct Peak<'a> {
 /// Every field is already checked to be physical and the transition list is already capped, so a
 /// sink's only job is spelling: no sink can disagree with another about what the library contains.
 pub struct SpectrumRow<'a> {
-    pub stripped: &'a str,
-    pub protein_group: &'a str,
-    pub diann_sequence: &'a str,
-    /// ProForma spelling of the same peptidoform, e.g. `PEPC[UNIMOD:4]IDER`.
+    /// The peptide's residues. A view over the digest rather than a string, so a decoy is the
+    /// same residues read with its interior reversed instead of a second copy of them.
+    pub stripped: Residues<'a>,
+    /// The proteins whose digest produced this peptide, as a list. DIA-NN's `;` separator is a
+    /// property of that format alone, so its writer joins them and nothing else has to know.
+    pub proteins: ProteinGroup<'a>,
+    /// The peptidoform: residues plus normalized modification sites. Both output formats derive
+    /// their own spelling from it, so the row carries neither one's.
+    pub peptide: &'a Peptide,
+    /// ProForma spelling of the same peptidoform, e.g. `PEPC[UNIMOD:4]IDER`, as the model
+    /// returned it.
     pub proforma: &'a str,
     /// Whether this spectrum belongs to the generated decoy set.
     pub decoy: bool,
@@ -168,45 +211,6 @@ pub trait LibrarySink: Send {
     fn finish(&mut self) -> Result<()>;
 }
 
-struct DiannSink<W: Write> {
-    writer: W,
-}
-
-impl<W: Write + Send> LibrarySink for DiannSink<W> {
-    fn header(&mut self, _provenance: &LibraryProvenance) -> Result<()> {
-        writeln!(self.writer, "ModifiedPeptide\tStrippedPeptide\tPrecursorMz\tPrecursorCharge\tTr_recalibrated\tIonMobility\tProteinID\tDecoy\tFragmentMz\tFragmentType\tFragmentNumber\tFragmentCharge\tFragmentLossType\tRelativeIntensity")?;
-        Ok(())
-    }
-
-    fn spectrum(&mut self, row: &SpectrumRow<'_>) -> Result<()> {
-        for peak in &row.peaks {
-            writeln!(
-                self.writer,
-                "{}\t{}\t{:.8}\t{}\t{:.6}\t{:.8}\t{}\t{}\t{:.8}\t{}\t{}\t{}\tnoloss\t{:.8}",
-                row.diann_sequence,
-                row.stripped,
-                row.precursor_mz,
-                row.charge,
-                row.rt,
-                row.mobility,
-                row.protein_group,
-                u8::from(row.decoy),
-                peak.mz,
-                peak.ion,
-                peak.ordinal,
-                peak.charge,
-                peak.intensity,
-            )?;
-        }
-        Ok(())
-    }
-
-    fn finish(&mut self) -> Result<()> {
-        self.writer.flush()?;
-        Ok(())
-    }
-}
-
 #[derive(Debug, Default)]
 pub struct LibraryStats {
     pub proteins: usize,
@@ -215,93 +219,15 @@ pub struct LibraryStats {
     pub fragments: usize,
     /// Number of decoy precursor spectra written.
     pub decoys: usize,
-}
-
-fn parse_fasta(path: &Path) -> Result<Vec<(String, String)>> {
-    let reader = BufReader::new(
-        File::open(path).with_context(|| format!("opening FASTA {}", path.display()))?,
-    );
-    let mut records = Vec::new();
-    let mut id: Option<String> = None;
-    let mut seq = String::new();
-    for (line_no, line) in reader.lines().enumerate() {
-        let line = line.with_context(|| format!("reading {}:{}", path.display(), line_no + 1))?;
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        if let Some(header) = line.strip_prefix('>') {
-            if let Some(old_id) = id.replace(
-                header
-                    .split_whitespace()
-                    .next()
-                    .context("empty FASTA header")?
-                    .to_string(),
-            ) {
-                records.push((old_id, std::mem::take(&mut seq)));
-            }
-        } else {
-            if id.is_none() {
-                bail!(
-                    "{}:{} has sequence before the first FASTA header",
-                    path.display(),
-                    line_no + 1
-                );
-            }
-            seq.push_str(&line.to_ascii_uppercase());
-        }
-    }
-    if let Some(id) = id {
-        records.push((id, seq));
-    }
-    if records.is_empty() {
-        bail!("FASTA {} contains no records", path.display());
-    }
-    Ok(records)
-}
-
-fn digest_tryptic(sequence: &str, missed: usize, min_len: usize, max_len: usize) -> Vec<String> {
-    let bytes = sequence.as_bytes();
-    let mut sites = vec![0usize];
-    for (i, &aa) in bytes.iter().enumerate() {
-        if (aa == b'K' || aa == b'R') && bytes.get(i + 1) != Some(&b'P') {
-            sites.push(i + 1);
-        }
-    }
-    if sites.last().copied() != Some(bytes.len()) {
-        sites.push(bytes.len());
-    }
-    let mut out = Vec::new();
-    for start in 0..sites.len().saturating_sub(1) {
-        for mc in 0..=missed {
-            let end = start + mc + 1;
-            if end >= sites.len() {
-                break;
-            }
-            let pep = &sequence[sites[start]..sites[end]];
-            if (min_len..=max_len).contains(&pep.len())
-                && pep.bytes().all(|aa| VALID_AA.as_bytes().contains(&aa))
-            {
-                out.push(pep.to_string());
-            }
-        }
-    }
-    out
-}
-
-fn peptide_proteins(
-    records: &[(String, String)],
-    missed: usize,
-    min_len: usize,
-    max_len: usize,
-) -> BTreeMap<String, BTreeSet<String>> {
-    let mut peptides: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    for (protein, sequence) in records {
-        for peptide in digest_tryptic(sequence, missed, min_len, max_len) {
-            peptides.entry(peptide).or_default().insert(protein.clone());
-        }
-    }
-    peptides
+    /// Wall time spent reading and digesting the FASTA.
+    ///
+    /// Split from the rest because the two halves scale on different things: digestion grows
+    /// with the proteome, prediction with the precursor count and the model. A build that got
+    /// slower is a different problem depending on which number moved.
+    pub digest: Duration,
+    /// Wall time from the end of digestion to the last spectrum handed to the sink, including
+    /// loading the model.
+    pub predict: Duration,
 }
 
 fn rule_sites(sequence: &str, rule: &ModificationRule) -> Vec<Site> {
@@ -325,52 +251,8 @@ fn target_overlap(a: &ModificationTarget, b: &ModificationTarget) -> bool {
     }
 }
 
-fn annotation(spec: &ModSpec) -> String {
-    match spec {
-        ModSpec::Unimod { accession, .. } => format!("(UniMod:{accession})"),
-        ModSpec::MassOnly(mass) => format!("({mass:+})"),
-        ModSpec::Formula { formula, .. } => format!("[Formula:{formula}]"),
-    }
-}
-
-fn render_diann(sequence: &str, mods: &[(Site, ModSpec)]) -> String {
-    let mut diann = String::new();
-    for (site, spec) in mods {
-        if *site == Site::NTerm {
-            diann.push_str(&annotation(spec));
-        }
-    }
-    for (i, aa) in sequence.chars().enumerate() {
-        diann.push(aa);
-        for (site, spec) in mods {
-            if *site == Site::Residue(i) {
-                diann.push_str(&annotation(spec));
-            }
-        }
-    }
-    for (site, spec) in mods {
-        if *site == Site::CTerm {
-            diann.push_str(&annotation(spec));
-        }
-    }
-    diann
-}
-
-/// Reverse only the internal residues, preserving the enzymatic termini.
-///
-/// For example, `PEPTIDEK` becomes `PEDITPEK`. Keeping the first and last residues makes the
-/// decoy retain the target's tryptic context while changing its internal sequence.
-fn pseudo_reverse_sequence(sequence: &str) -> String {
-    let mut chars: Vec<char> = sequence.chars().collect();
-    let length = chars.len();
-    if length > 2 {
-        chars[1..length - 1].reverse();
-    }
-    chars.into_iter().collect()
-}
-
-/// Move residue modifications with their residues through a pseudo-reversal. Terminal
-/// modifications stay terminal.
+/// The decoy peptidoform: residues pseudo-reversed, and each residue modification carried to
+/// wherever its residue ended up. Terminal modifications stay terminal.
 fn pseudo_reverse_peptide(peptide: &Peptide) -> Peptide {
     let length = peptide.sequence.chars().count();
     let mods = peptide
@@ -386,15 +268,13 @@ fn pseudo_reverse_peptide(peptide: &Peptide) -> Peptide {
             (site, spec.clone())
         })
         .collect();
-    Peptide::new(pseudo_reverse_sequence(&peptide.sequence), mods)
-}
-
-fn decoy_protein_group(protein_group: &str) -> String {
-    protein_group
-        .split(';')
-        .map(|protein| format!("DECOY_{protein}"))
-        .collect::<Vec<_>>()
-        .join(";")
+    // The same reversal `SpectrumRow.stripped` reports and the collision check asks about, rather
+    // than a second implementation of the rule: a divergence between them would emit a library
+    // whose stripped column disagreed with its modified-peptide column, silently.
+    Peptide::new(
+        Residues::pseudo_reversed(&peptide.sequence).to_string(),
+        mods,
+    )
 }
 
 fn modified_forms(
@@ -402,7 +282,7 @@ fn modified_forms(
     fixed_rules: &[ModificationRule],
     variable_rules: &[ModificationRule],
     max_variable: usize,
-) -> Result<Vec<(Peptide, String)>> {
+) -> Result<Vec<Peptide>> {
     let mut fixed = Vec::new();
     for rule in fixed_rules {
         fixed.extend(
@@ -453,8 +333,7 @@ fn modified_forms(
                 fixed.iter().cloned().chain(variable).collect(),
             );
             peptide.validate_mod_specs()?;
-            let diann = render_diann(sequence, &peptide.mods);
-            Ok((peptide, diann))
+            Ok(peptide)
         })
         .collect()
 }
@@ -465,22 +344,36 @@ fn ccs_to_bruker_mobility(ccs: f64, charge: i64, precursor_mz: f64) -> f64 {
     ccs * reduced_mass.sqrt() / charge as f64 / CCS_IM_COEF
 }
 
+/// One peptidoform on its way to a worker.
+///
+/// Carries the flyweight rather than copies: `source` is an atomic increment and an index, and it
+/// answers the stripped sequence and the protein group without materializing either. A decoy adds
+/// nothing to that, because `decoy` already says how to read the same residues.
 struct PendingPeptide {
-    stripped: String,
-    protein_group: String,
+    source: PeptideRef,
     peptide: Peptide,
-    diann_sequence: String,
     decoy: bool,
     decoy_pair_id: Option<usize>,
 }
 
 struct PredictedPeptide {
-    stripped: String,
-    protein_group: String,
-    diann_sequence: String,
+    source: PeptideRef,
+    /// Kept past prediction because it is what each format spells its own way; carrying a
+    /// rendered string instead would put one format's spelling on a format-neutral record.
+    peptide: Peptide,
     predictions: Vec<Prediction>,
     decoy: bool,
     decoy_pair_id: Option<usize>,
+}
+
+impl PredictedPeptide {
+    fn stripped(&self) -> Residues<'_> {
+        if self.decoy {
+            Residues::pseudo_reversed(self.source.residues())
+        } else {
+            Residues::target(self.source.residues())
+        }
+    }
 }
 
 /// Validate one prediction and cap its transition list.
@@ -489,7 +382,9 @@ fn spectrum_row<'a>(
     prediction: &'a Prediction,
     max_fragments: Option<usize>,
 ) -> Result<SpectrumRow<'a>> {
-    let diann_sequence = item.diann_sequence.as_str();
+    // The identifier every refusal below names. ProForma rather than a format's own spelling, so
+    // an error message does not speak DIA-NN at someone writing mzSpecLib.
+    let proforma = prediction.peptide.as_str();
     let charge = prediction.charge;
     if !prediction.precursor_mz.is_finite()
         || !prediction.rt.is_finite()
@@ -499,7 +394,7 @@ fn spectrum_row<'a>(
     {
         bail!(
             "non-physical precursor prediction for {} charge {}: mz={}, rt={}, ccs={}",
-            diann_sequence,
+            proforma,
             charge,
             prediction.precursor_mz,
             prediction.rt,
@@ -510,7 +405,7 @@ fn spectrum_row<'a>(
     if !mobility.is_finite() || mobility <= 0.0 {
         bail!(
             "non-physical mobility for {} charge {}: {}",
-            diann_sequence,
+            proforma,
             charge,
             mobility
         );
@@ -548,7 +443,7 @@ fn spectrum_row<'a>(
         {
             bail!(
                 "invalid fragment for {} charge {} at index {}: mz={}, intensity={}",
-                diann_sequence,
+                proforma,
                 charge,
                 i,
                 fragment_mz,
@@ -568,10 +463,10 @@ fn spectrum_row<'a>(
         });
     }
     Ok(SpectrumRow {
-        stripped: item.stripped.as_str(),
-        protein_group: item.protein_group.as_str(),
-        diann_sequence,
-        proforma: prediction.peptide.as_str(),
+        stripped: item.stripped(),
+        proteins: item.source.proteins(item.decoy),
+        peptide: &item.peptide,
+        proforma,
         decoy: item.decoy,
         decoy_pair_id: item.decoy_pair_id,
         charge,
@@ -593,18 +488,7 @@ fn predict_batch(
 ) -> Result<Vec<PredictedPeptide>> {
     let (metadata, peptides): (Vec<_>, Vec<_>) = batch
         .into_iter()
-        .map(|item| {
-            (
-                (
-                    item.stripped,
-                    item.protein_group,
-                    item.diann_sequence,
-                    item.decoy,
-                    item.decoy_pair_id,
-                ),
-                item.peptide,
-            )
-        })
+        .map(|item| ((item.source, item.decoy, item.decoy_pair_id), item.peptide))
         .unzip();
     let predictions = predict_peptide_batch_charges_prepared(
         artifact,
@@ -613,19 +497,19 @@ fn predict_batch(
         context,
         min_intensity,
     )?;
+    // The peptides are borrowed by the call above rather than consumed, so each one survives to
+    // be handed on: a sink spells its own peptidoform, and nothing has to be rendered twice.
     Ok(metadata
         .into_iter()
+        .zip(peptides)
         .zip(predictions)
         .map(
-            |((stripped, protein_group, diann_sequence, decoy, decoy_pair_id), predictions)| {
-                PredictedPeptide {
-                    stripped,
-                    protein_group,
-                    diann_sequence,
-                    predictions,
-                    decoy,
-                    decoy_pair_id,
-                }
+            |(((source, decoy, decoy_pair_id), peptide), predictions)| PredictedPeptide {
+                source,
+                peptide,
+                predictions,
+                decoy,
+                decoy_pair_id,
             },
         )
         .collect())
@@ -649,23 +533,26 @@ fn write_predicted_batch(
     Ok(())
 }
 
+/// Bucket one peptidoform by length, dispatching the bucket once it is a full batch.
+///
+/// A send failure means every worker has gone, which happens when the writer thread has already
+/// failed. Reported as `false` rather than an error, so the producer can stop and let the join
+/// surface the real one instead of this symptom of it.
 fn queue_pending(
     pending: &mut BTreeMap<usize, Vec<PendingPeptide>>,
     work_tx: &mpsc::SyncSender<Option<Vec<PendingPeptide>>>,
     item: PendingPeptide,
-) -> Result<()> {
+) -> bool {
     let length = item.peptide.sequence.len();
     let ready = {
         let bucket = pending.entry(length).or_default();
         bucket.push(item);
         (bucket.len() >= INFERENCE_BATCH_SIZE).then(|| std::mem::take(bucket))
     };
-    if let Some(batch) = ready {
-        work_tx
-            .send(Some(batch))
-            .context("sending inference batch")?;
+    match ready {
+        Some(batch) => work_tx.send(Some(batch)).is_ok(),
+        None => true,
     }
-    Ok(())
 }
 
 /// Generate a library and hand every spectrum to `sink`, writing no file.
@@ -704,7 +591,7 @@ pub fn write_library(opts: &LibraryOptions<'_>) -> Result<LibraryStats> {
         };
         let writer = BufWriter::new(stream);
         Ok(match format {
-            LibraryFormat::DiannTsv => Box::new(DiannSink { writer }),
+            LibraryFormat::DiannTsv => Box::new(crate::diann::DiannSink { writer }),
             LibraryFormat::MzSpecLib => {
                 Box::new(crate::mzspeclib::MzSpecLibSink::new(writer, &out_path))
             }
@@ -715,6 +602,7 @@ pub fn write_library(opts: &LibraryOptions<'_>) -> Result<LibraryStats> {
         format: format.name(),
         compressed,
         counts: None,
+        timing: None,
     };
     let (stats, provenance) = run_library(&opts.stream, Some(output), make_sink)?;
     if let Some(path) = opts.config_out {
@@ -732,26 +620,7 @@ fn run_library(
     output: Option<Output>,
     make_sink: impl FnOnce() -> Result<Box<dyn LibrarySink>>,
 ) -> Result<(LibraryStats, LibraryProvenance)> {
-    if !(0.0..=1.0).contains(&opts.min_intensity) {
-        bail!(
-            "min_intensity must be in [0, 1], got {}",
-            opts.min_intensity
-        );
-    }
-    if opts.min_charge < 1 || opts.max_charge < opts.min_charge {
-        bail!(
-            "invalid charge range {}..={}",
-            opts.min_charge,
-            opts.max_charge
-        );
-    }
-    if opts.min_length < 2 || opts.max_length < opts.min_length {
-        bail!(
-            "invalid peptide length range {}..={}",
-            opts.min_length,
-            opts.max_length
-        );
-    }
+    opts.validate()?;
     let fixed_rules = opts
         .fixed_mods
         .iter()
@@ -774,24 +643,37 @@ fn run_library(
             }
         }
     }
-    let records = parse_fasta(opts.fasta)?;
-    let peptides = peptide_proteins(
-        &records,
-        opts.missed_cleavages,
-        opts.min_length,
-        opts.max_length,
-    );
-    if peptides.is_empty() {
+    let reporter = Reporter::new(opts.progress);
+    let digest_started = Instant::now();
+    let digest = Arc::new(Digest::read(
+        opts.fasta,
+        &DigestRules {
+            missed_cleavages: opts.missed_cleavages,
+            min_length: opts.min_length,
+            max_length: opts.max_length,
+        },
+        &reporter,
+    )?);
+    if digest.is_empty() {
         bail!("FASTA digest produced no peptides");
     }
+    let digest_elapsed = digest_started.elapsed();
+    let predict_started = Instant::now();
+    // The denominator for the rest of the build. Peptides rather than precursors: a peptide's
+    // precursor count depends on how many modified forms it turns out to have, which is only
+    // known once it is enumerated, and a total that is still being discovered is no total at all.
+    let total_peptides = digest.peptides() as u64;
+    // Announced, not measured: reading an artifact is one call that reports nothing on the way
+    // through, so a zero total is the truthful spelling and a renderer shows the label alone.
+    reporter.at(Phase::Loading, 0, 0);
     let model = msspeculator_core::load_source(opts.model.clone())?;
     let mut artifact = model.artifact;
     apply_activation_override(&mut artifact, opts.activation)?;
     let context = PreparedContext::new(&artifact, opts.ms_context, opts.chrom_context)?;
     let charges = (opts.min_charge..=opts.max_charge).collect::<Vec<_>>();
     let stats = LibraryStats {
-        proteins: records.len(),
-        peptides: peptides.len(),
+        proteins: digest.proteins(),
+        peptides: digest.peptides(),
         ..LibraryStats::default()
     };
 
@@ -855,23 +737,35 @@ fn run_library(
             }
         }));
     }
+    // The producer keeps only the sender. Holding a receiver here too would mean `send` never
+    // reports a disconnect, so a writer that failed would leave every worker gone, the queue
+    // undrained, and this thread blocked on a full channel forever: a build that hangs silently
+    // instead of reporting the error it already has.
+    drop(work_rx);
 
-    let target_sequences: BTreeSet<String> = peptides.keys().cloned().collect();
-    let mut decoy_sequences = BTreeSet::new();
     let mut next_decoy_pair_id = 1usize;
     let mut pending: BTreeMap<usize, Vec<PendingPeptide>> = BTreeMap::new();
-    for (sequence, proteins) in peptides {
-        let protein_group = proteins.into_iter().collect::<Vec<_>>().join(";");
+    let mut peptides_done = 0u64;
+    // Set when the workers have gone, which only happens once the writer has failed. The producer
+    // stops enumerating and falls through to the joins, where that failure is waiting.
+    let mut consumers_gone = false;
+    for source in peptides(&digest) {
+        let sequence = source.residues();
         let target_forms = modified_forms(
-            &sequence,
+            sequence,
             &fixed_rules,
             &variable_rules,
             opts.max_variable_mods,
         )?;
-        let decoy_sequence = pseudo_reverse_sequence(&sequence);
-        let emit_decoy = opts.generate_decoys
-            && !target_sequences.contains(&decoy_sequence)
-            && decoy_sequences.insert(decoy_sequence.clone());
+        // Whether this peptide contributes a decoy, decided without building one.
+        //
+        // Only the target collision has to be checked. Pseudo-reversal pins the termini and turns
+        // the interior around, so applying it twice returns the original: it is an involution,
+        // therefore injective, therefore two distinct peptides can never reverse to the same
+        // decoy. `pseudo_reverse_is_an_involution` pins that, and is what a change of decoy
+        // method would break first.
+        let emit_decoy =
+            opts.generate_decoys && !digest.contains(Residues::pseudo_reversed(sequence));
         // Assign the ID even when the decoy is skipped, so consumers can distinguish a target-only
         // collision group from a library generated with decoys disabled.
         let decoy_pair_id = opts.generate_decoys.then(|| {
@@ -879,44 +773,54 @@ fn run_library(
             next_decoy_pair_id += 1;
             pair_id
         });
-        for (peptide, diann_sequence) in target_forms {
-            queue_pending(
+        for peptide in target_forms {
+            consumers_gone |= !queue_pending(
                 &mut pending,
                 &work_tx,
                 PendingPeptide {
-                    stripped: sequence.clone(),
-                    protein_group: protein_group.clone(),
+                    source: source.clone(),
                     peptide: peptide.clone(),
-                    diann_sequence,
                     decoy: false,
                     decoy_pair_id,
                 },
-            )?;
+            );
             if emit_decoy {
-                let decoy_peptide = pseudo_reverse_peptide(&peptide);
-                let decoy_diann = render_diann(&decoy_peptide.sequence, &decoy_peptide.mods);
-                queue_pending(
+                consumers_gone |= !queue_pending(
                     &mut pending,
                     &work_tx,
                     PendingPeptide {
-                        stripped: decoy_sequence.clone(),
-                        protein_group: decoy_protein_group(&protein_group),
-                        peptide: decoy_peptide,
-                        diann_sequence: decoy_diann,
+                        source: source.clone(),
+                        peptide: pseudo_reverse_peptide(&peptide),
                         decoy: true,
                         decoy_pair_id,
                     },
-                )?;
+                );
             }
         }
+        peptides_done += 1;
+        // Held below the total, because the producer runs ahead of the workers: it knows what has
+        // been enumerated, never what has been written. Only the update after the join is entitled
+        // to say the phase is done.
+        reporter.at(
+            Phase::Predicting,
+            peptides_done.min(total_peptides - 1),
+            total_peptides,
+        );
+        if consumers_gone {
+            break;
+        }
     }
-    for batch in pending.into_values().filter(|batch| !batch.is_empty()) {
-        work_tx
-            .send(Some(batch))
-            .context("sending inference batch")?;
-    }
-    for _ in 0..worker_count {
-        work_tx.send(None).context("stopping inference worker")?;
+    if !consumers_gone {
+        for batch in pending.into_values().filter(|batch| !batch.is_empty()) {
+            if work_tx.send(Some(batch)).is_err() {
+                break;
+            }
+        }
+        for _ in 0..worker_count {
+            if work_tx.send(None).is_err() {
+                break;
+            }
+        }
     }
     drop(work_tx);
     for handle in worker_handles {
@@ -925,41 +829,23 @@ fn run_library(
             .map_err(|_| anyhow::anyhow!("inference worker panicked"))?;
     }
     drop(result_tx);
-    let stats = writer_handle
+    let mut stats = writer_handle
         .join()
         .map_err(|_| anyhow::anyhow!("library writer panicked"))??;
+    stats.digest = digest_elapsed;
+    stats.predict = predict_started.elapsed();
+    // The closing update, after the join rather than after the last peptide was queued: the
+    // producer runs a bounded distance ahead of the workers, so a bar that reached 100% when
+    // enumeration ended would claim the library was finished while it was still being written.
+    reporter.at(Phase::Predicting, total_peptides, total_peptides);
     Ok((stats, provenance))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    /// A scratch path that removes itself, so the tests need no dev-dependency for it.
-    struct Scratch(std::path::PathBuf);
-
-    impl Scratch {
-        fn new(name: &str) -> Self {
-            let path = std::env::temp_dir().join(format!(
-                "msspeculator-{}-{}-{name}",
-                std::process::id(),
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_nanos()
-            ));
-            Self(path)
-        }
-
-        fn path(&self) -> &std::path::Path {
-            &self.0
-        }
-    }
-
-    impl Drop for Scratch {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_file(&self.0);
-        }
-    }
+    use crate::progress::Progress;
+    use crate::scratch::Scratch;
 
     /// What an embedding caller looks like: keeps the rows, writes nothing.
     ///
@@ -970,6 +856,7 @@ mod tests {
     #[derive(Default)]
     struct Collected {
         rows: Vec<(String, i64, usize)>,
+        proteins: Vec<String>,
         model: Option<String>,
         output_present: Option<bool>,
         finished: usize,
@@ -988,11 +875,11 @@ mod tests {
         }
 
         fn spectrum(&mut self, row: &SpectrumRow<'_>) -> Result<()> {
-            self.0.lock().expect("collector mutex poisoned").rows.push((
-                row.proforma.to_string(),
-                row.charge,
-                row.peaks.len(),
-            ));
+            let mut collected = self.0.lock().expect("collector mutex poisoned");
+            collected
+                .rows
+                .push((row.proforma.to_string(), row.charge, row.peaks.len()));
+            collected.proteins = row.proteins.iter().map(|id| id.to_string()).collect();
             Ok(())
         }
 
@@ -1004,7 +891,7 @@ mod tests {
 
     fn tiny_fasta() -> Scratch {
         let scratch = Scratch::new("tiny.fasta");
-        std::fs::write(&scratch.0, ">protein_one description\nPEPTIDEMR\n").unwrap();
+        std::fs::write(scratch.path(), ">protein_one description\nPEPTIDEMR\n").unwrap();
         scratch
     }
 
@@ -1026,7 +913,170 @@ mod tests {
             max_variable_mods: 0,
             max_fragments: None,
             generate_decoys: false,
+            progress: None,
         }
+    }
+
+    /// A FASTA big enough that both phases report while they run rather than only at their close.
+    ///
+    /// Sized past the reporter's stride on purpose: with a handful of peptides every intermediate
+    /// update is suppressed, and a progress test that only ever sees a closing update cannot fail
+    /// for the reason it exists.
+    fn several_proteins() -> Scratch {
+        let scratch = Scratch::new("several.fasta");
+        let mut text = String::new();
+        // Each digests to itself at the fixture's fixed length of 9: no internal cleavage site,
+        // so a protein contributes exactly one peptide and the totals stay readable.
+        for i in 0..300u32 {
+            let sequence: String = format!("{i:04}")
+                .bytes()
+                .map(|digit| b"GASPVTCLIN"[usize::from(digit - b'0')] as char)
+                .chain("PTIDR".chars())
+                .collect();
+            text.push_str(&format!(">protein_{i} description\n{sequence}\n"));
+        }
+        std::fs::write(scratch.path(), text).unwrap();
+        scratch
+    }
+
+    /// What a caller needs from the callback: the phases in order, each one monotone, and a
+    /// closing update that only lands once the library really is finished.
+    #[test]
+    fn progress_walks_the_phases_in_order_and_ends_at_the_total() {
+        let fasta = several_proteins();
+        let seen = Mutex::new(Vec::new());
+        let report = |progress: Progress| seen.lock().unwrap().push(progress);
+        let mut opts = stream_options(fasta.path());
+        opts.progress = Some(&report);
+
+        let stats = stream_library(
+            &opts,
+            CollectingSink(Arc::new(Mutex::new(Collected::default()))),
+        )
+        .unwrap();
+
+        let seen = seen.into_inner().unwrap();
+        let order: Vec<Phase> = seen.iter().map(|p| p.phase).collect();
+        let first = |phase: Phase| order.iter().position(|&p| p == phase).unwrap();
+        assert!(first(Phase::Digesting) < first(Phase::Loading));
+        assert!(first(Phase::Loading) < first(Phase::Predicting));
+
+        for phase in [Phase::Digesting, Phase::Loading, Phase::Predicting] {
+            let updates: Vec<&Progress> = seen.iter().filter(|p| p.phase == phase).collect();
+            assert!(!updates.is_empty(), "{phase:?} never reported");
+            assert!(
+                updates.windows(2).all(|w| w[0].done <= w[1].done),
+                "{phase:?} went backwards"
+            );
+            let last = updates.last().unwrap();
+            assert_eq!(last.done, last.total, "{phase:?} did not finish");
+        }
+
+        // Digestion is billed in bytes of the file it read, prediction in the peptides that came
+        // out of it, so the totals are checkable against something other than themselves.
+        let digesting = seen.iter().find(|p| p.phase == Phase::Digesting).unwrap();
+        assert_eq!(
+            digesting.total,
+            std::fs::metadata(fasta.path()).unwrap().len()
+        );
+        let predicting: Vec<&Progress> = seen
+            .iter()
+            .filter(|p| p.phase == Phase::Predicting)
+            .collect();
+        assert_eq!(predicting[0].total, stats.peptides as u64);
+        // The point of the phase, and what a single closing update would not prove: it reports
+        // while the build runs.
+        assert!(
+            predicting.len() > 1,
+            "predicting reported only its closing update"
+        );
+        // Pins the claim that the closing update lands after the writer joins rather than when
+        // enumeration ended, which is otherwise only a comment.
+        assert!(
+            predicting[..predicting.len() - 1]
+                .iter()
+                .all(|p| p.done < p.total),
+            "an update claimed completion before the writer joined"
+        );
+        // Loading measures nothing, so it says so rather than inventing a denominator.
+        let loading = seen.iter().find(|p| p.phase == Phase::Loading).unwrap();
+        assert_eq!((loading.done, loading.total), (0, 0));
+    }
+
+    #[test]
+    fn a_build_records_how_long_each_half_took() {
+        let fasta = tiny_fasta();
+        let stats = stream_library(
+            &stream_options(fasta.path()),
+            CollectingSink(Arc::new(Mutex::new(Collected::default()))),
+        )
+        .unwrap();
+        assert!(stats.predict > std::time::Duration::ZERO);
+        // Digesting one nine-residue protein can land inside a clock tick, so the claim is that
+        // the two are recorded separately, not that either is large.
+        assert!(stats.digest < stats.digest + stats.predict);
+    }
+
+    /// A failing sink has to surface as an error, not as a hang.
+    ///
+    /// When the writer thread fails it drops the result channel, every worker breaks, and nothing
+    /// drains the work queue. If the producer still held a receiver, its `send` would never report
+    /// the disconnect and it would block on a full channel forever — a build stuck silently with
+    /// the real error already in hand. The fixture has to outrun the queue for that to bite, which
+    /// is why the small ones miss it.
+    #[test]
+    fn a_sink_that_fails_stops_the_build_instead_of_hanging_it() {
+        struct FailingSink;
+
+        impl LibrarySink for FailingSink {
+            fn header(&mut self, _: &LibraryProvenance) -> Result<()> {
+                Ok(())
+            }
+
+            fn spectrum(&mut self, _: &SpectrumRow<'_>) -> Result<()> {
+                bail!("no space left on device")
+            }
+
+            fn finish(&mut self) -> Result<()> {
+                Ok(())
+            }
+        }
+
+        let scratch = Scratch::new("crowded.fasta");
+        let mut text = String::new();
+        for i in 0..6000u32 {
+            let sequence: String = format!("{i:05}")
+                .bytes()
+                .map(|digit| b"GASPVTCLIN"[usize::from(digit - b'0')] as char)
+                .chain("PTIDR".chars())
+                .collect();
+            text.push_str(&format!(">protein_{i} d\n{sequence}\n"));
+        }
+        std::fs::write(scratch.path(), text).unwrap();
+
+        let mut opts = stream_options(scratch.path());
+        opts.min_length = 10;
+        opts.max_length = 10;
+        let error = stream_library(&opts, FailingSink).unwrap_err();
+        assert!(
+            error.to_string().contains("no space left"),
+            "the sink's own error should survive: {error}"
+        );
+    }
+
+    /// A FASTA identifier is free to contain a semicolon, and DIA-NN's separator is a property of
+    /// that one format. Nothing but its writer may assume otherwise.
+    #[test]
+    fn a_semicolon_in_an_identifier_survives_to_a_sink() {
+        let scratch = Scratch::new("semicolon.fasta");
+        std::fs::write(scratch.path(), ">weird;name desc\nPEPTIDEMR\n").unwrap();
+        let collected = Arc::new(Mutex::new(Collected::default()));
+        stream_library(
+            &stream_options(scratch.path()),
+            CollectingSink(Arc::clone(&collected)),
+        )
+        .unwrap();
+        assert_eq!(collected.lock().unwrap().proteins, vec!["weird;name"]);
     }
 
     /// The point of the split: a library reaches a caller's own sink with no file anywhere, and
@@ -1081,7 +1131,7 @@ mod tests {
     fn a_rejected_run_leaves_the_existing_output_alone() {
         let fasta = tiny_fasta();
         let out = Scratch::new("precious.tsv");
-        std::fs::write(&out.0, "EXISTING LIBRARY\n").unwrap();
+        std::fs::write(out.path(), "EXISTING LIBRARY\n").unwrap();
 
         let mut opts = stream_options(fasta.path());
         opts.min_intensity = 5.0;
@@ -1100,24 +1150,6 @@ mod tests {
     }
 
     #[test]
-    fn tryptic_digest_honors_proline_and_missed_cleavages() {
-        assert_eq!(
-            digest_tryptic("AKPEPTIDERAAK", 0, 1, 30),
-            vec!["AKPEPTIDER", "AAK"]
-        );
-        assert_eq!(
-            digest_tryptic("AKPEPTIDERAAK", 1, 1, 30),
-            vec!["AKPEPTIDER", "AKPEPTIDERAAK", "AAK"]
-        );
-    }
-
-    #[test]
-    fn pseudo_reverse_preserves_termini() {
-        assert_eq!(pseudo_reverse_sequence("PEPTIDEK"), "PEDITPEK");
-        assert_eq!(pseudo_reverse_sequence("AK"), "AK");
-    }
-
-    #[test]
     fn pseudo_reverse_moves_residue_modifications_with_their_residue() {
         let peptide = Peptide::new(
             "PEPTIDEK".into(),
@@ -1133,14 +1165,16 @@ mod tests {
     }
 
     #[test]
-    fn modifications_render_for_model_and_diann() {
+    fn modifications_land_on_the_sites_they_target() {
         let fixed = vec![parse_modification_rule("C[UNIMOD:4]").unwrap()];
         let variable = vec![parse_modification_rule("M[UNIMOD:35]").unwrap()];
         let forms = modified_forms("ACDM", &fixed, &variable, 1).unwrap();
-        let (peptide, diann) = &forms[1];
-        assert_eq!(peptide.modified_sequence(), "AC[UNIMOD:4]DM[UNIMOD:35]");
-        assert_eq!(diann, "AC(UniMod:4)DM(UniMod:35)");
-        assert_eq!(peptide.mods[1].0, Site::Residue(3));
+        assert_eq!(forms[1].modified_sequence(), "AC[UNIMOD:4]DM[UNIMOD:35]");
+        assert_eq!(
+            crate::diann::modified_peptide(&forms[1]),
+            "AC(UniMod:4)DM(UniMod:35)"
+        );
+        assert_eq!(forms[1].mods[1].0, Site::Residue(3));
     }
 
     #[test]
@@ -1153,10 +1187,9 @@ mod tests {
         let forms = modified_forms("ACSM", &[], &variable, 3).unwrap();
         // Three independently eligible sites -> C(3,0)+C(3,1)+C(3,2)+C(3,3).
         assert_eq!(forms.len(), 8);
-        assert!(forms.iter().any(|(peptide, diann)| {
-            peptide.modified_sequence() == "AC[UNIMOD:2057]S[UNIMOD:21]M[UNIMOD:35]"
-                && diann == "AC(UniMod:2057)S(UniMod:21)M(UniMod:35)"
-        }));
+        assert!(forms.iter().any(
+            |peptide| peptide.modified_sequence() == "AC[UNIMOD:2057]S[UNIMOD:21]M[UNIMOD:35]"
+        ));
     }
 
     #[test]
