@@ -225,8 +225,14 @@ pub struct LibraryStats {
     /// with the proteome, prediction with the precursor count and the model. A build that got
     /// slower is a different problem depending on which number moved.
     pub digest: Duration,
-    /// Wall time from the end of digestion to the last spectrum handed to the sink, including
-    /// loading the model.
+    /// Wall time spent reading the model and preparing its context.
+    ///
+    /// Its own number rather than part of `predict`, because it scales on neither of the things
+    /// the other two scale on — it scales on the artifact and on whether the page cache is cold.
+    /// Folded into `predict`, a rebuild that got four minutes slower could not say whether the
+    /// model took longer to load or longer to run.
+    pub load: Duration,
+    /// Wall time from the end of loading to the last spectrum handed to the sink.
     pub predict: Duration,
 }
 
@@ -658,7 +664,6 @@ fn run_library(
         bail!("FASTA digest produced no peptides");
     }
     let digest_elapsed = digest_started.elapsed();
-    let predict_started = Instant::now();
     // The denominator for the rest of the build. Peptides rather than precursors: a peptide's
     // precursor count depends on how many modified forms it turns out to have, which is only
     // known once it is enumerated, and a total that is still being discovered is no total at all.
@@ -666,10 +671,21 @@ fn run_library(
     // Announced, not measured: reading an artifact is one call that reports nothing on the way
     // through, so a zero total is the truthful spelling and a renderer shows the label alone.
     reporter.at(Phase::Loading, 0, 0);
+    // Clocked separately for the same reason the other two are clocked separately: loading scales
+    // on the artifact and on whether the page cache is cold, neither of which has anything to do
+    // with the proteome or the precursor count. Billed to the phase the callback already named,
+    // so the three durations are disjoint and sum to the build.
+    let load_started = Instant::now();
     let model = msspeculator_core::load_source(opts.model.clone())?;
     let mut artifact = model.artifact;
     apply_activation_override(&mut artifact, opts.activation)?;
     let context = PreparedContext::new(&artifact, opts.ms_context, opts.chrom_context)?;
+    let load_elapsed = load_started.elapsed();
+    let predict_started = Instant::now();
+    // The opening update, before the threads start and before provenance hashes the inputs. The
+    // in-loop report below only fires once a peptide has been enumerated, so a build small enough
+    // to finish inside one report interval would otherwise go from invisible to 100% in one step.
+    reporter.at(Phase::Predicting, 0, total_peptides);
     let charges = (opts.min_charge..=opts.max_charge).collect::<Vec<_>>();
     let stats = LibraryStats {
         proteins: digest.proteins(),
@@ -833,6 +849,7 @@ fn run_library(
         .join()
         .map_err(|_| anyhow::anyhow!("library writer panicked"))??;
     stats.digest = digest_elapsed;
+    stats.load = load_elapsed;
     stats.predict = predict_started.elapsed();
     // The closing update, after the join rather than after the last peptide was queued: the
     // producer runs a bounded distance ahead of the workers, so a bar that reached 100% when
@@ -964,6 +981,9 @@ mod tests {
         for phase in [Phase::Digesting, Phase::Loading, Phase::Predicting] {
             let updates: Vec<&Progress> = seen.iter().filter(|p| p.phase == phase).collect();
             assert!(!updates.is_empty(), "{phase:?} never reported");
+            // The opening end. Without it a bar first appears partway along, or — for a phase
+            // short enough to finish inside one report interval — goes from invisible to 100%.
+            assert_eq!(updates[0].done, 0, "{phase:?} did not report its start");
             assert!(
                 updates.windows(2).all(|w| w[0].done <= w[1].done),
                 "{phase:?} went backwards"
@@ -1004,7 +1024,7 @@ mod tests {
     }
 
     #[test]
-    fn a_build_records_how_long_each_half_took() {
+    fn a_build_records_how_long_each_phase_took() {
         let fasta = tiny_fasta();
         let stats = stream_library(
             &stream_options(fasta.path()),
@@ -1012,9 +1032,13 @@ mod tests {
         )
         .unwrap();
         assert!(stats.predict > std::time::Duration::ZERO);
+        // Reading an artifact is the phase that exists to explain a pause, so it is the one whose
+        // duration has to be its own number rather than folded into prediction's.
+        assert!(stats.load > std::time::Duration::ZERO);
+        assert!(stats.load < stats.load + stats.predict);
         // Digesting one nine-residue protein can land inside a clock tick, so the claim is that
-        // the two are recorded separately, not that either is large.
-        assert!(stats.digest < stats.digest + stats.predict);
+        // the three are recorded separately, not that any of them is large.
+        assert!(stats.digest < stats.digest + stats.load + stats.predict);
     }
 
     /// A failing sink has to surface as an error, not as a hang.

@@ -488,15 +488,16 @@ fn run_library(args: LibraryArgs) -> Result<()> {
     // which is the path that has it drawn.
     drop(line);
     eprintln!(
-        "{} proteins -> {} peptides -> {} precursors ({} decoys) -> {} fragments -> {} in {:.1}s ({:.1}s digesting)",
+        "{} proteins -> {} peptides -> {} precursors ({} decoys) -> {} fragments -> {} in {:.1}s ({:.1}s digesting, {:.1}s loading the model)",
         stats.proteins,
         stats.peptides,
         stats.precursors,
         stats.decoys,
         stats.fragments,
         args.out.display(),
-        (stats.digest + stats.predict).as_secs_f64(),
+        (stats.digest + stats.load + stats.predict).as_secs_f64(),
         stats.digest.as_secs_f64(),
+        stats.load.as_secs_f64(),
     );
     Ok(())
 }

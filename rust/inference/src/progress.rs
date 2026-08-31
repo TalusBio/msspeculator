@@ -101,6 +101,14 @@ impl Progress {
 /// `Send + Sync` because those bounds can be relaxed later without breaking a caller and cannot be
 /// added later at all. The lifetime is spelled out because a bare trait-object alias would default
 /// to `'static`, ruling out a closure that borrows a progress bar off the caller's stack.
+///
+/// Two things about drawing a bar are the caller's to get right, and neither is about the update
+/// rate. A terminal and a redirected stream need two renderers rather than one narrowed: `\r`
+/// into a file produces a single enormous line, so a bar has to be traded for an appended line
+/// per interval when the stream is not a terminal. And a bar has to be closed — whatever draws it
+/// leaves the cursor on its own line, so the next thing written continues it, and the next thing
+/// written is often the error that ended the build. Closing on drop rather than at the end of the
+/// happy path is what covers the case that has the bar drawn.
 pub type ProgressFn<'a> = dyn Fn(Progress) + Send + Sync + 'a;
 
 /// One update per this many, so a proteome reports thousands of times rather than millions. The

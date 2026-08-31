@@ -1,14 +1,27 @@
 //! The CLI's progress reporting, on top of the inference crate's callback.
 
 use std::io::{IsTerminal, Write};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::time::{Duration, Instant};
 
-use msspeculator_inference::{Exactness, Progress};
+use msspeculator_inference::{Exactness, Phase, Progress};
 
 /// Rewrite rate for the in-place line. Fast enough to look continuous, slow enough that a build
 /// dispatching tens of thousands of batches does not spend its time on `write`.
 const REDRAW: Duration = Duration::from_millis(100);
+
+/// The phase a line shows before it has shown anything, so the first update reads as a change.
+const NO_PHASE: u8 = u8::MAX;
+
+/// A phase as an atomic-sized number. Hand-written rather than an `as` cast, because [`NO_PHASE`]
+/// has to be a value no phase can take.
+fn phase_index(phase: Phase) -> u8 {
+    match phase {
+        Phase::Digesting => 0,
+        Phase::Loading => 1,
+        Phase::Predicting => 2,
+    }
+}
 
 /// Line rate for the appended form. A 70-second build leaves seven lines and a twelve-hour one
 /// leaves about four thousand, which is a log a person can still scroll.
@@ -47,6 +60,9 @@ pub struct ProgressLine {
     started: Instant,
     /// Milliseconds since `started` at the last rendered update.
     rendered: AtomicU64,
+    /// The phase of the last rendered update, or [`NO_PHASE`] before there was one. Kept so a
+    /// phase change can bypass the throttle.
+    phase: AtomicU8,
     /// Whether anything is currently on the terminal line, so the wipe knows to run.
     live: AtomicBool,
 }
@@ -63,6 +79,7 @@ impl ProgressLine {
             style,
             started: Instant::now(),
             rendered: AtomicU64::new(0),
+            phase: AtomicU8::new(NO_PHASE),
             live: AtomicBool::new(false),
         }
     }
@@ -73,7 +90,7 @@ impl ProgressLine {
             Style::Live => REDRAW,
             Style::Logged => LOG_INTERVAL,
         };
-        let Some(now) = self.claim(interval) else {
+        let Some(now) = self.claim(progress.phase, interval) else {
             return;
         };
         let mut stderr = std::io::stderr().lock();
@@ -95,8 +112,18 @@ impl ProgressLine {
     /// Losing the exchange means another update is already rendering this instant; that one is
     /// dropped rather than queued, which is right for a status line. The next is along in
     /// milliseconds with a better number.
-    fn claim(&self, interval: Duration) -> Option<u64> {
+    fn claim(&self, phase: Phase, interval: Duration) -> Option<u64> {
         let now = self.started.elapsed().as_millis() as u64;
+        // A phase change is never throttled. The interval exists to stop a fast phase rewriting
+        // the line thousands of times a second, and dropping a change instead loses the label:
+        // a build whose digestion finishes in nine milliseconds would show `digesting 100%` for
+        // the whole of a four-minute model load, which is the stall `loading` exists to explain.
+        // This also covers the first update of the build, which arrives too soon after `started`
+        // to clear any interval.
+        if self.phase.swap(phase_index(phase), Ordering::Relaxed) != phase_index(phase) {
+            self.rendered.store(now, Ordering::Relaxed);
+            return Some(now);
+        }
         let previous = self.rendered.load(Ordering::Relaxed);
         if now.saturating_sub(previous) < interval.as_millis() as u64 {
             return None;
@@ -247,7 +274,30 @@ mod tests {
     fn a_silent_line_renders_nothing_and_needs_no_terminal() {
         let line = ProgressLine::for_stderr(false);
         line.update(progress(1, 2));
-        assert_eq!(line.rendered.load(Ordering::Relaxed), 0);
+        assert_eq!(line.phase.load(Ordering::Relaxed), NO_PHASE);
         assert!(!line.live.load(Ordering::Relaxed));
+    }
+
+    /// Both ends of a phase arrive within a millisecond of each other on a small build, so a
+    /// throttle that applied to them would drop every update that names a phase but the first.
+    #[test]
+    fn a_phase_change_outranks_the_throttle() {
+        let line = ProgressLine::for_stderr(false);
+        assert!(
+            line.claim(Phase::Digesting, REDRAW).is_some(),
+            "the opening update was dropped"
+        );
+        assert!(
+            line.claim(Phase::Digesting, REDRAW).is_none(),
+            "the throttle stopped applying within a phase"
+        );
+        assert!(
+            line.claim(Phase::Loading, REDRAW).is_some(),
+            "a phase change was dropped, so its label never appeared"
+        );
+        assert!(
+            line.claim(Phase::Predicting, REDRAW).is_some(),
+            "a phase change was dropped, so its label never appeared"
+        );
     }
 }
