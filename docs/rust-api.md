@@ -83,16 +83,18 @@ worker queues, and writes DIA-NN TSV or mzSpecLib output. `LibraryStats` reports
 proteins, peptides, precursors, fragments, and decoy precursors.
 
 ```rust,no_run
-use msspeculator_core::{BuiltinModel, ModelSource};
-use msspeculator_inference::{write_library, LibraryOptions};
+use std::path::Path;
 
-fn run() -> anyhow::Result<()> {
-    let fixed_mods = vec!["C[UNIMOD:4]".to_string()];
-    let variable_mods = vec!["M[UNIMOD:35]".to_string()];
-    let stats = write_library(&LibraryOptions {
+use msspeculator_core::{BuiltinModel, ModelSource};
+use msspeculator_inference::{write_library, LibraryOptions, StreamOptions};
+
+fn stream_options<'a>(
+    fixed_mods: &'a [String],
+    variable_mods: &'a [String],
+) -> StreamOptions<'a> {
+    StreamOptions {
         model: ModelSource::Builtin(BuiltinModel::SmallV0),
-        fasta: "proteome.fasta",
-        out: "library.tsv",
+        fasta: Path::new("proteome.fasta"),
         activation: None,
         ms_context: None,
         chrom_context: None,
@@ -102,17 +104,63 @@ fn run() -> anyhow::Result<()> {
         max_length: 40,
         min_charge: 2,
         max_charge: 4,
-        fixed_mods: &fixed_mods,
-        variable_mods: &variable_mods,
+        fixed_mods,
+        variable_mods,
         max_variable_mods: 1,
         max_fragments: None,
-        config_out: Some("library.tsv.config.json"),
         generate_decoys: false,
+    }
+}
+
+fn run() -> anyhow::Result<()> {
+    let fixed_mods = vec!["C[UNIMOD:4]".to_string()];
+    let variable_mods = vec!["M[UNIMOD:35]".to_string()];
+    let stats = write_library(&LibraryOptions {
+        stream: stream_options(&fixed_mods, &variable_mods),
+        out: Path::new("library.tsv"),
+        config_out: Some(Path::new("library.tsv.config.json")),
     })?;
     println!("{} precursors", stats.precursors);
     Ok(())
 }
 ```
+
+## Receive rows without writing a file
+
+`write_library` picks its writer from the output suffix. To keep the spectra in your own process
+instead, implement `LibrarySink` and call `stream_library`, which takes `StreamOptions`:
+`LibraryOptions` minus the two fields that only mean something when there is a file.
+
+```rust,no_run
+use msspeculator_inference::{stream_library, LibraryProvenance, LibrarySink, SpectrumRow};
+
+struct Indexer {
+    precursors: usize,
+}
+
+impl LibrarySink for Indexer {
+    fn header(&mut self, provenance: &LibraryProvenance) -> anyhow::Result<()> {
+        // The same resolved configuration a written library carries, so an in-memory index can
+        // record what produced it without a sidecar.
+        println!("model {}", provenance.inputs.model);
+        Ok(())
+    }
+
+    fn spectrum(&mut self, row: &SpectrumRow<'_>) -> anyhow::Result<()> {
+        // `row` borrows from the prediction it came out of; copy anything you keep.
+        self.precursors += 1;
+        Ok(())
+    }
+
+    fn finish(&mut self) -> anyhow::Result<()> {
+        Ok(())
+    }
+}
+```
+
+The sink is moved onto the writer thread while workers predict, which is why `LibrarySink`
+requires `Send`. `provenance.output` is `None` here: there is no path, no suffix-chosen format,
+and no compression to report.
 
 `LibraryOptions` uses the output suffix to choose the writer. `.mzspeclib.txt` and `.mzspeclib`
 select mzSpecLib text; other suffixes select DIA-NN TSV. Add `.gz` to compress either stream.

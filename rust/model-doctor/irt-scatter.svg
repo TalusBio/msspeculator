@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="820" height="760" viewBox="0 0 820 760">
+<rect width="100%" height="100%" fill="white"/>
+<text x="410" y="30" text-anchor="middle" font-family="sans-serif" font-size="20">Built-in iRT model doctor</text>
+<rect x="82" y="54" width="710" height="628" fill="none" stroke="#333"/>
+<line x1="82" y1="54" x2="82" y2="682" stroke="#e5e5e5"/>
+<line x1="82" y1="682" x2="792" y2="682" stroke="#e5e5e5"/>
+<text x="82" y="704" text-anchor="middle" font-family="sans-serif" font-size="12">-31.2</text>
+<text x="74" y="686" text-anchor="end" font-family="sans-serif" font-size="12">-31.2</text>
+<line x1="224" y1="54" x2="224" y2="682" stroke="#e5e5e5"/>
+<line x1="82" y1="556.4000000000001" x2="792" y2="556.4000000000001" stroke="#e5e5e5"/>
+<text x="224" y="704" text-anchor="middle" font-family="sans-serif" font-size="12">-3.4</text>
+<text x="74" y="560.4000000000001" text-anchor="end" font-family="sans-serif" font-size="12">-3.4</text>
+<line x1="366" y1="54" x2="366" y2="682" stroke="#e5e5e5"/>
+<line x1="82" y1="430.8" x2="792" y2="430.8" stroke="#e5e5e5"/>
+<text x="366" y="704" text-anchor="middle" font-family="sans-serif" font-size="12">24.4</text>
+<text x="74" y="434.8" text-anchor="end" font-family="sans-serif" font-size="12">24.4</text>
+<line x1="508" y1="54" x2="508" y2="682" stroke="#e5e5e5"/>
+<line x1="82" y1="305.20000000000005" x2="792" y2="305.20000000000005" stroke="#e5e5e5"/>
+<text x="508" y="704" text-anchor="middle" font-family="sans-serif" font-size="12">52.2</text>
+<text x="74" y="309.20000000000005" text-anchor="end" font-family="sans-serif" font-size="12">52.2</text>
+<line x1="650" y1="54" x2="650" y2="682" stroke="#e5e5e5"/>
+<line x1="82" y1="179.59999999999997" x2="792" y2="179.59999999999997" stroke="#e5e5e5"/>
+<text x="650" y="704" text-anchor="middle" font-family="sans-serif" font-size="12">80.1</text>
+<text x="74" y="183.59999999999997" text-anchor="end" font-family="sans-serif" font-size="12">80.1</text>
+<line x1="792" y1="54" x2="792" y2="682" stroke="#e5e5e5"/>
+<line x1="82" y1="54" x2="792" y2="54" stroke="#e5e5e5"/>
+<text x="792" y="704" text-anchor="middle" font-family="sans-serif" font-size="12">107.9</text>
+<text x="74" y="58" text-anchor="end" font-family="sans-serif" font-size="12">107.9</text>
+<line x1="82" y1="682" x2="792" y2="54" stroke="#444" stroke-dasharray="6 5" stroke-width="1.5"/>
+<line x1="82" y1="537.6879663419445" x2="792" y2="47.91275727634018" stroke="#d1495b" stroke-width="2"/>
+<circle cx="114.27272727272727" cy="521.979917837406" r="4" fill="#2878b5"><title>LGGNEQVTR: observed -24.92, predicted 4.21</title></circle>
+<circle cx="241.42359560442625" cy="424.2678109304764" r="4" fill="#2878b5"><title>GAGSSEPVTGLDAK: observed 0.00, predicted 25.86</title></circle>
+<circle cx="304.6413495947942" cy="382.1240900506463" r="4" fill="#2878b5"><title>VEATFGVDESNAK: observed 12.39, predicted 35.20</title></circle>
+<circle cx="342.39582233233284" cy="344.2880071396403" r="4" fill="#2878b5"><title>YILAGVENSK: observed 19.79, predicted 43.58</title></circle>
+<circle cx="387.94831410225567" cy="333.4133956930472" r="4" fill="#2878b5"><title>TPVISGGPYEYR: observed 28.71, predicted 45.99</title></circle>
+<circle cx="411.76212809956314" cy="312.6278499281744" r="4" fill="#2878b5"><title>TPVITGAPYEYR: observed 33.38, predicted 50.59</title></circle>
+<circle cx="457.08996124687104" cy="281.8805938109423" r="4" fill="#2878b5"><title>DGLDAASYYAPVR: observed 42.26, predicted 57.41</title></circle>
+<circle cx="520.1480893738013" cy="244.045681727443" r="4" fill="#2878b5"><title>ADVTPADFSEWSK: observed 54.62, predicted 65.79</title></circle>
+<circle cx="601.2735004142799" cy="166.95932845779225" r="4" fill="#2878b5"><title>GTFIIDPGGVIR: observed 70.52, predicted 82.87</title></circle>
+<circle cx="686.5669201111888" cy="118.22001769848401" r="4" fill="#2878b5"><title>GTFIIDPAAVIR: observed 87.23, predicted 93.67</title></circle>
+<circle cx="751.7297448078915" cy="82.54545454545456" r="4" fill="#2878b5"><title>LFLQFGAQGSPFLK: observed 100.00, predicted 101.57</title></circle>
+<text x="437" y="736" text-anchor="middle" font-family="sans-serif" font-size="15">reference iRT</text>
+<text x="20" y="368" text-anchor="middle" transform="rotate(-90 20 368)" font-family="sans-serif" font-size="15">predicted context-free iRT</text>
+<text x="94" y="76" font-family="monospace" font-size="13">slope=0.780  intercept=25.097  R²=0.997  MAE=16.613  n=11</text>
+</svg>

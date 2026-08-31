@@ -405,7 +405,7 @@ fn render_report(plot: &str, summary: &IrtSummary, spectra: &[SpectrumScore]) ->
     Ok(output)
 }
 
-pub fn run_doctor(artifact: &Artifact, output_dir: &str) -> Result<DoctorReport> {
+pub fn run_doctor(artifact: &Artifact, output_dir: &Path) -> Result<DoctorReport> {
     let standards = irt_standards()?;
     let observed: Vec<f64> = standards.iter().map(|standard| standard.irt).collect();
     let predicted: Vec<f64> = standards
@@ -418,11 +418,11 @@ pub fn run_doctor(artifact: &Artifact, output_dir: &str) -> Result<DoctorReport>
     let summary = summarize(&observed, &predicted);
     let spectra = score_reference_spectra(artifact)?;
     let terminal_plot = render_terminal(&observed, &predicted);
-    let svg_path = Path::new(output_dir).join("irt-scatter.svg");
-    let report_path = Path::new(output_dir).join("report.txt");
-    let predictions_path = Path::new(output_dir).join("irt-predictions.tsv");
+    let svg_path = output_dir.join("irt-scatter.svg");
+    let report_path = output_dir.join("report.txt");
+    let predictions_path = output_dir.join("irt-predictions.tsv");
     std::fs::create_dir_all(output_dir)
-        .with_context(|| format!("create model-doctor directory {output_dir}"))?;
+        .with_context(|| format!("create model-doctor directory {}", output_dir.display()))?;
     std::fs::write(
         &svg_path,
         render_svg(&standards, &observed, &predicted, &summary)?,
