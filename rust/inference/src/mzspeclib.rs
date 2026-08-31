@@ -17,7 +17,8 @@ use std::path::Path;
 use anyhow::Result;
 use serde_json::Value;
 
-use crate::library::{LibraryProvenance, LibrarySink, SpectrumRow};
+use crate::library::{LibrarySink, SpectrumRow};
+use crate::provenance::LibraryProvenance;
 
 /// The format version of the grammar emitted here, not of our library.
 const FORMAT_VERSION: &str = "1.0";
@@ -58,7 +59,7 @@ impl<W: Write> MzSpecLibSink<W> {
     }
 }
 
-/// Flatten the resolved configuration into dotted `key -> value` pairs, dropping nulls.
+/// Flatten the provenance into dotted `key -> value` pairs, dropping nulls.
 ///
 /// Objects recurse; anything else is a leaf. Arrays stay JSON text: `["C[UNIMOD:2057]", ...]`
 /// reads as what was passed on the command line, which is the point of recording it.
@@ -121,7 +122,7 @@ impl<W: Write + Send> LibrarySink for MzSpecLibSink<W> {
         // about what wrote the file, and the rule that asks for it is a MAY.
         //
         // Nothing else spells "the model and the settings that produced this library" either, so
-        // the resolved configuration rides as name/value pairs; the grammar's own escape hatch
+        // the provenance rides as name/value pairs; the grammar's own escape hatch
         // for an attribute the vocabulary has no term for. One group per key: the pair is the
         // attribute, which is why both lines carry the same group id.
         for (group, (key, value)) in provenance_attributes(&config).into_iter().enumerate() {
@@ -338,7 +339,7 @@ mod tests {
     /// A provenance with no acquisition context and no output, so the header's handling of the
     /// optional halves is exercised alongside the populated ones.
     fn provenance() -> LibraryProvenance {
-        use crate::library::*;
+        use crate::provenance::*;
         LibraryProvenance {
             generator: Generator {
                 tool: "msspeculator-cli library",

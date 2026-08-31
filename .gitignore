@@ -20,6 +20,8 @@ rust/target/
 # Run outputs and local inputs
 runs/*
 !runs/*.toml
+# `run-doctor`s default --out: machine-generated measurement, regenerated per run.
+rust/model-doctor/
 fasta_ignore/
 analysis_ignore/
 WANDB_SECRET

@@ -88,48 +88,47 @@ use std::path::Path;
 use msspeculator_core::{BuiltinModel, ModelSource};
 use msspeculator_inference::{write_library, LibraryOptions, StreamOptions};
 
-fn stream_options<'a>(
-    fixed_mods: &'a [String],
-    variable_mods: &'a [String],
-) -> StreamOptions<'a> {
-    StreamOptions {
-        model: ModelSource::Builtin(BuiltinModel::SmallV0),
-        fasta: Path::new("proteome.fasta"),
-        activation: None,
-        ms_context: None,
-        chrom_context: None,
-        min_intensity: 0.01,
-        missed_cleavages: 2,
-        min_length: 7,
-        max_length: 40,
-        min_charge: 2,
-        max_charge: 4,
-        fixed_mods,
-        variable_mods,
-        max_variable_mods: 1,
-        max_fragments: None,
-        generate_decoys: false,
-    }
-}
-
 fn run() -> anyhow::Result<()> {
     let fixed_mods = vec!["C[UNIMOD:4]".to_string()];
     let variable_mods = vec!["M[UNIMOD:35]".to_string()];
     let stats = write_library(&LibraryOptions {
-        stream: stream_options(&fixed_mods, &variable_mods),
         out: Path::new("library.tsv"),
         config_out: Some(Path::new("library.tsv.config.json")),
+        stream: StreamOptions {
+            model: ModelSource::Builtin(BuiltinModel::SmallV0),
+            fasta: Path::new("proteome.fasta"),
+            activation: None,
+            ms_context: None,
+            chrom_context: None,
+            min_intensity: 0.01,
+            missed_cleavages: 2,
+            min_length: 7,
+            max_length: 40,
+            min_charge: 2,
+            max_charge: 4,
+            fixed_mods: &fixed_mods,
+            variable_mods: &variable_mods,
+            max_variable_mods: 1,
+            max_fragments: None,
+            generate_decoys: false,
+        },
     })?;
     println!("{} precursors", stats.precursors);
     Ok(())
 }
 ```
 
+`LibraryOptions` uses the output suffix to choose the writer. `.mzspeclib.txt` and `.mzspeclib`
+select mzSpecLib text; other suffixes select DIA-NN TSV. Add `.gz` to compress either stream.
+Output order is unspecified because workers finish independently. The writer validates and caps
+each precursor before serialization. The generated provenance records the package version and
+source commit, along with the resolved model, input FASTA, and settings.
+
 ## Receive rows without writing a file
 
-`write_library` picks its writer from the output suffix. To keep the spectra in your own process
-instead, implement `LibrarySink` and call `stream_library`, which takes `StreamOptions`:
-`LibraryOptions` minus the two fields that only mean something when there is a file.
+To keep the spectra in your own process instead, implement `LibrarySink` and call
+`stream_library`, which takes `StreamOptions`: `LibraryOptions` minus the two fields that only
+mean something when there is a file.
 
 ```rust,no_run
 use msspeculator_inference::{stream_library, LibraryProvenance, LibrarySink, SpectrumRow};
@@ -140,7 +139,7 @@ struct Indexer {
 
 impl LibrarySink for Indexer {
     fn header(&mut self, provenance: &LibraryProvenance) -> anyhow::Result<()> {
-        // The same resolved configuration a written library carries, so an in-memory index can
+        // The same provenance a written library carries, so an in-memory index can
         // record what produced it without a sidecar.
         println!("model {}", provenance.inputs.model);
         Ok(())
@@ -161,12 +160,6 @@ impl LibrarySink for Indexer {
 The sink is moved onto the writer thread while workers predict, which is why `LibrarySink`
 requires `Send`. `provenance.output` is `None` here: there is no path, no suffix-chosen format,
 and no compression to report.
-
-`LibraryOptions` uses the output suffix to choose the writer. `.mzspeclib.txt` and `.mzspeclib`
-select mzSpecLib text; other suffixes select DIA-NN TSV. Add `.gz` to compress either stream.
-Output order is unspecified because workers finish independently. The writer validates and caps
-each precursor before serialization. The generated provenance records the package version and
-source commit, along with the resolved model, input FASTA, and settings.
 
 Set `generate_decoys: true` to add pseudo-reversed decoys. Internal residues are reversed while
 the first and last residues stay fixed, so `PEPTIDEK` becomes `PEDITPEK`. A decoy is skipped when

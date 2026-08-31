@@ -1,6 +1,6 @@
 //! msspeculator Rust inference CLI: FASTA libraries, peptide prediction, and model diagnostics.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use anyhow::Result;
@@ -410,6 +410,33 @@ fn parse_model_source(spec: &str) -> Result<ModelSource> {
     }
 }
 
+/// Append to a path's whole name rather than replacing its extension.
+///
+/// `lib.mzspeclib.txt` gains `.config.json` to become `lib.mzspeclib.txt.config.json`;
+/// `Path::with_extension` would have produced `lib.mzspeclib.config.json` and lost which format
+/// the sidecar describes. Built as an OS string, since a path need not be UTF-8.
+fn append_suffix(path: &Path, suffix: &str) -> PathBuf {
+    let mut name = path.to_path_buf().into_os_string();
+    name.push(suffix);
+    PathBuf::from(name)
+}
+
+impl LibraryArgs {
+    /// Written by default: a library whose settings live only in a shell history cannot be
+    /// regenerated. `--no-config-out` is the explicit opt out, and clap already refuses it
+    /// together with `--config-out`.
+    fn sidecar_path(&self) -> Option<PathBuf> {
+        if self.no_config_out {
+            return None;
+        }
+        Some(
+            self.config_out
+                .clone()
+                .unwrap_or_else(|| append_suffix(&self.out, ".config.json")),
+        )
+    }
+}
+
 fn run_library(args: LibraryArgs) -> Result<()> {
     let ms_context = args.context.ms_context();
     let default_fixed = ["C[UNIMOD:4]".to_string()];
@@ -426,20 +453,7 @@ fn run_library(args: LibraryArgs) -> Result<()> {
     } else {
         &args.variable_mod
     };
-    // Written by default: a library whose settings live only in a shell history cannot be
-    // regenerated. `--no-config-out` is the explicit opt out.
-    let config_out = match (&args.config_out, args.no_config_out) {
-        (_, true) => None,
-        (Some(path), false) => Some(path.clone()),
-        // Appended to the whole name rather than replacing an extension, so
-        // `lib.mzspeclib.txt` gets `lib.mzspeclib.txt.config.json` and the two stay adjacent
-        // when a directory is sorted. Built as an OS string, since a path need not be UTF-8.
-        (None, false) => {
-            let mut path = args.out.clone().into_os_string();
-            path.push(".config.json");
-            Some(PathBuf::from(path))
-        }
-    };
+    let config_out = args.sidecar_path();
     let stats = library::write_library(&library::LibraryOptions {
         out: &args.out,
         config_out: config_out.as_deref(),
@@ -518,6 +532,24 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `.config.json` appends to the whole name, so which format the sidecar describes stays
+    /// visible and the two files sort next to each other.
+    #[test]
+    fn the_sidecar_defaults_beside_the_library_it_describes() {
+        for (out, expected) in [
+            ("lib.tsv", "lib.tsv.config.json"),
+            ("lib.mzspeclib.txt", "lib.mzspeclib.txt.config.json"),
+            ("lib.mzspeclib.txt.gz", "lib.mzspeclib.txt.gz.config.json"),
+            ("no-extension", "no-extension.config.json"),
+        ] {
+            assert_eq!(
+                append_suffix(Path::new(out), ".config.json"),
+                PathBuf::from(expected),
+                "{out}"
+            );
+        }
+    }
 
     #[test]
     fn ms_context_reads_a_bare_name_as_a_setup_and_four_parts_as_factors() {
