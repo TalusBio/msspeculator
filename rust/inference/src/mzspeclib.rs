@@ -260,8 +260,8 @@ impl<W: Write + Send> LibrarySink for MzSpecLibSink<W> {
         )?;
         // The protein group is one attribute per member, not one joined string: a reader that
         // wants the group can rebuild it, and one that wants an accession cannot unjoin it.
-        for accession in row.protein_group.split(';') {
-            writeln!(self.writer, "MS:1000885|protein accession={accession}")?;
+        for protein in row.proteins.iter() {
+            writeln!(self.writer, "MS:1000885|protein accession={protein}")?;
         }
         writeln!(self.writer, "<Peaks>")?;
         // Peak lists are m/z ordered here; our fragments come out in (position, ion type) order.
@@ -298,6 +298,7 @@ impl<W: Write + Send> LibrarySink for MzSpecLibSink<W> {
 mod tests {
     use super::*;
     use crate::library::{Peak, SpectrumRow};
+    use crate::proteome::{ProteinGroup, Residues};
 
     fn row_with_irt(irt: Option<f32>) -> SpectrumRow<'static> {
         SpectrumRow { irt, ..row() }
@@ -305,8 +306,8 @@ mod tests {
 
     fn row() -> SpectrumRow<'static> {
         SpectrumRow {
-            stripped: "PEPTIDEK",
-            protein_group: "P1;P2",
+            stripped: Residues::target("PEPTIDEK"),
+            proteins: ProteinGroup::from_list(&["P1", "P2"], false),
             diann_sequence: "PEPTIDEK",
             proforma: "PEPTIDEK",
             decoy: false,

@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::Path;
@@ -15,7 +15,7 @@ use msspeculator_core::{
 };
 
 use crate::progress::{Phase, ProgressFn, Reporter};
-use crate::proteome::{peptides, Digest, DigestRules};
+use crate::proteome::{peptides, Digest, DigestRules, PeptideRef, ProteinGroup, Residues};
 use crate::provenance::{resolve_provenance, write_sidecar, LibraryProvenance, Output};
 
 const CCS_IM_COEF: f64 = 1059.62245;
@@ -45,8 +45,8 @@ pub struct StreamOptions<'a> {
     /// Emit at most this many of the strongest fragments per precursor, or all of them when
     /// `None`. Applied after `min_intensity`, so both bound the transition list independently.
     pub max_fragments: Option<usize>,
-    /// Add pseudo-reversed peptide decoys. Decoys whose stripped sequence is already a target are
-    /// skipped, as are duplicate decoy sequences.
+    /// Add pseudo-reversed peptide decoys. A decoy whose stripped sequence is already a target is
+    /// skipped; two decoys cannot collide with each other, since reversing is an involution.
     pub generate_decoys: bool,
     /// Called as the build advances, or `None` to report nothing.
     ///
@@ -137,8 +137,12 @@ pub struct Peak<'a> {
 /// Every field is already checked to be physical and the transition list is already capped, so a
 /// sink's only job is spelling: no sink can disagree with another about what the library contains.
 pub struct SpectrumRow<'a> {
-    pub stripped: &'a str,
-    pub protein_group: &'a str,
+    /// The peptide's residues. A view over the digest rather than a string, so a decoy is the
+    /// same residues read with its interior reversed instead of a second copy of them.
+    pub stripped: Residues<'a>,
+    /// The proteins whose digest produced this peptide, as a list. DIA-NN's `;` separator is a
+    /// property of that format alone, so its writer joins them and nothing else has to know.
+    pub proteins: ProteinGroup<'a>,
     pub diann_sequence: &'a str,
     /// ProForma spelling of the same peptidoform, e.g. `PEPC[UNIMOD:4]IDER`.
     pub proforma: &'a str,
@@ -181,6 +185,26 @@ struct DiannSink<W: Write> {
     writer: W,
 }
 
+/// A protein group rendered into DIA-NN's single protein column.
+///
+/// A `Display` adapter rather than a joined `String`, so the separator reaches the output stream
+/// without a `Vec` and a `String` being built to hold it on the way. `Copy`, so hoisting it out
+/// of the transition loop costs nothing.
+#[derive(Clone, Copy)]
+struct SemicolonJoined<'a>(ProteinGroup<'a>);
+
+impl std::fmt::Display for SemicolonJoined<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for (i, protein) in self.0.iter().enumerate() {
+            if i > 0 {
+                f.write_str(";")?;
+            }
+            write!(f, "{protein}")?;
+        }
+        Ok(())
+    }
+}
+
 impl<W: Write + Send> LibrarySink for DiannSink<W> {
     fn header(&mut self, _provenance: &LibraryProvenance) -> Result<()> {
         writeln!(self.writer, "ModifiedPeptide\tStrippedPeptide\tPrecursorMz\tPrecursorCharge\tTr_recalibrated\tIonMobility\tProteinID\tDecoy\tFragmentMz\tFragmentType\tFragmentNumber\tFragmentCharge\tFragmentLossType\tRelativeIntensity")?;
@@ -188,6 +212,9 @@ impl<W: Write + Send> LibrarySink for DiannSink<W> {
     }
 
     fn spectrum(&mut self, row: &SpectrumRow<'_>) -> Result<()> {
+        // The one place `;` belongs: DIA-NN's format has a single protein column, so the group
+        // has to be flattened into it.
+        let proteins = SemicolonJoined(row.proteins);
         for peak in &row.peaks {
             writeln!(
                 self.writer,
@@ -198,7 +225,7 @@ impl<W: Write + Send> LibrarySink for DiannSink<W> {
                 row.charge,
                 row.rt,
                 row.mobility,
-                row.protein_group,
+                proteins,
                 u8::from(row.decoy),
                 peak.mz,
                 peak.ion,
@@ -320,14 +347,6 @@ fn pseudo_reverse_peptide(peptide: &Peptide) -> Peptide {
     Peptide::new(pseudo_reverse_sequence(&peptide.sequence), mods)
 }
 
-fn decoy_protein_group(protein_group: &str) -> String {
-    protein_group
-        .split(';')
-        .map(|protein| format!("DECOY_{protein}"))
-        .collect::<Vec<_>>()
-        .join(";")
-}
-
 fn modified_forms(
     sequence: &str,
     fixed_rules: &[ModificationRule],
@@ -398,13 +417,11 @@ fn ccs_to_bruker_mobility(ccs: f64, charge: i64, precursor_mz: f64) -> f64 {
 
 /// One peptidoform on its way to a worker.
 ///
-/// The stripped sequence and the protein group are `Arc<str>` rather than `String` because they
-/// are properties of the *peptide*, and a peptide with three modified forms in three charges puts
-/// nine of these on the queue. Resolved once per peptide and shared, so a peptidoform costs two
-/// atomic increments instead of two allocations and two copies.
+/// Carries the flyweight rather than copies: `source` is an atomic increment and an index, and it
+/// answers the stripped sequence and the protein group without materializing either. A decoy adds
+/// nothing to that, because `decoy` already says how to read the same residues.
 struct PendingPeptide {
-    stripped: Arc<str>,
-    protein_group: Arc<str>,
+    source: PeptideRef,
     peptide: Peptide,
     diann_sequence: String,
     decoy: bool,
@@ -412,12 +429,21 @@ struct PendingPeptide {
 }
 
 struct PredictedPeptide {
-    stripped: Arc<str>,
-    protein_group: Arc<str>,
+    source: PeptideRef,
     diann_sequence: String,
     predictions: Vec<Prediction>,
     decoy: bool,
     decoy_pair_id: Option<usize>,
+}
+
+impl PredictedPeptide {
+    fn stripped(&self) -> Residues<'_> {
+        if self.decoy {
+            Residues::pseudo_reversed(self.source.residues())
+        } else {
+            Residues::target(self.source.residues())
+        }
+    }
 }
 
 /// Validate one prediction and cap its transition list.
@@ -505,8 +531,8 @@ fn spectrum_row<'a>(
         });
     }
     Ok(SpectrumRow {
-        stripped: &item.stripped,
-        protein_group: &item.protein_group,
+        stripped: item.stripped(),
+        proteins: item.source.proteins(item.decoy),
         diann_sequence,
         proforma: prediction.peptide.as_str(),
         decoy: item.decoy,
@@ -533,8 +559,7 @@ fn predict_batch(
         .map(|item| {
             (
                 (
-                    item.stripped,
-                    item.protein_group,
+                    item.source,
                     item.diann_sequence,
                     item.decoy,
                     item.decoy_pair_id,
@@ -554,15 +579,12 @@ fn predict_batch(
         .into_iter()
         .zip(predictions)
         .map(
-            |((stripped, protein_group, diann_sequence, decoy, decoy_pair_id), predictions)| {
-                PredictedPeptide {
-                    stripped,
-                    protein_group,
-                    diann_sequence,
-                    predictions,
-                    decoy,
-                    decoy_pair_id,
-                }
+            |((source, diann_sequence, decoy, decoy_pair_id), predictions)| PredictedPeptide {
+                source,
+                diann_sequence,
+                predictions,
+                decoy,
+                decoy_pair_id,
             },
         )
         .collect())
@@ -812,26 +834,26 @@ fn run_library(
         }));
     }
 
-    let mut decoy_sequences = BTreeSet::new();
     let mut next_decoy_pair_id = 1usize;
     let mut pending: BTreeMap<usize, Vec<PendingPeptide>> = BTreeMap::new();
     let mut peptides_done = 0u64;
     for source in peptides(&digest) {
-        let sequence: Arc<str> = Arc::from(source.residues());
-        let protein_group: Arc<str> = Arc::from(source.protein_group().as_str());
+        let sequence = source.residues();
         let target_forms = modified_forms(
-            &sequence,
+            sequence,
             &fixed_rules,
             &variable_rules,
             opts.max_variable_mods,
         )?;
-        let decoy_sequence = pseudo_reverse_sequence(&sequence);
-        // Asked of the digest by binary search rather than of a set built from it: a
-        // `BTreeSet<String>` of every target sequence would be a second copy of the whole digest,
-        // to answer a question the sorted peptide table already answers.
-        let emit_decoy = opts.generate_decoys
-            && !digest.contains(&decoy_sequence)
-            && decoy_sequences.insert(decoy_sequence.clone());
+        // Whether this peptide contributes a decoy, decided without building one.
+        //
+        // Only the target collision has to be checked. Pseudo-reversal pins the termini and turns
+        // the interior around, so applying it twice returns the original: it is an involution,
+        // therefore injective, therefore two distinct peptides can never reverse to the same
+        // decoy. `pseudo_reverse_is_an_involution` pins that, and is what a change of decoy
+        // method would break first.
+        let emit_decoy =
+            opts.generate_decoys && !digest.contains(Residues::pseudo_reversed(sequence));
         // Assign the ID even when the decoy is skipped, so consumers can distinguish a target-only
         // collision group from a library generated with decoys disabled.
         let decoy_pair_id = opts.generate_decoys.then(|| {
@@ -839,37 +861,27 @@ fn run_library(
             next_decoy_pair_id += 1;
             pair_id
         });
-        // Resolved once per peptide, outside the loop over its modified forms, so a peptide with
-        // several peptidoforms shares one copy of each rather than allocating per form.
-        let decoy_shared: Option<(Arc<str>, Arc<str>)> = emit_decoy.then(|| {
-            (
-                Arc::from(decoy_sequence.as_str()),
-                Arc::from(decoy_protein_group(&protein_group).as_str()),
-            )
-        });
         let mut dispatched = false;
         for (peptide, diann_sequence) in target_forms {
             dispatched |= queue_pending(
                 &mut pending,
                 &work_tx,
                 PendingPeptide {
-                    stripped: Arc::clone(&sequence),
-                    protein_group: Arc::clone(&protein_group),
+                    source: source.clone(),
                     peptide: peptide.clone(),
                     diann_sequence,
                     decoy: false,
                     decoy_pair_id,
                 },
             )?;
-            if let Some((decoy_stripped, decoy_group)) = decoy_shared.as_ref() {
+            if emit_decoy {
                 let decoy_peptide = pseudo_reverse_peptide(&peptide);
                 let decoy_diann = render_diann(&decoy_peptide.sequence, &decoy_peptide.mods);
                 dispatched |= queue_pending(
                     &mut pending,
                     &work_tx,
                     PendingPeptide {
-                        stripped: Arc::clone(decoy_stripped),
-                        protein_group: Arc::clone(decoy_group),
+                        source: source.clone(),
                         peptide: decoy_peptide,
                         diann_sequence: decoy_diann,
                         decoy: true,
@@ -919,13 +931,14 @@ mod tests {
 
     impl Scratch {
         fn new(name: &str) -> Self {
+            // Counted rather than timestamped: the tests run in parallel and several ask for the
+            // same name, and two threads can read the same nanosecond. A collision means one
+            // test's `Drop` deletes the file another is still reading.
+            static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
             let path = std::env::temp_dir().join(format!(
                 "msspeculator-{}-{}-{name}",
                 std::process::id(),
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_nanos()
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             ));
             Self(path)
         }
@@ -950,6 +963,7 @@ mod tests {
     #[derive(Default)]
     struct Collected {
         rows: Vec<(String, i64, usize)>,
+        proteins: Vec<String>,
         model: Option<String>,
         output_present: Option<bool>,
         finished: usize,
@@ -968,11 +982,11 @@ mod tests {
         }
 
         fn spectrum(&mut self, row: &SpectrumRow<'_>) -> Result<()> {
-            self.0.lock().expect("collector mutex poisoned").rows.push((
-                row.proforma.to_string(),
-                row.charge,
-                row.peaks.len(),
-            ));
+            let mut collected = self.0.lock().expect("collector mutex poisoned");
+            collected
+                .rows
+                .push((row.proforma.to_string(), row.charge, row.peaks.len()));
+            collected.proteins = row.proteins.iter().map(|id| id.to_string()).collect();
             Ok(())
         }
 
@@ -1083,6 +1097,21 @@ mod tests {
         assert!(stats.digest < stats.digest + stats.predict);
     }
 
+    /// A FASTA identifier is free to contain a semicolon, and DIA-NN's separator is a property of
+    /// that one format. Nothing but its writer may assume otherwise.
+    #[test]
+    fn a_semicolon_in_an_identifier_survives_to_a_sink() {
+        let scratch = Scratch::new("semicolon.fasta");
+        std::fs::write(&scratch.0, ">weird;name desc\nPEPTIDEMR\n").unwrap();
+        let collected = Arc::new(Mutex::new(Collected::default()));
+        stream_library(
+            &stream_options(scratch.path()),
+            CollectingSink(Arc::clone(&collected)),
+        )
+        .unwrap();
+        assert_eq!(collected.lock().unwrap().proteins, vec!["weird;name"]);
+    }
+
     /// The point of the split: a library reaches a caller's own sink with no file anywhere, and
     /// the two entry points do not drift into producing different libraries.
     #[test]
@@ -1151,6 +1180,26 @@ mod tests {
             std::fs::read_to_string(out.path()).unwrap(),
             "EXISTING LIBRARY\n"
         );
+    }
+
+    /// Load-bearing: `run_library` checks a decoy against the targets but keeps no set of the
+    /// decoys it has already emitted, because reversing twice returns the original, so the map is
+    /// injective and two distinct peptides cannot produce the same decoy. A decoy method that is
+    /// not an involution needs that set back, and this is the test that says so.
+    #[test]
+    fn pseudo_reverse_is_an_involution() {
+        for sequence in [
+            "PEPTIDEK",
+            "AK",
+            "K",
+            "",
+            "AAK",
+            "PEPTIDERPEPTIDEK",
+            "MCMCMCMR",
+        ] {
+            let once = pseudo_reverse_sequence(sequence);
+            assert_eq!(pseudo_reverse_sequence(&once), sequence, "{sequence}");
+        }
     }
 
     #[test]

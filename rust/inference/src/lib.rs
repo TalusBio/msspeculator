@@ -17,4 +17,5 @@ pub use msspeculator_core::{
     Artifact, BuiltinModel, ModelSource, MsContext, Prediction, PreparedContext,
 };
 pub use progress::{Exactness, Phase, Progress, ProgressFn};
+pub use proteome::{FastaId, ProteinGroup};
 pub use provenance::LibraryProvenance;

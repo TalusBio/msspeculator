@@ -362,7 +362,7 @@ pub(crate) fn resolve_provenance(
             enabled: opts.generate_decoys,
             method: "pseudo-reverse",
             protein_prefix: "DECOY_",
-            collision_policy: "skip_if_stripped_sequence_is_a_target_or_duplicate",
+            collision_policy: "skip_if_stripped_sequence_is_a_target",
         },
         output,
     })

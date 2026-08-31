@@ -201,6 +201,11 @@ impl LibrarySink for Indexer {
 
     fn spectrum(&mut self, row: &SpectrumRow<'_>) -> anyhow::Result<()> {
         // `row` borrows from the prediction it came out of; copy anything you keep.
+        // `row.proteins` is a list, not a joined string: each `FastaId` displays with the
+        // `DECOY_` prefix already applied when the spectrum is a decoy.
+        for protein in row.proteins.iter() {
+            println!("{protein}");
+        }
         self.precursors += 1;
         Ok(())
     }
@@ -215,9 +220,18 @@ The sink is moved onto the writer thread while workers predict, which is why `Li
 requires `Send`. `provenance.output` is `None` here: there is no path, no suffix-chosen format,
 and no compression to report.
 
+A peptide from several proteins carries them all. `SpectrumRow.proteins` is a `ProteinGroup`,
+which iterates `FastaId` values borrowed from the digest, so a peptide in ten proteins allocates
+nothing. A `FastaId` is the first whitespace-delimited token of the FASTA description line,
+unparsed: for a UniProt FASTA that is `sp|P00001|A_HUMAN`, which is a database, an accession and
+an entry name run together, so it is deliberately not called an accession. DIA-NN output joins
+the group with `;` because its format has one protein column; mzSpecLib writes one
+`MS:1000885|protein accession` line per member, which is the form a reader can take apart again.
+
 Set `generate_decoys: true` to add pseudo-reversed decoys. Internal residues are reversed while
 the first and last residues stay fixed, so `PEPTIDEK` becomes `PEDITPEK`. A decoy is skipped when
-that stripped sequence is already a target or another decoy. DIA-NN rows use `Decoy=1` and a
+that stripped sequence is already a target; two decoys cannot collide with each other, because
+reversing twice returns the original and the map is therefore injective. DIA-NN rows use `Decoy=1` and a
 `DECOY_` protein prefix. mzSpecLib entries claim a `Decoy` spectrum attribute set and use the
 PSI-MS [`unnatural peptidoform decoy spectrum`](https://github.com/HUPO-PSI/psi-ms-CV/blob/master/psi-ms.obo)
 origin term.

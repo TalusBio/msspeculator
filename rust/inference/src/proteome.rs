@@ -19,6 +19,186 @@ use crate::progress::{Phase, Reporter};
 
 const VALID_AA: &str = "GASPVTCLINDQKEMHFRYW";
 
+/// Prefixed onto every protein of a decoy spectrum, which is the convention every search engine
+/// reads. Never stored: it is applied when a [`FastaId`] is written.
+pub(crate) const DECOY_PREFIX: &str = "DECOY_";
+
+/// One protein as the FASTA identified it: the first whitespace-delimited token of a description
+/// line, unparsed.
+///
+/// Deliberately not called an accession, a name, or a symbol. For a UniProt FASTA this holds
+/// `sp|P00001|A_HUMAN`, which is a database, an accession and an entry name run together; calling
+/// that any one of them would be wrong, and the four candidate meanings collide badly enough
+/// already. Whatever the header said is what a consumer gets back.
+///
+/// Borrows rather than owns, and applies the decoy prefix while writing rather than while
+/// storing, so a peptide in ten proteins costs no allocation at all.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FastaId<'a> {
+    prefix: &'static str,
+    id: &'a str,
+}
+
+impl FastaId<'_> {
+    /// Whether this is the decoy spelling of the protein.
+    pub fn is_decoy(&self) -> bool {
+        !self.prefix.is_empty()
+    }
+
+    /// The identifier as the FASTA spelled it, without the decoy prefix.
+    pub fn as_written(&self) -> &str {
+        self.id
+    }
+}
+
+impl std::fmt::Display for FastaId<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.prefix)?;
+        f.write_str(self.id)
+    }
+}
+
+/// The stripped residues of one spectrum's peptide.
+///
+/// A view over the digest rather than a sequence of its own, because a decoy's residues are a
+/// permutation of its target's: pinning the termini and reading the interior backwards produces
+/// them on demand. A decoy therefore costs no allocation and no second copy of residues the FASTA
+/// already holds.
+///
+/// Residues are ASCII by construction, so the iterator yields bytes.
+#[derive(Clone, Copy)]
+pub struct Residues<'a> {
+    source: &'a str,
+    reversed: bool,
+}
+
+impl<'a> Residues<'a> {
+    pub(crate) fn target(source: &'a str) -> Self {
+        Self {
+            source,
+            reversed: false,
+        }
+    }
+
+    /// The pseudo-reversed reading of the same peptide: first and last residue pinned so the
+    /// decoy keeps its tryptic context, everything between them backwards.
+    pub(crate) fn pseudo_reversed(source: &'a str) -> Self {
+        Self {
+            source,
+            reversed: true,
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.source.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.source.is_empty()
+    }
+
+    /// Whether these residues are the reversed reading rather than the peptide as digested.
+    pub fn is_reversed(&self) -> bool {
+        self.reversed
+    }
+
+    pub fn iter(self) -> impl ExactSizeIterator<Item = u8> + 'a {
+        let bytes = self.source.as_bytes();
+        let length = bytes.len();
+        let reversed = self.reversed;
+        (0..length).map(move |i| {
+            // A sequence of two residues or fewer is all termini, so there is nothing to turn
+            // around and the reading is the same either way.
+            let source = if reversed && length > 2 && i > 0 && i < length - 1 {
+                length - 1 - i
+            } else {
+                i
+            };
+            bytes[source]
+        })
+    }
+}
+
+impl std::fmt::Display for Residues<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use std::fmt::Write;
+        if !self.reversed {
+            return f.write_str(self.source);
+        }
+        for residue in self.iter() {
+            // ASCII by construction, so the byte and the char are the same value.
+            f.write_char(residue as char)?;
+        }
+        Ok(())
+    }
+}
+
+/// The proteins whose digest produced one peptide.
+///
+/// A list rather than a joined string. DIA-NN's `;` separator is a property of that one format,
+/// so only its writer should have to know about it; a group that arrives pre-joined has to be
+/// split apart again by everything else, on a delimiter a FASTA identifier is free to contain.
+#[derive(Clone, Copy)]
+pub struct ProteinGroup<'a> {
+    members: Members<'a>,
+    prefix: &'static str,
+}
+
+/// Where a group's identifiers come from.
+///
+/// Two representations behind one interface: the pipeline hands out indices into the digest's
+/// table so a peptide in ten proteins allocates nothing, while a caller assembling a row by hand
+/// has a plain list and no table to index into.
+#[derive(Clone, Copy)]
+enum Members<'a> {
+    Indexed {
+        identifiers: &'a [String],
+        members: &'a [u32],
+    },
+    Listed(&'a [&'a str]),
+}
+
+impl<'a> ProteinGroup<'a> {
+    /// Build a group from a list of identifiers, for a caller assembling a [`SpectrumRow`] itself.
+    ///
+    /// [`SpectrumRow`]: crate::SpectrumRow
+    pub fn from_list(identifiers: &'a [&'a str], decoy: bool) -> Self {
+        Self {
+            members: Members::Listed(identifiers),
+            prefix: if decoy { DECOY_PREFIX } else { "" },
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        match self.members {
+            Members::Indexed { members, .. } => members.len(),
+            Members::Listed(identifiers) => identifiers.len(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// The proteins, in the order the FASTA listed them.
+    ///
+    /// Takes `self` rather than `&self`, which `Copy` makes free, so the iterator outlives the
+    /// group it came from and a caller can hand it straight to a `for` or a `join`.
+    pub fn iter(self) -> impl Iterator<Item = FastaId<'a>> {
+        let prefix = self.prefix;
+        (0..self.len()).map(move |i| FastaId {
+            prefix,
+            id: match self.members {
+                Members::Indexed {
+                    identifiers,
+                    members,
+                } => &identifiers[members[i] as usize],
+                Members::Listed(identifiers) => identifiers[i],
+            },
+        })
+    }
+}
+
 /// A half-open range of residues, as offsets into [`Proteome::residues`].
 ///
 /// `u32` rather than `usize`, which halves the table and caps a run at four billion residues:
@@ -158,12 +338,20 @@ impl Digest {
         self.proteome.slice(self.peptides[index].residues)
     }
 
-    /// Whether the digest produced this exact sequence, by binary search rather than by a set of
-    /// copies: the decoy check asks this once per peptide, and a `BTreeSet<String>` built to
-    /// answer it would be a second copy of every peptide in the run.
-    pub(crate) fn contains(&self, residues: &str) -> bool {
+    /// Whether the digest produced this exact sequence.
+    ///
+    /// Binary search over the sorted peptide table rather than a set built from it: the decoy
+    /// check asks this once per peptide, and a `BTreeSet<String>` built to answer it would be a
+    /// second copy of every peptide in the run. Compared residue by residue, so a caller asking
+    /// about a reversed reading never has to materialize it.
+    pub(crate) fn contains(&self, residues: Residues<'_>) -> bool {
         self.peptides
-            .binary_search_by(|peptide| self.proteome.slice(peptide.residues).cmp(residues))
+            .binary_search_by(|peptide| {
+                self.proteome
+                    .slice(peptide.residues)
+                    .bytes()
+                    .cmp(residues.iter())
+            })
             .is_ok()
     }
 }
@@ -177,6 +365,7 @@ pub(crate) fn peptides(digest: &Arc<Digest>) -> impl Iterator<Item = PeptideRef>
 }
 
 /// One digested peptide, as a location in a shared [`Digest`] rather than a copy of it.
+#[derive(Clone)]
 pub(crate) struct PeptideRef {
     digest: Arc<Digest>,
     index: u32,
@@ -187,22 +376,19 @@ impl PeptideRef {
         self.digest.residues_at(self.index as usize)
     }
 
-    /// The accessions this peptide appears in, joined with `;`, in FASTA order.
+    /// The proteins this peptide came from, borrowed from the digest.
     ///
-    /// Built on demand rather than stored, because only the peptides that survive to a spectrum
-    /// need it and a joined string per digested peptide is the allocation this module exists to
-    /// avoid.
-    pub(crate) fn protein_group(&self) -> String {
+    /// `decoy` picks the spelling rather than the membership: a decoy is the reversal of this
+    /// peptide, so it belongs to the same proteins and differs only in carrying the prefix.
+    pub(crate) fn proteins(&self, decoy: bool) -> ProteinGroup<'_> {
         let span = self.digest.peptides[self.index as usize].proteins;
-        let members = &self.digest.memberships[span.start as usize..span.end as usize];
-        let mut out = String::new();
-        for (i, &protein) in members.iter().enumerate() {
-            if i > 0 {
-                out.push(';');
-            }
-            out.push_str(&self.digest.proteome.accessions[protein as usize]);
+        ProteinGroup {
+            members: Members::Indexed {
+                identifiers: &self.digest.proteome.accessions,
+                members: &self.digest.memberships[span.start as usize..span.end as usize],
+            },
+            prefix: if decoy { DECOY_PREFIX } else { "" },
         }
-        out
     }
 }
 
@@ -368,10 +554,13 @@ mod tests {
 
     impl Scratch {
         fn new(name: &str, contents: &str) -> Self {
+            // Counted as well as named, because the tests run in parallel and several of them
+            // ask for the same name: without this, one test's `Drop` deletes another's file.
+            static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
             let path = std::env::temp_dir().join(format!(
-                "msspeculator-proteome-{}-{}",
+                "msspeculator-proteome-{}-{}-{name}",
                 std::process::id(),
-                name
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             ));
             std::fs::write(&path, contents).unwrap();
             Self(path)
@@ -406,6 +595,14 @@ mod tests {
         }
     }
 
+    fn group(peptide: &PeptideRef, decoy: bool) -> Vec<String> {
+        peptide
+            .proteins(decoy)
+            .iter()
+            .map(|id| id.to_string())
+            .collect()
+    }
+
     fn sequences(digest: &Arc<Digest>) -> Vec<String> {
         peptides(digest).map(|p| p.residues().to_string()).collect()
     }
@@ -429,11 +626,14 @@ mod tests {
         let shared = peptides(&digest)
             .find(|p| p.residues() == "SAMPLEPEPTIDEK")
             .expect("shared peptide missing");
-        assert_eq!(shared.protein_group(), "first;second");
+        assert_eq!(group(&shared, false), ["first", "second"]);
+        // A decoy belongs to the same proteins and differs only in the prefix, which is applied
+        // per member rather than to a joined string.
+        assert_eq!(group(&shared, true), ["DECOY_first", "DECOY_second"]);
         let unique = peptides(&digest)
             .find(|p| p.residues() == "LNQAEDNTER")
             .expect("unique peptide missing");
-        assert_eq!(unique.protein_group(), "first");
+        assert_eq!(group(&unique, false), ["first"]);
     }
 
     /// The reason the span table is not a prefix sum: a contaminant panel concatenated onto a
@@ -450,7 +650,7 @@ mod tests {
         let peptide = peptides(&digest)
             .find(|p| p.residues() == "PEPTIDEK")
             .unwrap();
-        assert_eq!(peptide.protein_group(), "first;second");
+        assert_eq!(group(&peptide, false), ["first", "second"]);
     }
 
     #[test]
@@ -475,9 +675,26 @@ mod tests {
     #[test]
     fn a_sequence_that_was_never_digested_is_not_reported_as_a_target() {
         let digest = digest(">p d\nPEPTIDEKSAMPLER\n", rules(0, 5, 30));
-        assert!(digest.contains("PEPTIDEK"));
-        assert!(!digest.contains("PEPTIDE"));
-        assert!(!digest.contains("KEDITPEP"));
+        assert!(digest.contains(Residues::target("PEPTIDEK")));
+        assert!(!digest.contains(Residues::target("PEPTIDE")));
+        // The question the decoy path actually asks, answered without the reversal being built.
+        assert!(!digest.contains(Residues::pseudo_reversed("PEPTIDEK")));
+        assert!(digest.contains(Residues::pseudo_reversed("PEDITPEK")));
+    }
+
+    #[test]
+    fn reversed_residues_pin_the_termini_and_need_no_string() {
+        let read = |residues: Residues<'_>| residues.iter().map(|b| b as char).collect::<String>();
+        assert_eq!(read(Residues::pseudo_reversed("PEPTIDEK")), "PEDITPEK");
+        assert_eq!(read(Residues::target("PEPTIDEK")), "PEPTIDEK");
+        // Two residues or fewer are all termini, so there is nothing to turn around.
+        for short in ["", "K", "AK"] {
+            assert_eq!(read(Residues::pseudo_reversed(short)), short);
+        }
+        // `Display` and the iterator have to agree, since sinks use whichever suits them.
+        let reversed = Residues::pseudo_reversed("PEPTIDEK");
+        assert_eq!(reversed.to_string(), read(reversed));
+        assert_eq!(reversed.len(), 8);
     }
 
     #[test]
