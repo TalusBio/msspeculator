@@ -20,5 +20,5 @@ crate-type = ["cdylib"]
 msspeculator-core = { path = "core" }
 pyo3 = { version = "0.22", features = ["extension-module"] }
 numpy = "0.22"
-ndarray = "0.16"
+ndarray = "0.17"
 anyhow = "1"
