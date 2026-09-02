@@ -25,7 +25,7 @@ use anyhow::Result;
 use ndarray::Array1;
 
 pub use artifact::Artifact;
-pub use builtin::{load_source, BuiltinModel, LoadedModel, ModelSource};
+pub use builtin::{builtin_digest, load_source, BuiltinModel, LoadedModel, ModelSource};
 pub use model::Predictor;
 
 /// Struct-of-arrays fragment table (parallel columns), filtered to `rel >= min_intensity`.

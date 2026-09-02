@@ -4,11 +4,12 @@
 //! module because it shares no data and no vocabulary with digestion, batching, or thread
 //! orchestration, which is the rest of [`crate::library`].
 
+use std::collections::BTreeMap;
 use std::fs::File;
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use msspeculator_core::Artifact;
+use msspeculator_core::{Artifact, ModelSource};
 
 use crate::library::{LibraryStats, StreamOptions};
 
@@ -23,8 +24,10 @@ use crate::library::{LibraryStats, StreamOptions};
 /// - **`null`** is a knob nobody set. `context.ms`, `context.chrom`, `retention.raw`,
 ///   `fragments.max_fragments` and `output` all serialize this way, so a reader can see the
 ///   question was considered and declined.
-/// - **omitted** is not known yet. Only `output.counts`, which exists once the last spectrum has
-///   been written.
+/// - **omitted** is not known yet, or was never measured here. `output.counts` exists once the
+///   last spectrum has been written; `retention.normalized.anchor_check` exists only where an
+///   artifact was loaded to predict the anchors, which a build always does and a reader
+///   verifying one never does.
 ///
 /// A new field picks one of those two deliberately.
 #[derive(Clone, Debug, serde::Serialize)]
@@ -124,7 +127,11 @@ pub struct NormalizedRetention {
     pub term: &'static str,
     pub kind: &'static str,
     pub scale: &'static str,
-    pub anchor_check: AnchorCheck,
+    /// Absent when nothing predicted the anchors, which is the case for every provenance
+    /// resolved from settings alone. A build always fills it, so a written library always
+    /// carries it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub anchor_check: Option<AnchorCheck>,
 }
 
 /// Which index is a property of the corpus the model trained on, so the scale is stated as the
@@ -291,6 +298,37 @@ pub(crate) fn resolve_provenance(
     model_digest: &str,
 ) -> Result<LibraryProvenance> {
     let anchors = msspeculator_core::landmarks::check_retention_scale(artifact)?;
+    resolve(
+        opts,
+        output,
+        model_digest,
+        Some(AnchorCheck {
+            on_scale: anchors.on_scale(),
+            max_abs_error: anchors.max_abs_error,
+            anchors: anchors
+                .anchors
+                .iter()
+                .map(|(peptide, expected, predicted)| Anchor {
+                    peptide: peptide.to_string(),
+                    expected: *expected,
+                    predicted: *predicted,
+                })
+                .collect(),
+        }),
+    )
+}
+
+/// Everything a configuration determines, with the two things it does not passed in.
+///
+/// The anchor check is a measurement of a loaded artifact rather than a resolved setting, and the
+/// model digest comes from bytes somebody else read; splitting them out is what lets
+/// [`check_library`] answer the same question without loading a model.
+fn resolve(
+    opts: &StreamOptions<'_>,
+    output: Option<Output>,
+    model_digest: &str,
+    anchor_check: Option<AnchorCheck>,
+) -> Result<LibraryProvenance> {
     Ok(LibraryProvenance {
         generator: Generator {
             tool: "msspeculator-cli library",
@@ -340,19 +378,7 @@ pub(crate) fn resolve_provenance(
                 term: "MS:1000896|normalized retention time",
                 kind: "dimensionless index, minutes-like",
                 scale: msspeculator_core::landmarks::SCALE_DESCRIPTION,
-                anchor_check: AnchorCheck {
-                    on_scale: anchors.on_scale(),
-                    max_abs_error: anchors.max_abs_error,
-                    anchors: anchors
-                        .anchors
-                        .iter()
-                        .map(|(peptide, expected, predicted)| Anchor {
-                            peptide: peptide.to_string(),
-                            expected: *expected,
-                            predicted: *predicted,
-                        })
-                        .collect(),
-                },
+                anchor_check,
             },
             raw: opts.chrom_context.map(|name| RawRetention {
                 term: "MS:1000894|retention time",
@@ -372,6 +398,20 @@ pub(crate) fn resolve_provenance(
         },
         output,
     })
+}
+
+/// Where the sidecar for a library goes by default: `lib.tsv` -> `lib.tsv.config.json`.
+///
+/// Appended to the whole name rather than replacing the extension, which
+/// `Path::with_extension` would do: `lib.mzspeclib.config.json` has lost which format the
+/// sidecar describes. Built as an OS string, since a path need not be UTF-8.
+///
+/// Public because it is the convention that lets [`check_library`] find the provenance of a
+/// library whose format has no header to carry it.
+pub fn sidecar_path(library: &Path) -> std::path::PathBuf {
+    let mut name = library.to_path_buf().into_os_string();
+    name.push(".config.json");
+    std::path::PathBuf::from(name)
 }
 
 /// Write the provenance, plus the counts that came out, beside the library.
@@ -394,9 +434,143 @@ pub(crate) fn write_sidecar(
     .with_context(|| format!("writing {}", path.display()))
 }
 
+/// Whether a library on disk was built the way a set of options describes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LibraryCheck {
+    /// Same keys, same values: a build with these options would produce this library.
+    Same,
+    /// Built differently. Never empty: a key only one side records is a difference like any
+    /// other, since `--max-fragments` dropped from a rebuild is exactly as much a change as one
+    /// given a new value.
+    Different { differences: Vec<Difference> },
+    /// Nothing to compare against: no `msspeculator:` attributes in the header and no sidecar
+    /// beside it. Another tool's library, or one of ours written with `--no-config-out` in a
+    /// format that carries no header. Not a mismatch.
+    Unknown,
+}
+
+/// One provenance key that a library and a set of options spell differently.
+///
+/// Either side can be `None`, and it means the same thing on both: nothing was recorded under
+/// that key. An unset knob is dropped from a header rather than written as a null, so a setting
+/// present in one build and absent from the other shows up here as a missing side.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Difference {
+    /// The provenance key, as the header spells it without the `msspeculator:` prefix.
+    pub key: String,
+    /// What the library on disk says.
+    pub library: Option<String>,
+    /// What a build with these options would have recorded.
+    pub expected: Option<String>,
+}
+
+/// Whether the library at `path` was built the way `opts` describes.
+///
+/// For a search reading someone else's library: warn per [`Difference`], naming both values, and
+/// run anyway. For a build about to overwrite one: [`LibraryCheck::Same`] means the file already
+/// is what this run would produce.
+///
+/// Reads the header and stops at the first spectrum, so the library itself costs one open
+/// whatever its size. A format with no header to carry provenance falls back to the
+/// [`sidecar_path`] beside it. The other side is resolved from `opts` without loading a model,
+/// but it does hash the FASTA, and that is a full read of it.
+///
+/// Only what the settings determine is compared. Which build wrote the library, the paths its
+/// inputs were named by, where it was written and how its retention anchors measured are all
+/// left out: none of them is a disagreement about how the library was built.
+pub fn check_library(path: &Path, opts: &StreamOptions<'_>) -> Result<LibraryCheck> {
+    // The header first, because that copy cannot be separated from the library it describes. A
+    // DIA-NN TSV has no header to put it in, so for that format the sidecar is the only copy.
+    let mut recorded = crate::mzspeclib::read_header_attributes(path)?;
+    if recorded.is_empty() {
+        recorded = sidecar_attributes(&sidecar_path(path));
+    }
+    if recorded.is_empty() {
+        return Ok(LibraryCheck::Unknown);
+    }
+    let library = comparable(recorded);
+    let expected = comparable(crate::mzspeclib::attributes(&expected_provenance(opts)?));
+    // Over the union, so that `Same` is a claim about every key either side records rather than
+    // only the ones they happen to share. A key one side has alone is a difference: it is either
+    // a knob set in one build and not the other, or a library from a version that recorded
+    // something this one does not, and both are answers a reader wants rather than silence.
+    let differences = library
+        .keys()
+        .chain(expected.keys())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .filter(|key| library.get(*key) != expected.get(*key))
+        .map(|key| Difference {
+            key: key.clone(),
+            library: library.get(key).cloned(),
+            expected: expected.get(key).cloned(),
+        })
+        .collect::<Vec<_>>();
+    if differences.is_empty() {
+        Ok(LibraryCheck::Same)
+    } else {
+        Ok(LibraryCheck::Different { differences })
+    }
+}
+
+/// The provenance beside a library, in the spelling a header would have carried it.
+///
+/// Nothing here is an error: a missing sidecar is the ordinary case, and a file at that name
+/// that is not one of ours says nothing about the library either way. Both come back as no
+/// provenance, because a check that refuses to run is worse than a check that reports it has
+/// nothing to compare.
+fn sidecar_attributes(path: &Path) -> BTreeMap<String, String> {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .map(|config| crate::mzspeclib::attributes_from_json(&config))
+        .unwrap_or_default()
+}
+
+/// The provenance a build with these settings would record, minus what settings cannot say.
+///
+/// No model load: a bundled artifact's digest is a constant and a file's is its bytes, so
+/// neither needs the tensors. No anchor check and no output, both of which say nothing when
+/// nothing was predicted and nothing was written.
+fn expected_provenance(opts: &StreamOptions<'_>) -> Result<LibraryProvenance> {
+    let digest = match &opts.model {
+        ModelSource::Builtin(model) => msspeculator_core::builtin_digest(*model)?.to_string(),
+        ModelSource::File(path) => file_digest(path)?,
+    };
+    resolve(opts, None, &digest, None)
+}
+
+/// The keys worth comparing, of the ones a header carries.
+///
+/// Dropped, each because a difference in it is not a disagreement about how the library was
+/// built:
+///
+/// - `generator.*` is which build wrote the file. The same settings through a later release are
+///   still the same library, and comparing this would warn on every upgrade.
+/// - `inputs.model` and `inputs.fasta` are paths as they were typed. `../human.fasta` and
+///   `/data/human.fasta` are one file; the digest beside each of them is the identity, and it is
+///   kept.
+/// - `output.*` is where the library went, which nobody reading one is claiming.
+/// - `retention.normalized.anchor_check.*` is measured from a loaded artifact rather than
+///   resolved from settings, so only a build has it — and a different model is already visible
+///   as `inputs.model_blake2b_256`.
+fn comparable(pairs: BTreeMap<String, String>) -> BTreeMap<String, String> {
+    pairs
+        .into_iter()
+        .filter(|(key, _)| {
+            !(key.starts_with("generator.")
+                || key.starts_with("output.")
+                || key.starts_with("retention.normalized.anchor_check.")
+                || key == "inputs.model"
+                || key == "inputs.fasta")
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scratch::Scratch;
 
     fn sample() -> LibraryProvenance {
         LibraryProvenance {
@@ -438,7 +612,7 @@ mod tests {
                     term: "MS:1000896|normalized retention time",
                     kind: "dimensionless index, minutes-like",
                     scale: "anchored",
-                    anchor_check: AnchorCheck {
+                    anchor_check: Some(AnchorCheck {
                         on_scale: true,
                         max_abs_error: 0.5,
                         anchors: vec![Anchor {
@@ -446,7 +620,7 @@ mod tests {
                             expected: 0.0,
                             predicted: 0.1,
                         }],
-                    },
+                    }),
                 },
                 raw: Some(RawRetention {
                     term: "MS:1000894|retention time",
@@ -552,6 +726,180 @@ mod tests {
                 "retention.raw.unit",
             ]
         );
+    }
+
+    fn options(fasta: &Path) -> StreamOptions<'_> {
+        StreamOptions {
+            model: ModelSource::Builtin(msspeculator_core::BuiltinModel::SmallV0),
+            fasta,
+            activation: None,
+            ms_context: None,
+            chrom_context: None,
+            min_intensity: 0.01,
+            missed_cleavages: 2,
+            min_length: 7,
+            max_length: 30,
+            min_charge: 2,
+            max_charge: 4,
+            fixed_mods: &[],
+            variable_mods: &[],
+            max_variable_mods: 1,
+            max_fragments: None,
+            generate_decoys: false,
+            progress: None,
+        }
+    }
+
+    /// The provenance a real build resolves: an output block, and an anchor check measured from
+    /// a loaded artifact. Both are things a reader checking the library cannot have.
+    fn built(path: &Path, opts: &StreamOptions<'_>) -> LibraryProvenance {
+        resolve(
+            opts,
+            Some(Output {
+                path: path.display().to_string(),
+                format: "mzspeclib-text",
+                compressed: false,
+                counts: None,
+                timing: None,
+            }),
+            msspeculator_core::builtin_digest(msspeculator_core::BuiltinModel::SmallV0).unwrap(),
+            Some(AnchorCheck {
+                on_scale: true,
+                max_abs_error: 0.5,
+                anchors: Vec::new(),
+            }),
+        )
+        .unwrap()
+    }
+
+    fn write_header(path: &Path, opts: &StreamOptions<'_>) {
+        let provenance = built(path, opts);
+        let file = File::create(path).unwrap();
+        let mut sink = crate::mzspeclib::MzSpecLibSink::new(file, path);
+        crate::library::LibrarySink::header(&mut sink, &provenance).unwrap();
+    }
+
+    #[test]
+    fn a_library_these_options_would_produce_is_the_same_library() {
+        let fasta = Scratch::holding("check.fasta", ">P1\nPEPTIDEK\n");
+        let library = Scratch::new("check.mzspeclib.txt");
+        write_header(library.path(), &options(fasta.path()));
+        assert_eq!(
+            check_library(library.path(), &options(fasta.path())).unwrap(),
+            LibraryCheck::Same,
+            "a path, a format and an anchor measurement are not settings"
+        );
+    }
+
+    #[test]
+    fn a_changed_setting_is_the_only_difference() {
+        let fasta = Scratch::holding("changed.fasta", ">P1\nPEPTIDEK\n");
+        let library = Scratch::new("changed.mzspeclib.txt");
+        write_header(library.path(), &options(fasta.path()));
+        let searching = StreamOptions {
+            missed_cleavages: 3,
+            ..options(fasta.path())
+        };
+        assert_eq!(
+            check_library(library.path(), &searching).unwrap(),
+            LibraryCheck::Different {
+                differences: vec![Difference {
+                    key: "digestion.missed_cleavages".into(),
+                    library: Some("2".into()),
+                    expected: Some("3".into()),
+                }]
+            }
+        );
+    }
+
+    /// The headline case: same settings, another proteome. The digest carries it, and the path it
+    /// was typed as does not enter into it.
+    #[test]
+    fn another_fasta_differs_by_digest_and_not_by_path() {
+        let built = Scratch::holding("built.fasta", ">P1\nPEPTIDEK\n");
+        let searched = Scratch::holding("searched.fasta", ">P1\nPEPTIDEKK\n");
+        let library = Scratch::new("fasta.mzspeclib.txt");
+        write_header(library.path(), &options(built.path()));
+        let LibraryCheck::Different { differences } =
+            check_library(library.path(), &options(searched.path())).unwrap()
+        else {
+            panic!("a library from another proteome is not the same library");
+        };
+        let keys: Vec<&str> = differences.iter().map(|d| d.key.as_str()).collect();
+        assert_eq!(keys, vec!["inputs.fasta_blake2b_256"]);
+    }
+
+    /// A knob set in one build and left alone in the other is dropped from one header and not
+    /// the other, so comparing only the keys both sides carry would call these the same library.
+    #[test]
+    fn a_setting_dropped_from_a_rebuild_is_a_difference() {
+        let fasta = Scratch::holding("dropped.fasta", ">P1\nPEPTIDEK\n");
+        let library = Scratch::new("dropped.mzspeclib.txt");
+        write_header(
+            library.path(),
+            &StreamOptions {
+                max_fragments: Some(15),
+                ..options(fasta.path())
+            },
+        );
+        assert_eq!(
+            check_library(library.path(), &options(fasta.path())).unwrap(),
+            LibraryCheck::Different {
+                differences: vec![Difference {
+                    key: "fragments.max_fragments".into(),
+                    library: Some("15".into()),
+                    expected: None,
+                }]
+            }
+        );
+    }
+
+    #[test]
+    fn a_library_without_provenance_is_unknown_rather_than_a_mismatch() {
+        let fasta = Scratch::holding("unknown.fasta", ">P1\nPEPTIDEK\n");
+        let library = Scratch::holding("unknown.tsv", "PrecursorMz\tProductMz\n100.0\t200.0\n");
+        assert_eq!(
+            check_library(library.path(), &options(fasta.path())).unwrap(),
+            LibraryCheck::Unknown
+        );
+    }
+
+    /// `.config.json` appends to the whole name, so which format the sidecar describes stays
+    /// visible and the two files sort next to each other.
+    #[test]
+    fn the_sidecar_sits_beside_the_library_it_describes() {
+        for (library, expected) in [
+            ("lib.tsv", "lib.tsv.config.json"),
+            ("lib.mzspeclib.txt", "lib.mzspeclib.txt.config.json"),
+            ("lib.mzspeclib.txt.gz", "lib.mzspeclib.txt.gz.config.json"),
+            ("no-extension", "no-extension.config.json"),
+        ] {
+            assert_eq!(
+                sidecar_path(Path::new(library)),
+                std::path::PathBuf::from(expected),
+                "{library}"
+            );
+        }
+    }
+
+    /// A DIA-NN TSV has no header to carry provenance, so the sidecar is the only copy it has —
+    /// and the two copies have to compare the same way, nulls and software version included.
+    #[test]
+    fn a_format_with_no_header_is_checked_against_its_sidecar() {
+        let fasta = Scratch::holding("sidecar.fasta", ">P1\nPEPTIDEK\n");
+        let library = Scratch::holding("sidecar.tsv", "PrecursorMz\tProductMz\n100.0\t200.0\n");
+        // Named after the library rather than handed out by `Scratch`, since the name is the
+        // convention under test.
+        let beside_it = sidecar_path(library.path());
+        write_sidecar(
+            &beside_it,
+            &built(library.path(), &options(fasta.path())),
+            &LibraryStats::default(),
+        )
+        .unwrap();
+        let checked = check_library(library.path(), &options(fasta.path()));
+        let _ = std::fs::remove_file(&beside_it);
+        assert_eq!(checked.unwrap(), LibraryCheck::Same);
     }
 
     /// A knob nobody set is null; something not known yet is omitted. Both are absent to a reader

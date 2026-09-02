@@ -140,7 +140,7 @@ impl LibraryFormat {
 /// suffix match on the lossy form is correct for any path the OS will accept.
 fn output_spelling(path: &Path) -> (LibraryFormat, bool) {
     let text = path.to_string_lossy();
-    let compressed = text.ends_with(".gz");
+    let compressed = is_compressed(path);
     let stem = text.strip_suffix(".gz").unwrap_or(&text);
     let format = if stem.ends_with(".mzspeclib.txt") || stem.ends_with(".mzspeclib") {
         LibraryFormat::MzSpecLib
@@ -148,6 +148,12 @@ fn output_spelling(path: &Path) -> (LibraryFormat, bool) {
         LibraryFormat::DiannTsv
     };
     (format, compressed)
+}
+
+/// A `.gz` suffix is the whole of the compression rule, and the same rule going out and coming
+/// back in: written here, read by [`crate::mzspeclib::read_header_attributes`].
+pub(crate) fn is_compressed(path: &Path) -> bool {
+    path.to_string_lossy().ends_with(".gz")
 }
 
 /// One kept transition, borrowed from the prediction it came out of.

@@ -82,6 +82,19 @@ pub fn digest_bytes(bytes: &[u8]) -> String {
     out.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
+/// The recorded digest of a bundled artifact, without loading it.
+///
+/// The same value [`load_builtin`] reports, read from the same constant, so a caller that needs
+/// only the identity of a model does not pay for its tensors.
+pub fn builtin_digest(model: BuiltinModel) -> Result<&'static str> {
+    let name = model.name();
+    BUNDLED
+        .iter()
+        .find(|(bundled, _, _)| *bundled == name)
+        .map(|(_, _, recorded)| *recorded)
+        .ok_or_else(|| anyhow!("builtin model {name:?} is not included in this build"))
+}
+
 /// Names of every artifact compiled into this build.
 pub fn names() -> Vec<&'static str> {
     BUNDLED.iter().map(|(name, _, _)| *name).collect()

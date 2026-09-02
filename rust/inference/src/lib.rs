@@ -22,4 +22,4 @@ pub use msspeculator_core::{
 };
 pub use progress::{Exactness, Phase, Progress, ProgressFn};
 pub use proteome::{FastaId, ProteinGroup, Residues};
-pub use provenance::LibraryProvenance;
+pub use provenance::{check_library, sidecar_path, Difference, LibraryCheck, LibraryProvenance};

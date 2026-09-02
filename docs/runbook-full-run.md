@@ -100,6 +100,10 @@ A trailing `.gz` compresses either format. mzSpecLib is preferred for published 
 its header carries the resolved model, FASTA digests, digestion rules, modifications, acquisition
 context, and fragment settings. TSV output writes the same provenance to a `config.json` sidecar.
 
+Regenerating a library in place reports what it is replacing, from whichever copy of the
+provenance the old file has, and then rebuilds. A run over the same FASTA with the same settings
+says so; one with a knob changed names the knob and both values.
+
 Single-peptide prediction is also available:
 
 ```bash

@@ -125,6 +125,47 @@ Output order is unspecified because workers finish independently. The writer val
 each precursor before serialization. The generated provenance records the package version and
 source commit, along with the resolved model, input FASTA, and settings.
 
+## Check what a library was built from
+
+A search reading a library someone else built can ask whether it matches the settings it is about
+to search with. `check_library` compares the provenance the library carries against the
+provenance these options would produce.
+
+```rust
+use msspeculator_inference::{check_library, LibraryCheck};
+
+match check_library(&library_path, &stream)? {
+    LibraryCheck::Same => {}
+    LibraryCheck::Different { differences } => {
+        for difference in differences {
+            eprintln!(
+                "{} was {}, now {}",
+                difference.key,
+                difference.library.as_deref().unwrap_or("unset"),
+                difference.expected.as_deref().unwrap_or("unset"),
+            );
+        }
+    }
+    LibraryCheck::Unknown => eprintln!("no msspeculator provenance to compare against"),
+}
+```
+
+Warn and proceed rather than refuse: a mismatch says the library answers a different question,
+not that searching it is invalid. `Unknown` is not a mismatch — it is another tool's library, or
+one written with no sidecar in a format that carries no header.
+
+An mzSpecLib library is read to the first spectrum and no further, so the library costs one open
+whatever its size; a DIA-NN TSV has no header, so the `.config.json` sidecar beside it is used
+instead, at `sidecar_path(&library)`. Neither side loads a model. The expected side does hash the
+FASTA, which is a full read of it.
+
+Only what the settings determine is compared. Which build wrote the library, the paths its inputs
+were named by, where it went and how its retention anchors measured are all left out: a later
+release writing the same settings from a differently spelled path is the same library. Both input
+digests are compared, so a different FASTA or a different model is a difference. A key only one
+side records is one too, since an unset knob is dropped from a header rather than written as a
+null — `--max-fragments` dropped from a rebuild is as much a change as one given a new value.
+
 ## Report progress
 
 Set `progress` to watch a build that takes minutes. The callback receives a `Progress` carrying

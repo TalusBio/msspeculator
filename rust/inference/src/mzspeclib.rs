@@ -11,10 +11,12 @@
 //! read back by the reference Python `mzspeclib` implementation in `tests/test_rust_parity.py`,
 //! which also runs its validator; we are not the authority on whether this is a valid file.
 
-use std::io::Write;
+use std::collections::BTreeMap;
+use std::fs::File;
+use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde_json::Value;
 
 use crate::library::{LibrarySink, SpectrumRow};
@@ -29,6 +31,17 @@ const ATTRIBUTE_PREFIX: &str = "msspeculator:";
 /// Spelled as `MS:1003200|software version` in the header, so it is not repeated as one of the
 /// generic provenance pairs.
 const VERSION_KEY: &str = "generator.version";
+
+/// The two halves of one project-defined attribute: a name line and a value line, tied together
+/// only by the group id they share. Spelled once each, because [`header_attributes`] has to
+/// find what [`MzSpecLibSink::header`] wrote.
+const NAME_TERM: &str = "MS:1003275|other attribute name";
+const VALUE_TERM: &str = "MS:1003276|other attribute value";
+
+/// The first line of the grammar, and the cheapest way to tell a library that could carry
+/// provenance from one that cannot: a DIA-NN TSV has no header to read, and looking for one to
+/// the end of a multi-gigabyte file would be the same as reading the library.
+const MAGIC: &str = "<mzSpecLib>";
 
 pub struct MzSpecLibSink<W: Write> {
     writer: W,
@@ -89,6 +102,92 @@ fn provenance_attributes(config: &Value) -> Vec<(String, String)> {
     out
 }
 
+/// The provenance as a header carries it: dotted keys with the `msspeculator:` prefix stripped,
+/// nulls dropped, `generator.version` dropped.
+///
+/// Keyed rather than ordered, because the only thing that reads this is a comparison against
+/// what some header actually says. The order attributes are written in stays [`MzSpecLibSink`]'s
+/// business, and is not the sort order of these keys.
+pub(crate) fn attributes(provenance: &LibraryProvenance) -> BTreeMap<String, String> {
+    attributes_from_json(&provenance.to_json())
+}
+
+/// The same, from a provenance document that was read back rather than resolved — the sidecar.
+///
+/// In the header's spelling, deliberately: a library's two copies of its provenance are the same
+/// provenance, so whichever one a reader finds has to compare the same way. The sidecar keeps
+/// nulls and the software version that the header spells as `MS:1003200`, and both drop out here.
+pub(crate) fn attributes_from_json(config: &Value) -> BTreeMap<String, String> {
+    provenance_attributes(config).into_iter().collect()
+}
+
+/// The provenance pairs a library's header carries, keyed the way [`attributes`] spells them.
+///
+/// One pass, stopping at the first `<Spectrum>`: a library is one of those per precursor and
+/// there can be tens of millions of them, so the whole check costs the header. Pairs are
+/// collected by attribute group, since the name and the value are two lines that nothing but the
+/// group id relates, and only `msspeculator:` keys are kept — the same syntax carries any other
+/// writer's attributes, and those are not ours to interpret.
+///
+/// An empty map means the header carried none of ours. That is every library another tool wrote,
+/// and every library of ours in a format with no header to put them in.
+pub(crate) fn header_attributes(reader: impl BufRead) -> Result<BTreeMap<String, String>> {
+    let mut lines = reader.lines();
+    match lines.next().transpose()? {
+        Some(first) if first.trim_end() == MAGIC => {}
+        _ => return Ok(BTreeMap::new()),
+    }
+    let mut names = BTreeMap::new();
+    let mut values = BTreeMap::new();
+    for line in lines {
+        let line = line?;
+        if line.starts_with("<Spectrum") {
+            break;
+        }
+        // Matched on the accession alone, unlike everything we write: a reader that insists on
+        // our spelling of the name half would silently skip a file that is otherwise identical.
+        let Some((group, term, value)) = attribute_line(&line) else {
+            continue;
+        };
+        match term.split('|').next().unwrap_or(term) {
+            "MS:1003275" => {
+                names.insert(group.to_string(), value.to_string());
+            }
+            "MS:1003276" => {
+                values.insert(group.to_string(), value.to_string());
+            }
+            _ => {}
+        }
+    }
+    Ok(names
+        .into_iter()
+        .filter_map(|(group, name)| {
+            let key = name.strip_prefix(ATTRIBUTE_PREFIX)?;
+            Some((key.to_string(), values.remove(&group)?))
+        })
+        .collect())
+}
+
+/// `[3]MS:1003276|other attribute value=4242` -> `("3", "MS:1003276|other attribute value", "4242")`.
+///
+/// Split on the first `=` only: a value is free text and several of ours contain one.
+fn attribute_line(line: &str) -> Option<(&str, &str, &str)> {
+    let (group, rest) = line.strip_prefix('[')?.split_once(']')?;
+    let (term, value) = rest.split_once('=')?;
+    Some((group, term, value))
+}
+
+/// [`header_attributes`] for a library on disk, compressed or not.
+pub(crate) fn read_header_attributes(path: &Path) -> Result<BTreeMap<String, String>> {
+    let file = File::open(path).with_context(|| format!("reading {}", path.display()))?;
+    let reader: Box<dyn BufRead> = if crate::library::is_compressed(path) {
+        Box::new(BufReader::new(flate2::read::GzDecoder::new(file)))
+    } else {
+        Box::new(BufReader::new(file))
+    };
+    header_attributes(reader).with_context(|| format!("reading the header of {}", path.display()))
+}
+
 /// mzPAF annotation for one of our fragments, e.g. `y7` or `b2^2`.
 ///
 /// Charge is spelled only when it is not 1, matching mzPAF's own writer; our fragments carry no
@@ -127,14 +226,8 @@ impl<W: Write + Send> LibrarySink for MzSpecLibSink<W> {
         // attribute, which is why both lines carry the same group id.
         for (group, (key, value)) in provenance_attributes(&config).into_iter().enumerate() {
             let group = group + 1;
-            writeln!(
-                self.writer,
-                "[{group}]MS:1003275|other attribute name={ATTRIBUTE_PREFIX}{key}"
-            )?;
-            writeln!(
-                self.writer,
-                "[{group}]MS:1003276|other attribute value={value}"
-            )?;
+            writeln!(self.writer, "[{group}]{NAME_TERM}={ATTRIBUTE_PREFIX}{key}")?;
+            writeln!(self.writer, "[{group}]{VALUE_TERM}={value}")?;
         }
         // A set named `all` is applied to every entry of its kind without the entry referencing
         // it, so anything constant across the library belongs here and nowhere else. At 60M
@@ -181,9 +274,9 @@ impl<W: Write + Send> LibrarySink for MzSpecLibSink<W> {
             // a project-defined spectrum attribute; each spectrum has one analyte in this file.
             writeln!(
                 self.writer,
-                "[3]MS:1003275|other attribute name=msspeculator:decoy_pair_id"
+                "[3]{NAME_TERM}={ATTRIBUTE_PREFIX}decoy_pair_id"
             )?;
-            writeln!(self.writer, "[3]MS:1003276|other attribute value={pair_id}")?;
+            writeln!(self.writer, "[3]{VALUE_TERM}={pair_id}")?;
         }
         // No `MS:1003062|library spectrum index`: a reader assigns that from position as it goes,
         // and stating our own 1-based count alongside it leaves two indices in one entry.
@@ -385,11 +478,11 @@ mod tests {
                     term: "MS:1000896|normalized retention time",
                     kind: "dimensionless index, minutes-like",
                     scale: "anchored",
-                    anchor_check: AnchorCheck {
+                    anchor_check: Some(AnchorCheck {
                         on_scale: true,
                         max_abs_error: 0.5,
                         anchors: Vec::new(),
-                    },
+                    }),
                 },
                 raw: None,
             },
@@ -430,6 +523,43 @@ mod tests {
         // requested, and no file was written.
         assert!(!text.contains("context.ms"));
         assert!(!text.contains("output."));
+    }
+
+    #[test]
+    fn every_attribute_written_reads_back() {
+        let text = rendered(None);
+        assert_eq!(
+            header_attributes(text.as_bytes()).unwrap(),
+            attributes(&provenance()),
+            "the header is the only copy of the provenance a reader gets"
+        );
+    }
+
+    #[test]
+    fn reading_stops_at_the_first_spectrum() {
+        let mut sink = MzSpecLibSink::new(Vec::new(), Path::new("lib.mzspeclib.txt"));
+        sink.header(&provenance()).unwrap();
+        sink.spectrum(&SpectrumRow {
+            decoy_pair_id: Some(4242),
+            ..row()
+        })
+        .unwrap();
+        let text = String::from_utf8(sink.writer).unwrap();
+        // Written with the same group syntax as the header's pairs, one per spectrum, and not
+        // provenance. Reading it back would be reading the library.
+        assert!(text.contains("decoy_pair_id"));
+        assert!(!header_attributes(text.as_bytes())
+            .unwrap()
+            .contains_key("decoy_pair_id"));
+    }
+
+    #[test]
+    fn a_file_that_is_not_mzspeclib_carries_no_attributes() {
+        assert!(
+            header_attributes(&b"PrecursorMz\tProductMz\n100.0\t200.0\n"[..])
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]

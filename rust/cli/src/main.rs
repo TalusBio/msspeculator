@@ -12,7 +12,7 @@ use serde_json::json;
 
 mod diagnostics;
 mod progress;
-use msspeculator_inference::library;
+use msspeculator_inference::{check_library, library, sidecar_path, LibraryCheck};
 
 #[derive(Parser)]
 #[command(
@@ -415,17 +415,6 @@ fn parse_model_source(spec: &str) -> Result<ModelSource> {
     }
 }
 
-/// Append to a path's whole name rather than replacing its extension.
-///
-/// `lib.mzspeclib.txt` gains `.config.json` to become `lib.mzspeclib.txt.config.json`;
-/// `Path::with_extension` would have produced `lib.mzspeclib.config.json` and lost which format
-/// the sidecar describes. Built as an OS string, since a path need not be UTF-8.
-fn append_suffix(path: &Path, suffix: &str) -> PathBuf {
-    let mut name = path.to_path_buf().into_os_string();
-    name.push(suffix);
-    PathBuf::from(name)
-}
-
 impl LibraryArgs {
     /// Written by default: a library whose settings live only in a shell history cannot be
     /// regenerated. `--no-config-out` is the explicit opt out, and clap already refuses it
@@ -437,9 +426,37 @@ impl LibraryArgs {
         Some(
             self.config_out
                 .clone()
-                .unwrap_or_else(|| append_suffix(&self.out, ".config.json")),
+                .unwrap_or_else(|| sidecar_path(&self.out)),
         )
     }
+}
+
+/// Say what a rebuild is about to replace, before it truncates anything.
+///
+/// A warning and not a refusal: regenerating a library in place is the ordinary case, and the
+/// only thing the old file knew that nothing else does is what it was built from.
+fn report_overwrite(path: &Path, stream: &library::StreamOptions<'_>) -> Result<()> {
+    let out = path.display();
+    match check_library(path, stream)? {
+        LibraryCheck::Same => {
+            eprintln!("{out} was already built with these settings; rebuilding it")
+        }
+        LibraryCheck::Different { differences } => {
+            eprintln!("overwriting {out}, built with different settings:");
+            for difference in differences {
+                // A key one side never recorded reads as `unset`, which is what an omitted knob
+                // is; the other spelling would be inventing a value for it.
+                eprintln!(
+                    "  {} was {}, now {}",
+                    difference.key,
+                    difference.library.as_deref().unwrap_or("unset"),
+                    difference.expected.as_deref().unwrap_or("unset"),
+                );
+            }
+        }
+        LibraryCheck::Unknown => eprintln!("overwriting {out}, which carries no provenance"),
+    }
+    Ok(())
 }
 
 fn run_library(args: LibraryArgs) -> Result<()> {
@@ -461,28 +478,32 @@ fn run_library(args: LibraryArgs) -> Result<()> {
     let config_out = args.sidecar_path();
     let line = progress::ProgressLine::for_stderr(!args.no_progress);
     let report = |progress| line.update(progress);
+    let stream = library::StreamOptions {
+        model: parse_model_source(&args.artifact.model)?,
+        fasta: &args.fasta,
+        activation: args.artifact.activation.as_deref(),
+        ms_context: ms_context.as_ref(),
+        chrom_context: args.context.chrom_context.as_deref(),
+        min_intensity: args.min_intensity,
+        missed_cleavages: args.missed_cleavages,
+        min_length: args.min_length,
+        max_length: args.max_length,
+        min_charge: args.min_charge,
+        max_charge: args.max_charge,
+        fixed_mods,
+        variable_mods,
+        max_variable_mods: args.max_variable_mods,
+        max_fragments: args.max_fragments,
+        generate_decoys: args.decoys,
+        progress: Some(&report),
+    };
+    if args.out.exists() {
+        report_overwrite(&args.out, &stream)?;
+    }
     let stats = library::write_library(&library::LibraryOptions {
         out: &args.out,
         config_out: config_out.as_deref(),
-        stream: library::StreamOptions {
-            model: parse_model_source(&args.artifact.model)?,
-            fasta: &args.fasta,
-            activation: args.artifact.activation.as_deref(),
-            ms_context: ms_context.as_ref(),
-            chrom_context: args.context.chrom_context.as_deref(),
-            min_intensity: args.min_intensity,
-            missed_cleavages: args.missed_cleavages,
-            min_length: args.min_length,
-            max_length: args.max_length,
-            min_charge: args.min_charge,
-            max_charge: args.max_charge,
-            fixed_mods,
-            variable_mods,
-            max_variable_mods: args.max_variable_mods,
-            max_fragments: args.max_fragments,
-            generate_decoys: args.decoys,
-            progress: Some(&report),
-        },
+        stream,
     })?;
     // No explicit wipe: `ProgressLine`'s `Drop` restores the terminal on the error path too,
     // which is the path that has it drawn.
@@ -546,24 +567,6 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// `.config.json` appends to the whole name, so which format the sidecar describes stays
-    /// visible and the two files sort next to each other.
-    #[test]
-    fn the_sidecar_defaults_beside_the_library_it_describes() {
-        for (out, expected) in [
-            ("lib.tsv", "lib.tsv.config.json"),
-            ("lib.mzspeclib.txt", "lib.mzspeclib.txt.config.json"),
-            ("lib.mzspeclib.txt.gz", "lib.mzspeclib.txt.gz.config.json"),
-            ("no-extension", "no-extension.config.json"),
-        ] {
-            assert_eq!(
-                append_suffix(Path::new(out), ".config.json"),
-                PathBuf::from(expected),
-                "{out}"
-            );
-        }
-    }
 
     #[test]
     fn ms_context_reads_a_bare_name_as_a_setup_and_four_parts_as_factors() {
