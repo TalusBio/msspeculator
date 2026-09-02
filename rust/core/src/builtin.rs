@@ -22,6 +22,9 @@ pub const BUILTIN_PREFIX: &str = "builtin:";
 /// A model compiled into this crate.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum BuiltinModel {
+    /// The `small` preset at 0.8054 mean per-dataset spectral agreement, from the plateau-decay
+    /// run. The `v0` is deliberate: the preset sweep that picks a production model has not run,
+    /// so this is the plumbing's payload rather than a blessed release.
     SmallV0,
 }
 
@@ -41,29 +44,27 @@ impl BuiltinModel {
         Self::ALL.into_iter().find(|model| model.name() == name)
     }
 
-    /// Which row of [`BUNDLED`] holds this variant's payload.
+    /// The weights compiled into this build.
     ///
-    /// Reaching the payload is infallible because of this: the enum is closed, every variant
-    /// names a row, and `every_variant_has_its_row` keeps the two in step. A lookup by name
-    /// would have to answer "what if it is missing", which for a compiled-in artifact is not a
-    /// question the caller can do anything about.
-    const fn row(self) -> usize {
+    /// Reaching them is infallible because the enum is closed and every variant names its own
+    /// payload here. A lookup by name would have to answer "what if it is missing", which for a
+    /// compiled-in artifact is not a question the caller can do anything about.
+    pub const fn bytes(self) -> &'static [u8] {
         match self {
-            Self::SmallV0 => 0,
+            Self::SmallV0 => include_bytes!("../data/weights/small-v0.safetensors"),
         }
     }
 
-    /// The weights compiled into this build.
-    pub fn bytes(self) -> &'static [u8] {
-        BUNDLED[self.row()].1
-    }
-
-    /// The digest recorded for those weights when they were vendored, without loading them.
+    /// The digest recorded for these weights when they were vendored, without loading them.
     ///
-    /// The same value [`load_builtin`] reports, from the same row, so a caller that needs only
-    /// the identity of a model does not pay for its tensors.
-    pub fn digest(self) -> &'static str {
-        BUNDLED[self.row()].2
+    /// The same value [`load_builtin`] reports, so a caller that needs only the identity of a
+    /// model does not pay for its tensors. `every_bundled_artifact_matches_its_recorded_digest`
+    /// checks it against the bytes above, so replacing the file without restating the identity
+    /// fails the build rather than silently shipping different weights under one name.
+    pub const fn digest(self) -> &'static str {
+        match self {
+            Self::SmallV0 => "8dc9edf567606df1ce2b98530d679ebce139f364021062b72a20d4eaca7162a3",
+        }
     }
 }
 
@@ -117,20 +118,6 @@ impl ModelSource {
 /// Ceiling on one bundled artifact. Enforced by a test, because the cost of a mistake here is a
 /// large binary in git history, which is not something a later commit can take back.
 pub const MAX_BUNDLED_BYTES: usize = 4 << 20;
-
-/// `(name, bytes, blake2b-256 as recorded when it was vendored)`.
-///
-/// The digest is checked against the bytes by a test, so replacing the file without stating the
-/// new identity fails the build rather than silently shipping different weights under one name.
-///
-/// `small-v0` is the `small` preset at 0.8054 mean per-dataset spectral agreement, from the
-/// plateau-decay run. The `v0` is deliberate: the preset sweep that picks a production model has
-/// not run, so this is the plumbing's payload rather than a blessed release.
-const BUNDLED: [(&str, &[u8], &str); 1] = [(
-    "small-v0",
-    include_bytes!("../data/weights/small-v0.safetensors"),
-    "8dc9edf567606df1ce2b98530d679ebce139f364021062b72a20d4eaca7162a3",
-)];
 
 /// A blake2b-256 hasher and the hex its output is spelled as.
 ///
@@ -238,33 +225,23 @@ mod tests {
     #[test]
     fn every_bundled_artifact_matches_its_recorded_digest() {
         assert!(
-            !BUNDLED.is_empty(),
+            !BuiltinModel::ALL.is_empty(),
             "a build with no weights cannot predict"
         );
-        for (name, bytes, recorded) in BUNDLED {
+        for model in BuiltinModel::ALL {
+            let name = model.name();
             assert_eq!(
-                digest_bytes(bytes),
-                recorded,
+                digest_bytes(model.bytes()),
+                model.digest(),
                 "{name} bytes do not match the digest recorded for them"
             );
             assert!(
-                bytes.len() <= MAX_BUNDLED_BYTES,
+                model.bytes().len() <= MAX_BUNDLED_BYTES,
                 "{name} is {} bytes, over the {MAX_BUNDLED_BYTES} ceiling; weights this large \
                  belong in a runtime fetch, not in git",
-                bytes.len()
+                model.bytes().len()
             );
-        }
-    }
-
-    /// `BuiltinModel::row` indexes [`BUNDLED`] directly, which is what makes `bytes` and
-    /// `digest` infallible. Adding a variant without its row would index the wrong artifact or
-    /// panic; this is the check that turns either into a build failure.
-    #[test]
-    fn every_variant_has_its_row() {
-        assert_eq!(BuiltinModel::ALL.len(), BUNDLED.len());
-        for model in BuiltinModel::ALL {
-            assert_eq!(BUNDLED[model.row()].0, model.name());
-            assert_eq!(BuiltinModel::from_name(model.name()), Some(model));
+            assert_eq!(BuiltinModel::from_name(name), Some(model));
         }
         assert_eq!(BuiltinModel::from_name("nonexistent"), None);
     }
@@ -284,13 +261,24 @@ mod tests {
                 .unwrap(),
             load_builtin(BuiltinModel::SmallV0).unwrap().digest
         );
+        // Streaming a file in chunks and hashing it whole are two paths to one identity: a check
+        // reads the model with `digest_file` while the build hashes the bytes it loaded, and a
+        // library compares equal to itself only if those agree.
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/data/weights/small-v0.safetensors"
+        );
+        assert_eq!(
+            digest_file(std::path::Path::new(path)).unwrap(),
+            digest_bytes(&std::fs::read(path).unwrap())
+        );
     }
 
     #[test]
     fn a_bundled_name_loads_and_reports_itself() {
         let loaded = load_model("builtin:small-v0").unwrap();
         assert_eq!(loaded.spec, "builtin:small-v0");
-        assert_eq!(loaded.digest, BUNDLED[0].2);
+        assert_eq!(loaded.digest, BuiltinModel::SmallV0.digest());
         // A real trained artifact, not a stub: it carries the norm the corpus was standardized on.
         assert!(loaded.artifact.meta.norm.rt_std > 0.0);
         assert!(names().contains(&"small-v0"));
@@ -300,7 +288,7 @@ mod tests {
     fn typed_source_loads_the_builtin_model() {
         let loaded = load_source(ModelSource::Builtin(BuiltinModel::SmallV0)).unwrap();
         assert_eq!(loaded.spec, "builtin:small-v0");
-        assert_eq!(loaded.digest, BUNDLED[0].2);
+        assert_eq!(loaded.digest, BuiltinModel::SmallV0.digest());
     }
 
     #[test]
@@ -321,6 +309,6 @@ mod tests {
         let loaded = load_model(path).unwrap();
         assert_eq!(loaded.spec, path);
         // Same bytes reached two ways must have one identity.
-        assert_eq!(loaded.digest, BUNDLED[0].2);
+        assert_eq!(loaded.digest, BuiltinModel::SmallV0.digest());
     }
 }
