@@ -6,6 +6,7 @@
 #[cfg(test)]
 mod scratch;
 
+pub mod check;
 mod diann;
 pub mod library;
 pub mod mzspeclib;
@@ -13,6 +14,7 @@ pub mod progress;
 mod proteome;
 pub mod provenance;
 
+pub use check::{check_against, check_library, Difference, LibraryCheck};
 pub use library::{
     stream_library, write_library, LibraryOptions, LibrarySink, LibraryStats, Peak, SpectrumRow,
     StreamOptions,
@@ -22,4 +24,4 @@ pub use msspeculator_core::{
 };
 pub use progress::{Exactness, Phase, Progress, ProgressFn};
 pub use proteome::{FastaId, ProteinGroup, Residues};
-pub use provenance::LibraryProvenance;
+pub use provenance::{sidecar_path, LibraryProvenance, Settings};

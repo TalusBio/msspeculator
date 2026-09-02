@@ -11,14 +11,14 @@
 //! read back by the reference Python `mzspeclib` implementation in `tests/test_rust_parity.py`,
 //! which also runs its validator; we are not the authority on whether this is a valid file.
 
-use std::io::Write;
+use std::collections::BTreeMap;
+use std::io::{BufRead, Write};
 use std::path::Path;
 
 use anyhow::Result;
-use serde_json::Value;
 
 use crate::library::{LibrarySink, SpectrumRow};
-use crate::provenance::LibraryProvenance;
+use crate::provenance::{flatten, LibraryProvenance};
 
 /// The format version of the grammar emitted here, not of our library.
 const FORMAT_VERSION: &str = "1.0";
@@ -29,6 +29,21 @@ const ATTRIBUTE_PREFIX: &str = "msspeculator:";
 /// Spelled as `MS:1003200|software version` in the header, so it is not repeated as one of the
 /// generic provenance pairs.
 const VERSION_KEY: &str = "generator.version";
+
+/// The two halves of one project-defined attribute: a name line and a value line, tied together
+/// only by the group id they share.
+///
+/// The accession is what [`header_attributes`] matches on, and the writer builds its full term
+/// from the same constant, so there is one spelling of each and a reader cannot drift from a
+/// writer. Matched on the accession alone, unlike everything we write: a reader that insisted on
+/// our spelling of the name half would silently skip a file that is otherwise identical.
+const NAME_ACCESSION: &str = "MS:1003275";
+const VALUE_ACCESSION: &str = "MS:1003276";
+
+/// The first line of the grammar, and the cheapest way to tell a library that could carry
+/// provenance from one that cannot: a DIA-NN TSV has no header to read, and looking for one to
+/// the end of a multi-gigabyte file would be the same as reading the library.
+const MAGIC: &str = "<mzSpecLib>";
 
 pub struct MzSpecLibSink<W: Write> {
     writer: W,
@@ -59,34 +74,91 @@ impl<W: Write> MzSpecLibSink<W> {
     }
 }
 
-/// Flatten the provenance into dotted `key -> value` pairs, dropping nulls.
+/// The provenance pairs a header carries, in the spelling [`header_attributes`] reads back.
 ///
-/// Objects recurse; anything else is a leaf. Arrays stay JSON text: `["C[UNIMOD:2057]", ...]`
-/// reads as what was passed on the command line, which is the point of recording it.
-fn provenance_attributes(config: &Value) -> Vec<(String, String)> {
-    fn walk(prefix: &str, value: &Value, out: &mut Vec<(String, String)>) {
-        match value {
-            Value::Object(fields) => {
-                for (key, value) in fields {
-                    let key = if prefix.is_empty() {
-                        key.clone()
-                    } else {
-                        format!("{prefix}.{key}")
-                    };
-                    walk(&key, value, out);
-                }
-            }
-            // A knob that was not set says nothing a reader can use, and the sidecar keeps the
-            // explicit null for anyone who wants to see that it was considered.
-            Value::Null => {}
-            Value::String(text) => out.push((prefix.to_string(), text.clone())),
-            leaf => out.push((prefix.to_string(), leaf.to_string())),
+/// `generator.version` drops out because the header spells it as `MS:1003200|software version`
+/// rather than as one of the generic pairs.
+pub(crate) fn attributes(provenance: &LibraryProvenance) -> BTreeMap<String, String> {
+    let mut pairs = flatten(&provenance.to_json());
+    pairs.remove(VERSION_KEY);
+    pairs
+}
+
+/// The `msspeculator:` pairs a library's header carries, keyed the way [`attributes`] spells them.
+///
+/// One pass, stopping at the end of the header: a library carries one `<Spectrum>` per precursor
+/// and there can be tens of millions of them, so the whole read costs the header. Pairs are
+/// collected by attribute group, since the name and the value are two lines that nothing but the
+/// group id relates, and only `msspeculator:` keys are kept — the same syntax carries any other
+/// writer's attributes, and those are not ours to interpret.
+///
+/// An empty map means the header carried none of ours. That is every library another tool wrote,
+/// and every library of ours in a format with no header to put them in. A line that is not valid
+/// UTF-8 is one of those too: a file we cannot read carries none of our attributes by definition,
+/// and refusing to answer would be worse than answering "nothing here".
+pub(crate) fn header_attributes(reader: impl BufRead) -> BTreeMap<String, String> {
+    // `map_while` rather than a raise: an I/O failure and a non-UTF-8 line both end the read,
+    // because a file we cannot read carries none of our attributes by definition.
+    let mut lines = reader.lines().map_while(Result::ok);
+    if lines.next().as_deref().map(str::trim_end) != Some(MAGIC) {
+        return BTreeMap::new();
+    }
+    let mut names = BTreeMap::new();
+    let mut values = BTreeMap::new();
+    for line in lines {
+        // Every section after the header opens with `<`, so this is where the header ends. Wider
+        // than `<Spectrum` on purpose: an attribute set may one day carry a grouped pair of ours
+        // — `spectrum` already writes one per decoy — and those are not provenance.
+        if line.starts_with('<') {
+            break;
+        }
+        let Some((group, term, value)) = attribute_line(&line) else {
+            continue;
+        };
+        let accession = term.split('|').next().unwrap_or(term);
+        if accession == NAME_ACCESSION {
+            names.insert(group.to_string(), value.to_string());
+        } else if accession == VALUE_ACCESSION {
+            values.insert(group.to_string(), value.to_string());
         }
     }
-    let mut out = Vec::new();
-    walk("", config, &mut out);
-    out.retain(|(key, _)| key != VERSION_KEY);
-    out
+    names
+        .into_iter()
+        .filter_map(|(group, name)| {
+            let key = name.strip_prefix(ATTRIBUTE_PREFIX)?;
+            Some((key.to_string(), values.remove(&group)?))
+        })
+        .collect()
+}
+
+/// Whether every provenance value can be written and read back unchanged.
+///
+/// One attribute is one line, so a value carrying a line ending is a value this grammar cannot
+/// hold: written raw it splits in two, and [`header_attributes`] reads back something other than
+/// what was recorded. The format has no escape for it, so the only truthful answer is to refuse.
+///
+/// Asked twice on purpose. [`MzSpecLibSink::header`] asks because it is the authority on what it
+/// can write, and [`crate::library::write_library`] asks before it creates the file, because a
+/// library must not be truncated for a run that was going to fail anyway.
+pub(crate) fn check_representable(provenance: &LibraryProvenance) -> Result<()> {
+    for (key, value) in attributes(provenance) {
+        if value.contains(['\n', '\r']) {
+            anyhow::bail!(
+                "{key} contains a line ending, which an mzSpecLib attribute cannot carry: \
+                 {value:?}"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// `[3]MS:1003276|other attribute value=4242` -> `("3", "MS:1003276|other attribute value", "4242")`.
+///
+/// Split on the first `=` only: a value is free text and several of ours contain one.
+fn attribute_line(line: &str) -> Option<(&str, &str, &str)> {
+    let (group, rest) = line.strip_prefix('[')?.split_once(']')?;
+    let (term, value) = rest.split_once('=')?;
+    Some((group, term, value))
 }
 
 /// mzPAF annotation for one of our fragments, e.g. `y7` or `b2^2`.
@@ -103,19 +175,17 @@ fn annotation(ion: &str, ordinal: i64, charge: i64) -> String {
 
 impl<W: Write + Send> LibrarySink for MzSpecLibSink<W> {
     fn header(&mut self, provenance: &LibraryProvenance) -> Result<()> {
-        let config = provenance.to_json();
-        writeln!(self.writer, "<mzSpecLib>")?;
+        writeln!(self.writer, "{MAGIC}")?;
         writeln!(
             self.writer,
             "MS:1003186|library format version={FORMAT_VERSION}"
         )?;
         writeln!(self.writer, "MS:1003188|library name={}", self.name)?;
-        if let Some(version) = config
-            .pointer("/generator/version")
-            .and_then(serde_json::Value::as_str)
-        {
-            writeln!(self.writer, "MS:1003200|software version={version}")?;
-        }
+        writeln!(
+            self.writer,
+            "MS:1003200|software version={}",
+            provenance.generator.version
+        )?;
         // `MS:1003207|library creation software` is deliberately absent: its value has to be a
         // child term of itself, and the vocabulary's children are Spectronaut, SpectraST,
         // BiblioSpec, PeakForest, DIA-NN and CompoundDb. Claiming one of those would be a lie
@@ -125,15 +195,16 @@ impl<W: Write + Send> LibrarySink for MzSpecLibSink<W> {
         // the provenance rides as name/value pairs; the grammar's own escape hatch
         // for an attribute the vocabulary has no term for. One group per key: the pair is the
         // attribute, which is why both lines carry the same group id.
-        for (group, (key, value)) in provenance_attributes(&config).into_iter().enumerate() {
+        check_representable(provenance)?;
+        for (group, (key, value)) in attributes(provenance).into_iter().enumerate() {
             let group = group + 1;
             writeln!(
                 self.writer,
-                "[{group}]MS:1003275|other attribute name={ATTRIBUTE_PREFIX}{key}"
+                "[{group}]{NAME_ACCESSION}|other attribute name={ATTRIBUTE_PREFIX}{key}"
             )?;
             writeln!(
                 self.writer,
-                "[{group}]MS:1003276|other attribute value={value}"
+                "[{group}]{VALUE_ACCESSION}|other attribute value={value}"
             )?;
         }
         // A set named `all` is applied to every entry of its kind without the entry referencing
@@ -181,9 +252,12 @@ impl<W: Write + Send> LibrarySink for MzSpecLibSink<W> {
             // a project-defined spectrum attribute; each spectrum has one analyte in this file.
             writeln!(
                 self.writer,
-                "[3]MS:1003275|other attribute name=msspeculator:decoy_pair_id"
+                "[3]{NAME_ACCESSION}|other attribute name={ATTRIBUTE_PREFIX}decoy_pair_id"
             )?;
-            writeln!(self.writer, "[3]MS:1003276|other attribute value={pair_id}")?;
+            writeln!(
+                self.writer,
+                "[3]{VALUE_ACCESSION}|other attribute value={pair_id}"
+            )?;
         }
         // No `MS:1003062|library spectrum index`: a reader assigns that from position as it goes,
         // and stating our own 1-based count alongside it leaves two indices in one entry.
@@ -357,28 +431,41 @@ mod tests {
                 version: "0.1.0",
                 commit: "abc123",
             },
-            inputs: Inputs {
-                model: "m.safetensors".into(),
-                model_blake2b_256: "0".repeat(64),
-                fasta: "proteome.fasta".into(),
-                fasta_blake2b_256: "1".repeat(64),
-            },
-            digestion: Digestion {
-                enzyme: "trypsin",
-                missed_cleavages: 2,
-                min_length: 7,
-                max_length: 30,
-                min_charge: 2,
-                max_charge: 4,
-            },
-            modifications: Modifications {
-                fixed: Vec::new(),
-                variable: vec!["M[UNIMOD:35]".into()],
-                max_variable_mods: 1,
-            },
-            context: Contexts {
-                ms: None,
-                chrom: None,
+            settings: Settings {
+                inputs: Inputs {
+                    model: "m.safetensors".into(),
+                    model_blake2b_256: "0".repeat(64),
+                    activation_override: None,
+                    fasta: "proteome.fasta".into(),
+                    fasta_blake2b_256: "1".repeat(64),
+                },
+                digestion: Digestion {
+                    enzyme: "trypsin",
+                    missed_cleavages: 2,
+                    min_length: 7,
+                    max_length: 30,
+                    min_charge: 2,
+                    max_charge: 4,
+                },
+                modifications: Modifications {
+                    fixed: Vec::new(),
+                    variable: vec!["M[UNIMOD:35]".into()],
+                    max_variable_mods: 1,
+                },
+                context: Contexts {
+                    ms: None,
+                    chrom: None,
+                },
+                fragments: FragmentPolicy {
+                    min_intensity: 0.01,
+                    max_fragments: Some(15),
+                },
+                decoys: DecoyPolicy {
+                    enabled: false,
+                    method: "pseudo-reverse",
+                    protein_prefix: "DECOY_",
+                    collision_policy: "skip",
+                },
             },
             retention: Retention {
                 normalized: NormalizedRetention {
@@ -392,16 +479,6 @@ mod tests {
                     },
                 },
                 raw: None,
-            },
-            fragments: FragmentPolicy {
-                min_intensity: 0.01,
-                max_fragments: Some(15),
-            },
-            decoys: DecoyPolicy {
-                enabled: false,
-                method: "pseudo-reverse",
-                protein_prefix: "DECOY_",
-                collision_policy: "skip",
             },
             output: None,
         }
@@ -430,6 +507,57 @@ mod tests {
         // requested, and no file was written.
         assert!(!text.contains("context.ms"));
         assert!(!text.contains("output."));
+    }
+
+    #[test]
+    fn every_attribute_written_reads_back() {
+        let text = rendered(None);
+        assert_eq!(
+            header_attributes(text.as_bytes()),
+            attributes(&provenance()),
+            "the header is the only copy of the provenance a reader gets"
+        );
+    }
+
+    #[test]
+    fn reading_stops_at_the_end_of_the_header() {
+        let mut sink = MzSpecLibSink::new(Vec::new(), Path::new("lib.mzspeclib.txt"));
+        sink.header(&provenance()).unwrap();
+        sink.spectrum(&SpectrumRow {
+            decoy_pair_id: Some(4242),
+            ..row()
+        })
+        .unwrap();
+        let text = String::from_utf8(sink.writer).unwrap();
+        // Written with the same group syntax as the header's pairs, one per spectrum, and not
+        // provenance. Reading it back would be reading the library.
+        assert!(text.contains("decoy_pair_id"));
+        assert!(!header_attributes(text.as_bytes()).contains_key("decoy_pair_id"));
+    }
+
+    #[test]
+    fn nothing_we_cannot_read_carries_attributes() {
+        for bytes in [
+            &b"PrecursorMz\tProductMz\n100.0\t200.0\n"[..],
+            // Not UTF-8, so not a header we wrote — and not an error either.
+            &[0xffu8, 0xfe, 0x00, 0x41, 0x0a, 0xc3][..],
+            &b""[..],
+        ] {
+            assert!(header_attributes(bytes).is_empty(), "{bytes:?}");
+        }
+    }
+
+    /// One attribute is one line, so a value carrying a line ending would be written raw and read
+    /// back as something else. `--ms-context` factors are free text, so a value like this can
+    /// reach the writer; refusing is the only spelling that does not quietly record a lie.
+    #[test]
+    fn a_value_that_cannot_survive_the_round_trip_is_refused() {
+        let mut provenance = provenance();
+        provenance.settings.context.chrom = Some("ds\nA".into());
+        let mut sink = MzSpecLibSink::new(Vec::new(), Path::new("lib.mzspeclib.txt"));
+        let error = sink.header(&provenance).unwrap_err().to_string();
+        assert!(error.contains("context.chrom"), "{error}");
+        assert!(error.contains("line ending"), "{error}");
     }
 
     #[test]

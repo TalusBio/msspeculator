@@ -4,11 +4,12 @@
 //! module because it shares no data and no vocabulary with digestion, batching, or thread
 //! orchestration, which is the rest of [`crate::library`].
 
-use std::fs::File;
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use anyhow::{Context, Result};
 use msspeculator_core::Artifact;
+use serde_json::Value;
 
 use crate::library::{LibraryStats, StreamOptions};
 
@@ -31,17 +32,48 @@ use crate::library::{LibraryStats, StreamOptions};
 #[non_exhaustive]
 pub struct LibraryProvenance {
     pub generator: Generator,
-    pub inputs: Inputs,
-    pub digestion: Digestion,
-    pub modifications: Modifications,
-    pub context: Contexts,
+    /// Everything the options decided, flattened so `digestion`, `context` and the rest sit at
+    /// the top of the document where they always have.
+    #[serde(flatten)]
+    pub settings: Settings,
     pub retention: Retention,
-    pub fragments: FragmentPolicy,
-    pub decoys: DecoyPolicy,
     /// Absent when a caller supplied its own sink: there is then no path, no suffix-chosen
     /// format, and no compression, and inventing values for them would put claims in the
     /// provenance that nothing produced.
     pub output: Option<Output>,
+}
+
+/// Everything that determines what a library contains.
+///
+/// The question this answers is not "were the same arguments typed" but "would the same library
+/// be generated", and that is the test for whether a field belongs here: does changing it change
+/// a byte of the output? Everything that does is in, including the constants — a library built
+/// when `decoys.collision_policy` meant something else is a different library, so those strings
+/// are published values rather than documentation. Everything that does not is out, which is why
+/// nothing here needs a loaded artifact, a written file, or the version of the tool that did the
+/// writing; those live on [`LibraryProvenance`] beside it.
+///
+/// `every_option_that_changes_the_library_changes_the_settings` is that rule as a test. It is the
+/// check worth keeping green: a knob missing from here is a knob two libraries can differ by and
+/// still compare equal, which is the one way [`crate::check`] can give a wrong answer rather than
+/// no answer.
+///
+/// The one thing it cannot promise is equivalence across releases. Two builds of this tool from
+/// different commits can generate different libraries from identical settings, and comparing
+/// `generator.*` would flag every upgrade; so the claim is scoped to what a settings document can
+/// support, and a reader wanting more has the commit recorded beside it.
+///
+/// Flattened into the published document, so these are top-level keys and moving a field between
+/// here and `LibraryProvenance` renames nothing.
+#[derive(Clone, Debug, serde::Serialize)]
+#[non_exhaustive]
+pub struct Settings {
+    pub inputs: Inputs,
+    pub digestion: Digestion,
+    pub modifications: Modifications,
+    pub context: Contexts,
+    pub fragments: FragmentPolicy,
+    pub decoys: DecoyPolicy,
 }
 
 /// Which build of which tool wrote this.
@@ -61,6 +93,13 @@ pub struct Inputs {
     /// is not an identity; the digest is, and it is computed from the loaded bytes either way.
     pub model: String,
     pub model_blake2b_256: String,
+    /// The `--activation` override, or `None` where the artifact's own activation was used.
+    ///
+    /// Beside the model because it is a change to the model: it rewrites the artifact's
+    /// activation, so it changes every predicted spectrum while leaving the digest alone. Two
+    /// libraries that differ only by this differ in every peak, which is why it is recorded and
+    /// not left to the bench notebook it was added for.
+    pub activation_override: Option<String>,
     pub fasta: String,
     pub fasta_blake2b_256: String,
 }
@@ -256,34 +295,79 @@ impl LibraryProvenance {
     }
 }
 
-/// blake2b-256 of a file's bytes, hex, streamed so a multi-GB input is not held in memory.
-///
-/// Identity rather than integrity: two libraries generated from the same digests and the same
-/// settings are the same library, which is what makes a published one reproducible.
-fn file_digest(path: &Path) -> Result<String> {
-    use blake2::digest::{Update, VariableOutput};
-    let mut file = File::open(path).with_context(|| format!("hashing {}", path.display()))?;
-    let mut hasher = blake2::Blake2bVar::new(32).expect("32 is a valid blake2b output length");
-    let mut buffer = vec![0u8; 1 << 20];
-    loop {
-        let read = std::io::Read::read(&mut file, &mut buffer)?;
-        if read == 0 {
-            break;
-        }
-        hasher.update(&buffer[..read]);
+impl Settings {
+    /// Resolve every knob as it applied, not as it was typed: defaults are recorded explicitly.
+    ///
+    /// Nothing here loads a model — a [`ModelSource`](msspeculator_core::ModelSource) reports its
+    /// own digest — but the FASTA is hashed, which is a full read of it.
+    pub(crate) fn resolve(opts: &StreamOptions<'_>, model_digest: &str) -> Result<Self> {
+        Ok(Self {
+            inputs: Inputs {
+                model: opts.model.spec(),
+                model_blake2b_256: model_digest.to_string(),
+                activation_override: opts.activation.map(str::to_string),
+                fasta: opts.fasta.display().to_string(),
+                fasta_blake2b_256: msspeculator_core::digest_file(opts.fasta)?,
+            },
+            digestion: Digestion {
+                enzyme: "trypsin",
+                missed_cleavages: opts.missed_cleavages,
+                min_length: opts.min_length,
+                max_length: opts.max_length,
+                min_charge: opts.min_charge,
+                max_charge: opts.max_charge,
+            },
+            modifications: Modifications {
+                fixed: opts.fixed_mods.to_vec(),
+                variable: opts.variable_mods.to_vec(),
+                max_variable_mods: opts.max_variable_mods,
+            },
+            context: Contexts {
+                ms: opts.ms_context.map(|context| match context {
+                    msspeculator_core::MsContext::Named(name) => MsContextProvenance::Named {
+                        setup: name.clone(),
+                    },
+                    msspeculator_core::MsContext::Factors {
+                        instrument,
+                        detector,
+                        fragmentation,
+                        energy,
+                    } => MsContextProvenance::Factors {
+                        instrument: instrument.clone(),
+                        detector: detector.clone(),
+                        fragmentation: fragmentation.clone(),
+                        energy: *energy,
+                    },
+                }),
+                chrom: opts.chrom_context.map(str::to_string),
+            },
+            fragments: FragmentPolicy {
+                min_intensity: opts.min_intensity,
+                max_fragments: opts.max_fragments,
+            },
+            decoys: DecoyPolicy {
+                enabled: opts.generate_decoys,
+                method: "pseudo-reverse",
+                protein_prefix: "DECOY_",
+                collision_policy: "skip_if_stripped_sequence_is_a_target",
+            },
+        })
     }
-    let mut out = [0u8; 32];
-    hasher.finalize_variable(&mut out).expect("32-byte output");
-    Ok(out.iter().map(|byte| format!("{byte:02x}")).collect())
+
+    /// The settings as dotted `key -> value` pairs, which is how a check compares two of them.
+    pub(crate) fn attributes(&self) -> BTreeMap<String, String> {
+        flatten(&serde_json::to_value(self).expect("settings are plain data"))
+    }
 }
 
 /// Resolve everything that determined the library's bytes.
 ///
-/// The digests of the two inputs and every knob as resolved, not as typed: defaults are recorded
-/// explicitly. Counts are not here; they are only known once the library is written, so
-/// [`write_sidecar`] appends them. A library whose provenance lives only in a shell history is one
-/// nobody can regenerate or trust, which is why this value is both embedded (mzSpecLib) and
-/// written beside the library (sidecar) rather than reassembled per format.
+/// The settings, plus what only a build knows: which release wrote it, where it went, and how
+/// this artifact's retention anchors actually measured. Counts are not here; they are only known
+/// once the library is written, so [`write_sidecar`] appends them. A library whose provenance
+/// lives only in a shell history is one nobody can regenerate or trust, which is why this value
+/// is both embedded (mzSpecLib) and written beside the library (sidecar) rather than reassembled
+/// per format.
 pub(crate) fn resolve_provenance(
     opts: &StreamOptions<'_>,
     output: Option<Output>,
@@ -297,44 +381,7 @@ pub(crate) fn resolve_provenance(
             version: env!("CARGO_PKG_VERSION"),
             commit: env!("MSSPECULATOR_GIT_COMMIT"),
         },
-        inputs: Inputs {
-            model: opts.model.spec(),
-            model_blake2b_256: model_digest.to_string(),
-            fasta: opts.fasta.display().to_string(),
-            fasta_blake2b_256: file_digest(opts.fasta)?,
-        },
-        digestion: Digestion {
-            enzyme: "trypsin",
-            missed_cleavages: opts.missed_cleavages,
-            min_length: opts.min_length,
-            max_length: opts.max_length,
-            min_charge: opts.min_charge,
-            max_charge: opts.max_charge,
-        },
-        modifications: Modifications {
-            fixed: opts.fixed_mods.to_vec(),
-            variable: opts.variable_mods.to_vec(),
-            max_variable_mods: opts.max_variable_mods,
-        },
-        context: Contexts {
-            ms: opts.ms_context.map(|context| match context {
-                msspeculator_core::MsContext::Named(name) => MsContextProvenance::Named {
-                    setup: name.clone(),
-                },
-                msspeculator_core::MsContext::Factors {
-                    instrument,
-                    detector,
-                    fragmentation,
-                    energy,
-                } => MsContextProvenance::Factors {
-                    instrument: instrument.clone(),
-                    detector: detector.clone(),
-                    fragmentation: fragmentation.clone(),
-                    energy: *energy,
-                },
-            }),
-            chrom: opts.chrom_context.map(str::to_string),
-        },
+        settings: Settings::resolve(opts, model_digest)?,
         retention: Retention {
             normalized: NormalizedRetention {
                 term: "MS:1000896|normalized retention time",
@@ -360,18 +407,60 @@ pub(crate) fn resolve_provenance(
                 chrom_context: name.to_string(),
             }),
         },
-        fragments: FragmentPolicy {
-            min_intensity: opts.min_intensity,
-            max_fragments: opts.max_fragments,
-        },
-        decoys: DecoyPolicy {
-            enabled: opts.generate_decoys,
-            method: "pseudo-reverse",
-            protein_prefix: "DECOY_",
-            collision_policy: "skip_if_stripped_sequence_is_a_target",
-        },
         output,
     })
+}
+
+/// Flatten a provenance document into dotted `key -> value` pairs, dropping nulls.
+///
+/// Objects recurse; anything else is a leaf. Arrays stay JSON text: `["C[UNIMOD:2057]", ...]`
+/// reads as what was passed on the command line, which is the point of recording it. A knob that
+/// was not set says nothing a reader can use, and the sidecar keeps the explicit null for anyone
+/// who wants to see that it was considered.
+///
+/// Keyed, and the key order is the order the mzSpecLib header writes its attributes in: a
+/// depth-first walk of a [`serde_json::Value`] visits sorted siblings, and that is the same
+/// sequence as sorting the dotted keys, because `.` sorts below every letter.
+/// `sidecar_keys_are_stable` pins it.
+pub(crate) fn flatten(config: &Value) -> BTreeMap<String, String> {
+    fn walk(prefix: &str, value: &Value, out: &mut BTreeMap<String, String>) {
+        match value {
+            Value::Object(fields) => {
+                for (key, value) in fields {
+                    let key = if prefix.is_empty() {
+                        key.clone()
+                    } else {
+                        format!("{prefix}.{key}")
+                    };
+                    walk(&key, value, out);
+                }
+            }
+            Value::Null => {}
+            Value::String(text) => {
+                out.insert(prefix.to_string(), text.clone());
+            }
+            leaf => {
+                out.insert(prefix.to_string(), leaf.to_string());
+            }
+        }
+    }
+    let mut out = BTreeMap::new();
+    walk("", config, &mut out);
+    out
+}
+
+/// Where the sidecar for a library goes by default: `lib.tsv` -> `lib.tsv.config.json`.
+///
+/// Appended to the whole name rather than replacing the extension, which
+/// `Path::with_extension` would do: `lib.mzspeclib.config.json` has lost which format the
+/// sidecar describes. Built as an OS string, since a path need not be UTF-8.
+///
+/// Public because it is the convention that lets [`crate::check_library`] find the provenance of
+/// a library whose format has no header to carry it.
+pub fn sidecar_path(library: &Path) -> std::path::PathBuf {
+    let mut name = library.to_path_buf().into_os_string();
+    name.push(".config.json");
+    std::path::PathBuf::from(name)
 }
 
 /// Write the provenance, plus the counts that came out, beside the library.
@@ -395,43 +484,56 @@ pub(crate) fn write_sidecar(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
-    fn sample() -> LibraryProvenance {
+    pub(crate) fn sample() -> LibraryProvenance {
         LibraryProvenance {
             generator: Generator {
                 tool: "msspeculator-cli library",
                 version: "0.1.0",
                 commit: "abc123",
             },
-            inputs: Inputs {
-                model: "builtin:small-v0".into(),
-                model_blake2b_256: "0".repeat(64),
-                fasta: "proteome.fasta".into(),
-                fasta_blake2b_256: "1".repeat(64),
-            },
-            digestion: Digestion {
-                enzyme: "trypsin",
-                missed_cleavages: 2,
-                min_length: 7,
-                max_length: 30,
-                min_charge: 2,
-                max_charge: 4,
-            },
-            modifications: Modifications {
-                fixed: vec!["C[UNIMOD:4]".into()],
-                variable: vec!["M[UNIMOD:35]".into()],
-                max_variable_mods: 1,
-            },
-            context: Contexts {
-                ms: Some(MsContextProvenance::Factors {
-                    instrument: "Lumos".into(),
-                    detector: "FTMS".into(),
-                    fragmentation: "HCD".into(),
-                    energy: Some(27.0),
-                }),
-                chrom: Some("dsA".into()),
+            settings: Settings {
+                inputs: Inputs {
+                    model: "builtin:small-v0".into(),
+                    model_blake2b_256: "0".repeat(64),
+                    activation_override: None,
+                    fasta: "proteome.fasta".into(),
+                    fasta_blake2b_256: "1".repeat(64),
+                },
+                digestion: Digestion {
+                    enzyme: "trypsin",
+                    missed_cleavages: 2,
+                    min_length: 7,
+                    max_length: 30,
+                    min_charge: 2,
+                    max_charge: 4,
+                },
+                modifications: Modifications {
+                    fixed: vec!["C[UNIMOD:4]".into()],
+                    variable: vec!["M[UNIMOD:35]".into()],
+                    max_variable_mods: 1,
+                },
+                context: Contexts {
+                    ms: Some(MsContextProvenance::Factors {
+                        instrument: "Lumos".into(),
+                        detector: "FTMS".into(),
+                        fragmentation: "HCD".into(),
+                        energy: Some(27.0),
+                    }),
+                    chrom: Some("dsA".into()),
+                },
+                fragments: FragmentPolicy {
+                    min_intensity: 0.01,
+                    max_fragments: Some(15),
+                },
+                decoys: DecoyPolicy {
+                    enabled: true,
+                    method: "pseudo-reverse",
+                    protein_prefix: "DECOY_",
+                    collision_policy: "skip",
+                },
             },
             retention: Retention {
                 normalized: NormalizedRetention {
@@ -453,16 +555,6 @@ mod tests {
                     unit: "minute",
                     chrom_context: "dsA".into(),
                 }),
-            },
-            fragments: FragmentPolicy {
-                min_intensity: 0.01,
-                max_fragments: Some(15),
-            },
-            decoys: DecoyPolicy {
-                enabled: true,
-                method: "pseudo-reverse",
-                protein_prefix: "DECOY_",
-                collision_policy: "skip",
             },
             output: Some(Output {
                 path: "library.tsv".into(),
@@ -529,6 +621,7 @@ mod tests {
                 "generator.commit",
                 "generator.tool",
                 "generator.version",
+                "inputs.activation_override",
                 "inputs.fasta",
                 "inputs.fasta_blake2b_256",
                 "inputs.model",
@@ -554,17 +647,43 @@ mod tests {
         );
     }
 
+    /// `Settings` is flattened into the document, so which struct a field lives on is not
+    /// published and moving one between here and [`LibraryProvenance`] renames nothing. What is
+    /// published is the split itself: the settings own every key an option decided, and none of
+    /// the keys only a build can fill.
+    #[test]
+    fn the_settings_are_the_options_half_of_the_document() {
+        let provenance = sample();
+        let published = flatten(&provenance.to_json());
+        let settings = provenance.settings.attributes();
+        for (key, value) in &settings {
+            assert_eq!(published.get(key), Some(value), "{key}");
+        }
+        for key in ["inputs.fasta_blake2b_256", "digestion.missed_cleavages"] {
+            assert!(settings.contains_key(key), "{key}");
+        }
+        for key in [
+            "generator.version",
+            "output.path",
+            "retention.normalized.anchor_check.on_scale",
+            "retention.raw.chrom_context",
+        ] {
+            assert!(published.contains_key(key), "{key} left the document");
+            assert!(!settings.contains_key(key), "{key} is not an option");
+        }
+    }
+
     /// A knob nobody set is null; something not known yet is omitted. Both are absent to a reader
     /// scanning for a value, and they are not the same claim.
     #[test]
     fn unset_knobs_are_null_and_unknown_counts_are_omitted() {
         let mut bare = sample();
-        bare.context = Contexts {
+        bare.settings.context = Contexts {
             ms: None,
             chrom: None,
         };
         bare.retention.raw = None;
-        bare.fragments.max_fragments = None;
+        bare.settings.fragments.max_fragments = None;
         let json = bare.to_json();
         for key in ["/context/ms", "/context/chrom", "/retention/raw"] {
             assert_eq!(json.pointer(key), Some(&serde_json::Value::Null), "{key}");
