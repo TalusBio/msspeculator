@@ -14,11 +14,16 @@ use anyhow::Result;
 use crate::library::StreamOptions;
 use crate::provenance::{sidecar_path, Settings};
 
+/// The blocks of a provenance that only a build can fill, by top-level key.
+///
+/// Which release wrote the library, where it went, and how this artifact's retention anchors
+/// measured. Two runs that would generate the same library disagree about all three, so
+/// comparing them would report every rebuild as different.
+const NOT_A_SETTING: [&str; 3] = ["generator", "output", "retention"];
+
 /// The two settings keys a check ignores.
 ///
-/// [`Settings`] is the whole of what the options decide, so `generator.*`, `output.*` and
-/// `retention.*` are left out of the comparison simply by not being in it. These two are the
-/// exception: they sit in `inputs` beside the digests, but they are paths as they were typed.
+/// They sit in `inputs` beside the digests, but they are paths as they were typed.
 /// `../human.fasta` and `/data/human.fasta` are one file, and the digest beside each of them is
 /// the identity.
 const NOT_AN_IDENTITY: [&str; 2] = ["inputs.model", "inputs.fasta"];
@@ -32,9 +37,10 @@ pub enum LibraryCheck {
     /// other, since `--max-fragments` dropped from a rebuild is exactly as much a change as one
     /// given a new value.
     Different(Vec<Difference>),
-    /// Nothing to compare against: no `msspeculator:` attributes in the header and no sidecar
-    /// where one would be. Another tool's library, one of ours written with `--no-config-out` in
-    /// a format that carries no header, or a file this could not read at all. Not a mismatch.
+    /// Nothing to compare against: no `msspeculator:` attributes in the header, and no provenance
+    /// of ours at either sidecar path. Another tool's library, one of ours written with
+    /// `--no-config-out` in a format that carries no header, or a file this could not read at
+    /// all. Not a mismatch.
     Unknown,
 }
 
@@ -57,11 +63,15 @@ impl fmt::Display for Difference {
     /// A key one side never recorded reads as `unset`, which is what an omitted knob is; any
     /// other spelling would be inventing a value for it. Written here rather than at each caller
     /// so the wording lives with the `Option` that permits it.
+    ///
+    /// Says which side each value came from rather than which came first. A rebuild is replacing
+    /// the library and could say "was, now"; a search comparing a library it did not write is not
+    /// replacing anything, and there is one type for both.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let side = |value: &Option<String>| value.clone().unwrap_or_else(|| "unset".to_string());
         write!(
             f,
-            "{} was {}, now {}",
+            "{}: library {}, expected {}",
             self.key,
             side(&self.library),
             side(&self.expected)
@@ -71,41 +81,61 @@ impl fmt::Display for Difference {
 
 /// Whether the library at `library` was built the way `opts` describes.
 ///
-/// For a search reading someone else's library: warn per [`Difference`], which prints both
-/// values, and run anyway. For a build about to overwrite one: [`LibraryCheck::Same`] means the
-/// file already is what this run would produce.
+/// Resolves what `opts` mean and hands them to [`check_against`]. That resolution is the whole
+/// cost: it hashes the FASTA, which is a full read of it, and it hashes a file-backed model. A
+/// caller that already holds the [`Settings`] it is about to write should call `check_against`
+/// and pay neither.
 ///
-/// Reads the header and stops at the end of it, so the library itself costs one open whatever its
-/// size. A format with no header to carry provenance is compared against the sidecar beside it
-/// instead — `sidecar` names it, or `None` for the default [`sidecar_path`]. The other side is
-/// resolved without loading a model, but it does hash the FASTA, and that is a full read of it.
-///
-/// Only what the settings determine is compared: see [`Settings`] for what that is and is not.
-/// A library this cannot read the provenance of is [`LibraryCheck::Unknown`] rather than an
-/// error — the one thing that fails here is a FASTA or a model that cannot be hashed, because
-/// then there is no expected side to compare at all.
+/// The options are not validated here. A check is read-only, and refusing to compare because a
+/// charge range is inverted would report an options-side mistake as something wrong with the
+/// library on disk.
 pub fn check_library(
     library: &Path,
     sidecar: Option<&Path>,
     opts: &StreamOptions<'_>,
 ) -> Result<LibraryCheck> {
-    opts.validate()?;
+    let expected = Settings::resolve(opts, &opts.model.digest()?)?;
+    Ok(check_against(library, sidecar, &expected))
+}
+
+/// Whether the library at `library` was built with `expected`.
+///
+/// For a search reading someone else's library: warn per [`Difference`], which prints both
+/// values, and run anyway. For a build about to overwrite one: [`LibraryCheck::Same`] means the
+/// file already is what this run would produce.
+///
+/// Reads the header and stops at the end of it, so the library costs one open whatever its size.
+/// A format with no header to carry provenance is compared against its sidecar instead: `sidecar`
+/// is tried first when given, then the conventional [`sidecar_path`] beside the library. Both,
+/// because `--config-out` moves where a sidecar is *written* without moving the one an earlier
+/// build already left beside the library, and a check that guessed either way alone would report
+/// half of those as carrying no provenance.
+///
+/// Only what the settings determine is compared: see [`Settings`] for what that is and is not.
+/// Infallible by construction. Every way a library can fail to answer the question, including
+/// being unreadable, is [`LibraryCheck::Unknown`], because a check that raises is a check that
+/// can fail a build it was only advising.
+pub fn check_against(library: &Path, sidecar: Option<&Path>, expected: &Settings) -> LibraryCheck {
     // The header first, because that copy cannot be separated from the library it describes. A
     // DIA-NN TSV has no header to put it in, so for that format the sidecar is the only copy.
-    let beside_it = sidecar.map_or_else(|| sidecar_path(library), Path::to_path_buf);
-    let Some(recorded) = from_header(library).or_else(|| from_sidecar(&beside_it)) else {
-        return Ok(LibraryCheck::Unknown);
+    let Some(recorded) = from_header(library)
+        .or_else(|| sidecar.and_then(from_sidecar))
+        .or_else(|| from_sidecar(&sidecar_path(library)))
+    else {
+        return LibraryCheck::Unknown;
     };
-    let expected = Settings::resolve(opts, &opts.model.digest()?)?.attributes();
-    Ok(compare(comparable(recorded), comparable(expected)))
+    compare(comparable(recorded), comparable(expected.attributes()))
 }
 
 /// The pairs the library's own header carries, or `None` when it carries none of ours.
+///
+/// Anything at all is ours: [`crate::mzspeclib::header_attributes`] keeps only the
+/// `msspeculator:` pairs, so the prefix has already done the identifying.
 fn from_header(library: &Path) -> Option<BTreeMap<String, String>> {
     let pairs = crate::library::open_library(library)
         .map(crate::mzspeclib::header_attributes)
         .unwrap_or_default();
-    Some(pairs).filter(|pairs| !pairs.is_empty())
+    (!pairs.is_empty()).then_some(pairs)
 }
 
 /// The provenance beside a library, in the spelling a header would have carried it.
@@ -114,24 +144,36 @@ fn from_header(library: &Path) -> Option<BTreeMap<String, String>> {
 /// is not one of ours says nothing about the library either way. Both come back as no provenance,
 /// because a check that refuses to run is worse than one that reports it has nothing to compare.
 ///
+/// A `generator` block is what says a document is one of ours. Unlike a header, a JSON file has
+/// no prefix on its keys, and without that test any parseable JSON sitting at the sidecar's name
+/// would narrow to nothing and report every expected key as newly set.
+///
 /// In the header's spelling deliberately: a library's two copies of its provenance are the same
 /// provenance, so whichever one a reader finds has to compare the same way. The sidecar keeps the
 /// nulls a header drops, and those fall out here.
 fn from_sidecar(path: &Path) -> Option<BTreeMap<String, String>> {
     let text = std::fs::read_to_string(path).ok()?;
     let config = serde_json::from_str(&text).ok()?;
-    Some(crate::provenance::flatten(&config)).filter(|pairs| !pairs.is_empty())
+    let pairs = crate::provenance::flatten(&config);
+    pairs.contains_key("generator.tool").then_some(pairs)
 }
 
 /// A provenance narrowed to the keys two builds can disagree about.
 ///
-/// An allowlist rather than a list of what to skip, and the allowlist is [`Settings`] itself: a
-/// key that no option decides cannot become a difference by being added to the document, and a
-/// new setting is compared the moment it exists.
+/// A denylist, and that direction is the point. Narrowing the library side down to the keys
+/// *this* build knows would drop a settings group that a later release added, and then answer
+/// `Same` about a library built with a knob this binary cannot honour. Everything a build fills
+/// in on its own is named in [`NOT_A_SETTING`]; anything else is a setting, including one this
+/// build has never heard of, which arrives as a [`Difference`] with no expected side.
+///
+/// `narrowing_the_document_leaves_exactly_the_settings` holds the two lists against the struct.
 fn comparable(pairs: BTreeMap<String, String>) -> BTreeMap<String, String> {
     pairs
         .into_iter()
-        .filter(|(key, _)| Settings::owns(key) && !NOT_AN_IDENTITY.contains(&key.as_str()))
+        .filter(|(key, _)| {
+            let prefix = key.split_once('.').map_or(key.as_str(), |(head, _)| head);
+            !NOT_A_SETTING.contains(&prefix) && !NOT_AN_IDENTITY.contains(&key.as_str())
+        })
         .collect()
 }
 
@@ -166,6 +208,7 @@ mod tests {
     use crate::provenance::write_sidecar;
     use crate::scratch::Scratch;
     use msspeculator_core::{BuiltinModel, ModelSource};
+    use std::path::PathBuf;
 
     fn options(fasta: &Path) -> StreamOptions<'_> {
         StreamOptions {
@@ -189,17 +232,48 @@ mod tests {
         }
     }
 
-    /// A library whose provenance lives only in the sidecar, which is the DIA-NN TSV case.
+    /// The provenance a real build writes for these options.
     ///
-    /// The provenance a real build writes: an output block and an anchor check measured from a
-    /// loaded artifact, neither of which a reader checking the library can have. Both are
-    /// therefore what the comparison has to look past, so both are here rather than defaulted.
-    fn built(library: &Scratch, opts: &StreamOptions<'_>) -> Scratch {
+    /// An output block and an anchor check measured from a loaded artifact ride along, neither of
+    /// which a reader checking the library can have. Both are therefore what the comparison has to
+    /// look past, so both are here rather than defaulted away.
+    fn provenance_for(opts: &StreamOptions<'_>) -> crate::provenance::LibraryProvenance {
         let mut provenance = crate::provenance::tests::sample();
         provenance.settings = Settings::resolve(opts, BuiltinModel::SmallV0.digest()).unwrap();
-        let sidecar = Scratch::at(sidecar_path(library.path()));
-        write_sidecar(sidecar.path(), &provenance, &LibraryStats::default()).unwrap();
+        provenance
+    }
+
+    /// A library whose provenance lives only in a sidecar, which is the DIA-NN TSV case.
+    fn built_at(sidecar: PathBuf, opts: &StreamOptions<'_>) -> Scratch {
+        let sidecar = Scratch::at(sidecar);
+        write_sidecar(
+            sidecar.path(),
+            &provenance_for(opts),
+            &LibraryStats::default(),
+        )
+        .unwrap();
         sidecar
+    }
+
+    /// The same, beside the library it describes, which is where a check looks by default.
+    fn built(library: &Scratch, opts: &StreamOptions<'_>) -> Scratch {
+        built_at(sidecar_path(library.path()), opts)
+    }
+
+    /// A library whose provenance is in its own header, which is the mzSpecLib case.
+    fn built_with_header(library: &Scratch, opts: &StreamOptions<'_>, compress: bool) {
+        let file = std::fs::File::create(library.path()).unwrap();
+        let writer: Box<dyn std::io::Write + Send> = if compress {
+            Box::new(flate2::write::GzEncoder::new(
+                file,
+                flate2::Compression::default(),
+            ))
+        } else {
+            Box::new(file)
+        };
+        let mut sink = crate::mzspeclib::MzSpecLibSink::new(writer, library.path());
+        sink.header(&provenance_for(opts)).unwrap();
+        sink.finish().unwrap();
     }
 
     fn tsv(name: &str) -> Scratch {
@@ -221,125 +295,42 @@ mod tests {
     /// from [`Settings`] is a knob two libraries can differ by while comparing equal, which is the
     /// one way this can give a wrong answer rather than no answer.
     ///
-    /// `activation` was exactly that knob — it rewrites the artifact's activation and so changes
-    /// every peak — until it was recorded. Adding a `StreamOptions` field means adding it here.
+    /// Adding a `StreamOptions` field means adding a line here.
     #[test]
     fn every_option_that_changes_the_library_changes_the_settings() {
         let fasta = Scratch::holding("knobs.fasta", ">P1\nPEPTIDEKPEPTIDER\n");
         let other = Scratch::holding("knobs-other.fasta", ">P1\nPEPTIDEKPEPTIDERK\n");
         let weights = Scratch::holding("knobs.safetensors", "not a real artifact, only hashed");
-        let base = options(fasta.path());
-        let baseline = settings(&base);
+        let baseline = settings(&options(fasta.path()));
         let named = msspeculator_core::MsContext::Named("setup".into());
         let mods = ["C[UNIMOD:4]".to_string()];
-        for (knob, changed) in [
-            (
-                "model",
-                StreamOptions {
-                    model: ModelSource::File(weights.path().into()),
-                    ..options(fasta.path())
-                },
-            ),
-            ("fasta", options(other.path())),
-            (
-                "activation",
-                StreamOptions {
-                    activation: Some("relu"),
-                    ..options(fasta.path())
-                },
-            ),
-            (
-                "ms_context",
-                StreamOptions {
-                    ms_context: Some(&named),
-                    ..options(fasta.path())
-                },
-            ),
-            (
-                "chrom_context",
-                StreamOptions {
-                    chrom_context: Some("dsA"),
-                    ..options(fasta.path())
-                },
-            ),
-            (
-                "min_intensity",
-                StreamOptions {
-                    min_intensity: 0.5,
-                    ..options(fasta.path())
-                },
-            ),
-            (
-                "missed_cleavages",
-                StreamOptions {
-                    missed_cleavages: 3,
-                    ..options(fasta.path())
-                },
-            ),
-            (
-                "min_length",
-                StreamOptions {
-                    min_length: 8,
-                    ..options(fasta.path())
-                },
-            ),
-            (
-                "max_length",
-                StreamOptions {
-                    max_length: 25,
-                    ..options(fasta.path())
-                },
-            ),
-            (
-                "min_charge",
-                StreamOptions {
-                    min_charge: 3,
-                    ..options(fasta.path())
-                },
-            ),
-            (
-                "max_charge",
-                StreamOptions {
-                    max_charge: 5,
-                    ..options(fasta.path())
-                },
-            ),
-            (
-                "fixed_mods",
-                StreamOptions {
-                    fixed_mods: &mods,
-                    ..options(fasta.path())
-                },
-            ),
-            (
-                "variable_mods",
-                StreamOptions {
-                    variable_mods: &mods,
-                    ..options(fasta.path())
-                },
-            ),
-            (
-                "max_variable_mods",
-                StreamOptions {
-                    max_variable_mods: 2,
-                    ..options(fasta.path())
-                },
-            ),
-            (
-                "max_fragments",
-                StreamOptions {
-                    max_fragments: Some(8),
-                    ..options(fasta.path())
-                },
-            ),
-            (
-                "generate_decoys",
-                StreamOptions {
-                    generate_decoys: true,
-                    ..options(fasta.path())
-                },
-            ),
-        ] {
+        // The lifetime is named rather than elided: written as `&dyn Fn(&mut StreamOptions<'_>)`
+        // the struct's lifetime is higher-ranked, and every borrowed field a knob assigns would
+        // have to be `'static`.
+        type Knob<'a> = dyn Fn(&mut StreamOptions<'a>) + 'a;
+        let knobs: [(&str, &Knob<'_>); 16] = [
+            ("model", &|o| {
+                o.model = ModelSource::File(weights.path().into());
+            }),
+            ("fasta", &|o| o.fasta = other.path()),
+            ("activation", &|o| o.activation = Some("relu")),
+            ("ms_context", &|o| o.ms_context = Some(&named)),
+            ("chrom_context", &|o| o.chrom_context = Some("dsA")),
+            ("min_intensity", &|o| o.min_intensity = 0.5),
+            ("missed_cleavages", &|o| o.missed_cleavages = 3),
+            ("min_length", &|o| o.min_length = 8),
+            ("max_length", &|o| o.max_length = 25),
+            ("min_charge", &|o| o.min_charge = 3),
+            ("max_charge", &|o| o.max_charge = 5),
+            ("fixed_mods", &|o| o.fixed_mods = &mods),
+            ("variable_mods", &|o| o.variable_mods = &mods),
+            ("max_variable_mods", &|o| o.max_variable_mods = 2),
+            ("max_fragments", &|o| o.max_fragments = Some(8)),
+            ("generate_decoys", &|o| o.generate_decoys = true),
+        ];
+        for (knob, change) in knobs {
+            let mut changed = options(fasta.path());
+            change(&mut changed);
             assert_ne!(
                 settings(&changed),
                 baseline,
@@ -347,10 +338,8 @@ mod tests {
             );
         }
         // `progress` is the one option that does not, because it changes nothing on the way out.
-        let watched = StreamOptions {
-            progress: Some(&|_| {}),
-            ..options(fasta.path())
-        };
+        let mut watched = options(fasta.path());
+        watched.progress = Some(&|_| {});
         assert_eq!(settings(&watched), baseline, "progress is not a setting");
     }
 
@@ -447,7 +436,7 @@ mod tests {
         );
         assert_eq!(
             difference.to_string(),
-            "fragments.max_fragments was 15, now unset"
+            "fragments.max_fragments: library 15, expected unset"
         );
     }
 
@@ -458,15 +447,7 @@ mod tests {
     fn a_header_is_read_in_place_of_a_sidecar_and_agrees_with_one() {
         let fasta = Scratch::holding("header.fasta", ">P1\nPEPTIDEK\n");
         let library = Scratch::new("header.mzspeclib.txt");
-        let mut provenance = crate::provenance::tests::sample();
-        provenance.settings =
-            Settings::resolve(&options(fasta.path()), BuiltinModel::SmallV0.digest()).unwrap();
-        let mut sink = crate::mzspeclib::MzSpecLibSink::new(
-            std::fs::File::create(library.path()).unwrap(),
-            library.path(),
-        );
-        sink.header(&provenance).unwrap();
-        drop(sink);
+        built_with_header(&library, &options(fasta.path()), false);
         assert_eq!(
             check_library(library.path(), None, &options(fasta.path())).unwrap(),
             LibraryCheck::Same
@@ -511,10 +492,7 @@ mod tests {
         let fasta = Scratch::holding("elsewhere.fasta", ">P1\nPEPTIDEK\n");
         let library = tsv("elsewhere.tsv");
         let named = Scratch::new("elsewhere-config.json");
-        let mut provenance = crate::provenance::tests::sample();
-        provenance.settings =
-            Settings::resolve(&options(fasta.path()), BuiltinModel::SmallV0.digest()).unwrap();
-        write_sidecar(named.path(), &provenance, &LibraryStats::default()).unwrap();
+        let _sidecar = built_at(named.path().to_path_buf(), &options(fasta.path()));
         assert_eq!(
             check_library(library.path(), None, &options(fasta.path())).unwrap(),
             LibraryCheck::Unknown,
@@ -526,27 +504,89 @@ mod tests {
         );
     }
 
+    /// A named sidecar is where a check looks *first*, not the only place it looks. `--config-out`
+    /// moves where the next sidecar is written; it says nothing about where an earlier build left
+    /// the one describing the file being replaced.
+    #[test]
+    fn the_conventional_sidecar_is_still_read_when_another_is_named() {
+        let fasta = Scratch::holding("both.fasta", ">P1\nPEPTIDEK\n");
+        let library = tsv("both.tsv");
+        let _beside_it = built(&library, &options(fasta.path()));
+        let not_written_yet = Scratch::new("both-elsewhere.json").path().to_path_buf();
+        assert_eq!(
+            check_library(
+                library.path(),
+                Some(&not_written_yet),
+                &options(fasta.path())
+            )
+            .unwrap(),
+            LibraryCheck::Same
+        );
+    }
+
     /// A compressed library carries its header the same way, so the check costs the same open.
     #[test]
     fn a_compressed_library_is_read_through_its_own_suffix() {
         let fasta = Scratch::holding("gz.fasta", ">P1\nPEPTIDEK\n");
         let library = Scratch::new("gz.mzspeclib.txt.gz");
-        let mut provenance = crate::provenance::tests::sample();
-        provenance.settings =
-            Settings::resolve(&options(fasta.path()), BuiltinModel::SmallV0.digest()).unwrap();
-        let mut sink = crate::mzspeclib::MzSpecLibSink::new(
-            flate2::write::GzEncoder::new(
-                std::fs::File::create(library.path()).unwrap(),
-                flate2::Compression::default(),
-            ),
-            library.path(),
-        );
-        sink.header(&provenance).unwrap();
-        sink.finish().unwrap();
-        drop(sink);
+        built_with_header(&library, &options(fasta.path()), true);
         assert_eq!(
             check_library(library.path(), None, &options(fasta.path())).unwrap(),
             LibraryCheck::Same
+        );
+    }
+
+    /// [`NOT_A_SETTING`] and [`NOT_AN_IDENTITY`] are the complement of [`Settings`] within the
+    /// published document, and nothing in the type system says so. Narrowing the whole document
+    /// has to leave exactly the narrowed settings: a build-only block added to
+    /// [`crate::provenance::LibraryProvenance`] without being listed would start being compared
+    /// and report every rebuild as different, and a settings key wrongly listed would stop being
+    /// compared and report two different libraries as the same.
+    #[test]
+    fn narrowing_the_document_leaves_exactly_the_settings() {
+        let provenance = crate::provenance::tests::sample();
+        assert_eq!(
+            comparable(crate::provenance::flatten(&provenance.to_json())),
+            comparable(provenance.settings.attributes())
+        );
+    }
+
+    /// The keys this build has never heard of are the ones worth reporting: a library built by a
+    /// later release records settings under groups that do not exist here yet, and answering
+    /// `Same` about one would claim a knob this binary cannot honour made no difference.
+    #[test]
+    fn a_setting_group_from_a_later_release_is_a_difference() {
+        let fasta = Scratch::holding("future.fasta", ">P1\nPEPTIDEK\n");
+        let library = tsv("future.tsv");
+        let sidecar = built(&library, &options(fasta.path()));
+        let mut document: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(sidecar.path()).unwrap()).unwrap();
+        document["enzymes"] = serde_json::json!({ "name": "chymotrypsin" });
+        std::fs::write(sidecar.path(), document.to_string()).unwrap();
+        assert_eq!(
+            check_library(library.path(), None, &options(fasta.path())).unwrap(),
+            LibraryCheck::Different(vec![Difference {
+                key: "enzymes.name".into(),
+                library: Some("chymotrypsin".into()),
+                expected: None,
+            }])
+        );
+    }
+
+    /// A JSON file that happens to sit at the sidecar's name is not a provenance, and reporting
+    /// its keys as settings would answer a question about the library from a document that says
+    /// nothing about it.
+    #[test]
+    fn json_that_is_not_a_provenance_is_unknown() {
+        let fasta = Scratch::holding("stranger.fasta", ">P1\nPEPTIDEK\n");
+        let library = tsv("stranger.tsv");
+        let _sidecar = Scratch::holding_at(
+            sidecar_path(library.path()),
+            r#"{"hello": "world", "digestion": {"missed_cleavages": 9}}"#,
+        );
+        assert_eq!(
+            check_library(library.path(), None, &options(fasta.path())).unwrap(),
+            LibraryCheck::Unknown
         );
     }
 }

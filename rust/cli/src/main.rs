@@ -10,7 +10,9 @@ use serde_json::json;
 
 mod diagnostics;
 mod progress;
-use msspeculator_inference::{check_library, library, sidecar_path, LibraryCheck};
+use msspeculator_inference::{
+    check_against, library, sidecar_path, LibraryCheck, LibraryProvenance, Settings,
+};
 
 #[derive(Parser)]
 #[command(
@@ -422,23 +424,27 @@ impl LibraryArgs {
 ///
 /// A warning and not a refusal, and one that cannot fail the build either: regenerating a library
 /// in place is the ordinary case, and the only thing the old file knew that nothing else does is
-/// what it was built from. A run that could not work that out says so and carries on.
-fn report_overwrite(path: &Path, sidecar: Option<&Path>, stream: &library::StreamOptions<'_>) {
+/// what it was built from.
+///
+/// Given the settings the run has already resolved, so the comparison is against exactly what is
+/// about to be written and neither the FASTA nor the model is read a second time to ask. Silent
+/// unless there is a file there, since there is nothing to replace otherwise.
+fn report_overwrite(path: &Path, sidecar: Option<&Path>, expected: &Settings) {
+    if !path.exists() {
+        return;
+    }
     let out = path.display();
-    match check_library(path, sidecar, stream) {
-        Ok(LibraryCheck::Same) => {
+    match check_against(path, sidecar, expected) {
+        LibraryCheck::Same => {
             eprintln!("{out} was already built with these settings; rebuilding it")
         }
-        Ok(LibraryCheck::Different(differences)) => {
+        LibraryCheck::Different(differences) => {
             eprintln!("overwriting {out}, built with different settings:");
             for difference in differences {
                 eprintln!("  {difference}");
             }
         }
-        Ok(LibraryCheck::Unknown) => eprintln!("overwriting {out}, which carries no provenance"),
-        Err(error) => {
-            eprintln!("overwriting {out}; could not read what it was built from: {error}")
-        }
+        LibraryCheck::Unknown => eprintln!("overwriting {out}, which carries no provenance"),
     }
 }
 
@@ -480,13 +486,17 @@ fn run_library(args: LibraryArgs) -> Result<()> {
         generate_decoys: args.decoys,
         progress: Some(&report),
     };
-    if args.out.exists() {
-        report_overwrite(&args.out, config_out.as_deref(), &stream);
-    }
+    // Runs inside the build, at the moment everything has been resolved and nothing has been
+    // truncated. That is the only point where the settings about to be written and the file about
+    // to be replaced both exist.
+    let overwrite = |provenance: &LibraryProvenance| {
+        report_overwrite(&args.out, config_out.as_deref(), &provenance.settings);
+    };
     let stats = library::write_library(&library::LibraryOptions {
         out: &args.out,
         config_out: config_out.as_deref(),
         stream,
+        before_writing: Some(&overwrite),
     })?;
     // No explicit wipe: `ProgressLine`'s `Drop` restores the terminal on the error path too,
     // which is the path that has it drawn.

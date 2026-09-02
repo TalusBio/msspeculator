@@ -14,7 +14,7 @@ pub mod progress;
 mod proteome;
 pub mod provenance;
 
-pub use check::{check_library, Difference, LibraryCheck};
+pub use check::{check_against, check_library, Difference, LibraryCheck};
 pub use library::{
     stream_library, write_library, LibraryOptions, LibrarySink, LibraryStats, Peak, SpectrumRow,
     StreamOptions,

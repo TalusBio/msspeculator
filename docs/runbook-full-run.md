@@ -103,7 +103,9 @@ context, and fragment settings. TSV output writes the same provenance to a `conf
 Regenerating a library in place reports what it is replacing, from whichever copy of the
 provenance the old file has, and then rebuilds. A run over the same FASTA with the same settings
 says so; one with a knob changed names the knob and both values. The report never stops the
-rebuild.
+rebuild, and it never costs an extra read of the FASTA: it runs inside the build, once the
+settings are resolved and before the old file is touched, so it appears after digestion rather
+than at the start.
 
 Single-peptide prediction is also available:
 

@@ -31,10 +31,14 @@ const ATTRIBUTE_PREFIX: &str = "msspeculator:";
 const VERSION_KEY: &str = "generator.version";
 
 /// The two halves of one project-defined attribute: a name line and a value line, tied together
-/// only by the group id they share. Spelled once each, because [`header_attributes`] has to
-/// find what [`MzSpecLibSink::header`] wrote.
-const NAME_TERM: &str = "MS:1003275|other attribute name";
-const VALUE_TERM: &str = "MS:1003276|other attribute value";
+/// only by the group id they share.
+///
+/// The accession is what [`header_attributes`] matches on, and the writer builds its full term
+/// from the same constant, so there is one spelling of each and a reader cannot drift from a
+/// writer. Matched on the accession alone, unlike everything we write: a reader that insisted on
+/// our spelling of the name half would silently skip a file that is otherwise identical.
+const NAME_ACCESSION: &str = "MS:1003275";
+const VALUE_ACCESSION: &str = "MS:1003276";
 
 /// The first line of the grammar, and the cheapest way to tell a library that could carry
 /// provenance from one that cannot: a DIA-NN TSV has no header to read, and looking for one to
@@ -93,7 +97,9 @@ pub(crate) fn attributes(provenance: &LibraryProvenance) -> BTreeMap<String, Str
 /// UTF-8 is one of those too: a file we cannot read carries none of our attributes by definition,
 /// and refusing to answer would be worse than answering "nothing here".
 pub(crate) fn header_attributes(reader: impl BufRead) -> BTreeMap<String, String> {
-    let mut lines = utf8_lines(reader);
+    // `map_while` rather than a raise: an I/O failure and a non-UTF-8 line both end the read,
+    // because a file we cannot read carries none of our attributes by definition.
+    let mut lines = reader.lines().map_while(Result::ok);
     if lines.next().as_deref().map(str::trim_end) != Some(MAGIC) {
         return BTreeMap::new();
     }
@@ -106,19 +112,14 @@ pub(crate) fn header_attributes(reader: impl BufRead) -> BTreeMap<String, String
         if line.starts_with('<') {
             break;
         }
-        // Matched on the accession alone, unlike everything we write: a reader that insists on
-        // our spelling of the name half would silently skip a file that is otherwise identical.
         let Some((group, term, value)) = attribute_line(&line) else {
             continue;
         };
-        match term.split('|').next().unwrap_or(term) {
-            "MS:1003275" => {
-                names.insert(group.to_string(), value.to_string());
-            }
-            "MS:1003276" => {
-                values.insert(group.to_string(), value.to_string());
-            }
-            _ => {}
+        let accession = term.split('|').next().unwrap_or(term);
+        if accession == NAME_ACCESSION {
+            names.insert(group.to_string(), value.to_string());
+        } else if accession == VALUE_ACCESSION {
+            values.insert(group.to_string(), value.to_string());
         }
     }
     names
@@ -130,22 +131,25 @@ pub(crate) fn header_attributes(reader: impl BufRead) -> BTreeMap<String, String
         .collect()
 }
 
-/// Lines a header could be written in, stopping at the first byte that says it was not.
+/// Whether every provenance value can be written and read back unchanged.
 ///
-/// An I/O failure or a non-UTF-8 line both end the iteration rather than raising: this reader
-/// answers "which of our attributes does this file carry", and every answer to that is a map.
-fn utf8_lines(mut reader: impl BufRead) -> impl Iterator<Item = String> {
-    std::iter::from_fn(move || {
-        let mut line = Vec::new();
-        match reader.read_until(b'\n', &mut line) {
-            Ok(0) | Err(_) => None,
-            Ok(_) => String::from_utf8(line).ok().map(|line| {
-                line.trim_end_matches('\n')
-                    .trim_end_matches('\r')
-                    .to_string()
-            }),
+/// One attribute is one line, so a value carrying a line ending is a value this grammar cannot
+/// hold: written raw it splits in two, and [`header_attributes`] reads back something other than
+/// what was recorded. The format has no escape for it, so the only truthful answer is to refuse.
+///
+/// Asked twice on purpose. [`MzSpecLibSink::header`] asks because it is the authority on what it
+/// can write, and [`crate::library::write_library`] asks before it creates the file, because a
+/// library must not be truncated for a run that was going to fail anyway.
+pub(crate) fn check_representable(provenance: &LibraryProvenance) -> Result<()> {
+    for (key, value) in attributes(provenance) {
+        if value.contains(['\n', '\r']) {
+            anyhow::bail!(
+                "{key} contains a line ending, which an mzSpecLib attribute cannot carry: \
+                 {value:?}"
+            );
         }
-    })
+    }
+    Ok(())
 }
 
 /// `[3]MS:1003276|other attribute value=4242` -> `("3", "MS:1003276|other attribute value", "4242")`.
@@ -191,10 +195,17 @@ impl<W: Write + Send> LibrarySink for MzSpecLibSink<W> {
         // the provenance rides as name/value pairs; the grammar's own escape hatch
         // for an attribute the vocabulary has no term for. One group per key: the pair is the
         // attribute, which is why both lines carry the same group id.
+        check_representable(provenance)?;
         for (group, (key, value)) in attributes(provenance).into_iter().enumerate() {
             let group = group + 1;
-            writeln!(self.writer, "[{group}]{NAME_TERM}={ATTRIBUTE_PREFIX}{key}")?;
-            writeln!(self.writer, "[{group}]{VALUE_TERM}={value}")?;
+            writeln!(
+                self.writer,
+                "[{group}]{NAME_ACCESSION}|other attribute name={ATTRIBUTE_PREFIX}{key}"
+            )?;
+            writeln!(
+                self.writer,
+                "[{group}]{VALUE_ACCESSION}|other attribute value={value}"
+            )?;
         }
         // A set named `all` is applied to every entry of its kind without the entry referencing
         // it, so anything constant across the library belongs here and nowhere else. At 60M
@@ -241,9 +252,12 @@ impl<W: Write + Send> LibrarySink for MzSpecLibSink<W> {
             // a project-defined spectrum attribute; each spectrum has one analyte in this file.
             writeln!(
                 self.writer,
-                "[3]{NAME_TERM}={ATTRIBUTE_PREFIX}decoy_pair_id"
+                "[3]{NAME_ACCESSION}|other attribute name={ATTRIBUTE_PREFIX}decoy_pair_id"
             )?;
-            writeln!(self.writer, "[3]{VALUE_TERM}={pair_id}")?;
+            writeln!(
+                self.writer,
+                "[3]{VALUE_ACCESSION}|other attribute value={pair_id}"
+            )?;
         }
         // No `MS:1003062|library spectrum index`: a reader assigns that from position as it goes,
         // and stating our own 1-based count alongside it leaves two indices in one entry.
@@ -531,6 +545,19 @@ mod tests {
         ] {
             assert!(header_attributes(bytes).is_empty(), "{bytes:?}");
         }
+    }
+
+    /// One attribute is one line, so a value carrying a line ending would be written raw and read
+    /// back as something else. `--ms-context` factors are free text, so a value like this can
+    /// reach the writer; refusing is the only spelling that does not quietly record a lie.
+    #[test]
+    fn a_value_that_cannot_survive_the_round_trip_is_refused() {
+        let mut provenance = provenance();
+        provenance.settings.context.chrom = Some("ds\nA".into());
+        let mut sink = MzSpecLibSink::new(Vec::new(), Path::new("lib.mzspeclib.txt"));
+        let error = sink.header(&provenance).unwrap_err().to_string();
+        assert!(error.contains("context.chrom"), "{error}");
+        assert!(error.contains("line ending"), "{error}");
     }
 
     #[test]

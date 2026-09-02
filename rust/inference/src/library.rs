@@ -94,6 +94,15 @@ pub struct LibraryOptions<'a> {
     pub out: &'a Path,
     /// Where to write the resolved-configuration sidecar, or `None` to skip it.
     pub config_out: Option<&'a Path>,
+    /// Called once with the provenance about to be written, after everything that can fail on
+    /// the way in has run and before `out` is created or truncated.
+    ///
+    /// The hook a caller needs to say anything about the file it is replacing, and the only point
+    /// where both halves of that sentence are in hand: the settings are resolved and the old file
+    /// is still there. Deliberately not a check of its own, so this module stays ignorant of what
+    /// a caller wants to compare; [`check_against`](crate::check_against) is what the
+    /// command-line interface passes these settings to.
+    pub before_writing: Option<&'a dyn Fn(&LibraryProvenance)>,
 }
 
 /// Apply a runtime activation override used for controlled inference benchmarks.
@@ -156,7 +165,8 @@ fn output_spelling(path: &Path) -> (LibraryFormat, bool) {
 /// beside it so the two cannot come to different answers about one suffix.
 pub(crate) fn open_library(path: &Path) -> Result<Box<dyn BufRead>> {
     let file = File::open(path).with_context(|| format!("reading {}", path.display()))?;
-    Ok(if output_spelling(path).1 {
+    let (_, compressed) = output_spelling(path);
+    Ok(if compressed {
         Box::new(BufReader::new(flate2::read::GzDecoder::new(file)))
     } else {
         Box::new(BufReader::new(file))
@@ -604,17 +614,29 @@ pub fn stream_library(
     opts: &StreamOptions<'_>,
     sink: impl LibrarySink + 'static,
 ) -> Result<LibraryStats> {
-    run_library(opts, None, || Ok(Box::new(sink))).map(|(stats, _)| stats)
+    run_library(opts, None, |_| Ok(Box::new(sink))).map(|(stats, _)| stats)
 }
 
 /// Generate a library and write it to `opts.out`, picking the format from the path.
 pub fn write_library(opts: &LibraryOptions<'_>) -> Result<LibraryStats> {
     let (format, compressed) = output_spelling(opts.out);
     let out_path = opts.out.to_path_buf();
+    let before_writing = opts.before_writing;
     // Passed as a thunk rather than a ready-made sink: creating the file truncates it, and every
     // check in `run_library` happens before this runs. A typo in a regeneration command must not
     // destroy the library it was meant to replace.
-    let make_sink = move || -> Result<Box<dyn LibrarySink>> {
+    let make_sink = move |provenance: &LibraryProvenance| -> Result<Box<dyn LibrarySink>> {
+        // Last look at the old file. Anything the caller wants to say about what it is replacing
+        // has to be said here, one statement before it stops existing.
+        if let Some(report) = before_writing {
+            report(provenance);
+        }
+        // Asked before the file is created, because `File::create` truncates and a provenance
+        // this format cannot carry is a run that fails either way. The sink asks again; this is
+        // the copy that runs while the old library still exists.
+        if format == LibraryFormat::MzSpecLib {
+            crate::mzspeclib::check_representable(provenance)?;
+        }
         let file = File::create(&out_path)
             .with_context(|| format!("creating library {}", out_path.display()))?;
         // A `.gz` suffix compresses in the writer thread rather than in a second pass, so the
@@ -657,7 +679,7 @@ pub fn write_library(opts: &LibraryOptions<'_>) -> Result<LibraryStats> {
 fn run_library(
     opts: &StreamOptions<'_>,
     output: Option<Output>,
-    make_sink: impl FnOnce() -> Result<Box<dyn LibrarySink>>,
+    make_sink: impl FnOnce(&LibraryProvenance) -> Result<Box<dyn LibrarySink>>,
 ) -> Result<(LibraryStats, LibraryProvenance)> {
     opts.validate()?;
     let fixed_rules = opts
@@ -754,7 +776,7 @@ fn run_library(
     // filesystem. The header goes out here too, on this thread: it is the first bytes on the
     // stream either way, and writing it before the spawn means a broken header is an error from
     // this call rather than a panic reported by a joined thread.
-    let mut sink = make_sink()?;
+    let mut sink = make_sink(&provenance)?;
     sink.header(&provenance)?;
     let writer_handle = thread::spawn(move || -> Result<LibraryStats> {
         let mut stats = stats;
@@ -1163,6 +1185,7 @@ mod tests {
             stream: stream_options(fasta.path()),
             out: out.path(),
             config_out: None,
+            before_writing: None,
         })
         .unwrap();
 
@@ -1205,6 +1228,7 @@ mod tests {
             stream: opts,
             out: out.path(),
             config_out: None,
+            before_writing: None,
         })
         .unwrap_err();
 

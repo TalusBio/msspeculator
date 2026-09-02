@@ -296,28 +296,6 @@ impl LibraryProvenance {
 }
 
 impl Settings {
-    /// The top-level keys these own in the published document.
-    ///
-    /// The document is flat, so a reader narrowing a library's provenance down to its settings
-    /// needs to know which prefixes are ours. Written out rather than read off an instance
-    /// because `context` disappears from one whose knobs were all left unset, and a prefix that
-    /// vanishes when nobody set anything is a prefix that would stop being compared exactly when
-    /// one side set something. `the_settings_own_exactly_these_keys` holds it against the struct.
-    pub(crate) const KEYS: [&'static str; 6] = [
-        "context",
-        "decoys",
-        "digestion",
-        "fragments",
-        "inputs",
-        "modifications",
-    ];
-
-    /// Whether a published provenance key is one the settings decided.
-    pub(crate) fn owns(key: &str) -> bool {
-        let prefix = key.split_once('.').map_or(key, |(head, _)| head);
-        Self::KEYS.contains(&prefix)
-    }
-
     /// Resolve every knob as it applied, not as it was typed: defaults are recorded explicitly.
     ///
     /// Nothing here loads a model — a [`ModelSource`](msspeculator_core::ModelSource) reports its
@@ -667,24 +645,6 @@ pub(crate) mod tests {
                 "retention.raw.unit",
             ]
         );
-    }
-
-    /// [`Settings::KEYS`] is what a check narrows a library's provenance down to, and it is a
-    /// hand-written list of the struct's fields. This is the check that adding a field to
-    /// `Settings` without listing it — which would leave the new setting silently uncompared —
-    /// fails the build.
-    #[test]
-    fn the_settings_own_exactly_these_keys() {
-        let Value::Object(fields) = serde_json::to_value(&sample().settings).unwrap() else {
-            panic!("settings serialize as an object");
-        };
-        assert_eq!(
-            fields.keys().collect::<Vec<_>>(),
-            Settings::KEYS.iter().collect::<Vec<_>>()
-        );
-        assert!(Settings::owns("digestion.missed_cleavages"));
-        assert!(!Settings::owns("generator.version"));
-        assert!(!Settings::owns("retention.normalized.term"));
     }
 
     /// `Settings` is flattened into the document, so which struct a field lives on is not

@@ -134,7 +134,8 @@ these options resolve to.
 ```rust
 use msspeculator_inference::{check_library, LibraryCheck};
 
-// `None` for the sidecar looks beside the library, at `sidecar_path(&library_path)`.
+// `None` for the sidecar looks beside the library, at `sidecar_path(&library_path)`. Pass a path
+// to name another place to look first; the conventional one is tried either way.
 match check_library(&library_path, None, &stream)? {
     LibraryCheck::Same => {}
     LibraryCheck::Different(differences) => {
@@ -148,20 +149,29 @@ match check_library(&library_path, None, &stream)? {
 
 Warn and proceed rather than refuse: a mismatch says the library answers a different question,
 not that searching it is invalid. `Unknown` covers every library this cannot read a provenance
-from, including a missing or unreadable one, and it is not a mismatch.
+from, including a missing or unreadable one, and it is not a mismatch. The options are not
+validated, since a check is read-only and an inverted charge range says nothing about the file
+on disk.
 
 A library is read to the end of its header and no further, so it costs one open whatever its
-size. A DIA-NN TSV has no header, so the sidecar is its only copy; pass its path when
-`--config-out` put it somewhere other than beside the library. Neither side loads a model. The
-expected side does hash the FASTA, which is a full read of it.
+size. A DIA-NN TSV has no header, so the sidecar is its only copy. Neither side loads a model.
+
+Resolving the expected side is the whole cost: it hashes the FASTA, which is a full read of it,
+and a file-backed model. A caller that already holds the settings it is about to write should
+call `check_against(&library_path, None, &settings)` and pay for neither. That is what
+`write_library`'s `before_writing` hook is for, and what the command-line interface uses: it
+receives the `LibraryProvenance` about to be written, after everything that can fail has run and
+before the output file is created, so a rebuild compares against exactly its own settings without
+reading anything twice.
 
 What is compared is exactly what `Settings` holds, and the question it answers is "would the same
 library be generated", not "were the same arguments typed" — so a knob belongs in it when
 changing that knob changes a byte of the output. A key only one side records is a difference,
 since an unset knob is dropped from a header rather than written as a null: `--max-fragments`
-dropped from a rebuild is as much a change as one given a new value. Equivalence across releases
-is the one thing it cannot claim; `generator.commit` is recorded beside the settings for a reader
-who needs that.
+dropped from a rebuild is as much a change as one given a new value. That holds for keys this
+build has never heard of too, so a library written by a later release reports its new settings
+rather than comparing equal without them. Equivalence across releases is the one thing it cannot
+claim; `generator.commit` is recorded beside the settings for a reader who needs that.
 
 ## Report progress
 
