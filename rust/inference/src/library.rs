@@ -178,8 +178,9 @@ pub struct SpectrumRow<'a> {
     pub proforma: &'a str,
     /// Whether this spectrum belongs to the generated decoy set.
     pub decoy: bool,
-    /// Stable ID for a target/decoy sequence pair. The target keeps the ID when its decoy is
-    /// collision-skipped; the ID is absent when decoys are disabled.
+    /// Stable ID for a target/decoy precursor pair: one ID per target peptidoform and charge. The
+    /// target keeps the ID when its decoy is collision-skipped; the ID is absent when decoys are
+    /// disabled.
     pub decoy_pair_id: Option<usize>,
     pub charge: i64,
     pub precursor_mz: f64,
@@ -359,7 +360,8 @@ struct PendingPeptide {
     source: PeptideRef,
     peptide: Peptide,
     decoy: bool,
-    decoy_pair_id: Option<usize>,
+    /// First ID of this peptidoform's pair block; see `PredictedPeptide::decoy_pair_id`.
+    decoy_pair_base: Option<usize>,
 }
 
 struct PredictedPeptide {
@@ -369,10 +371,20 @@ struct PredictedPeptide {
     peptide: Peptide,
     predictions: Vec<Prediction>,
     decoy: bool,
-    decoy_pair_id: Option<usize>,
+    /// First ID of this peptidoform's pair block; see `decoy_pair_id`.
+    decoy_pair_base: Option<usize>,
 }
 
 impl PredictedPeptide {
+    /// The pair ID for one of this peptidoform's charge states.
+    ///
+    /// A pair is two precursors: a search scores `PEPTIDEK/2` against its own decoy, never
+    /// against `PEPTIDEK/3`'s. Each peptidoform owns a block of consecutive IDs, one per
+    /// requested charge, and a target and its decoy read the same block at the same offset.
+    fn decoy_pair_id(&self, charge_index: usize) -> Option<usize> {
+        self.decoy_pair_base.map(|base| base + charge_index)
+    }
+
     fn stripped(&self) -> Residues<'_> {
         if self.decoy {
             Residues::pseudo_reversed(self.source.residues())
@@ -386,6 +398,7 @@ impl PredictedPeptide {
 fn spectrum_row<'a>(
     item: &'a PredictedPeptide,
     prediction: &'a Prediction,
+    charge_index: usize,
     max_fragments: Option<usize>,
 ) -> Result<SpectrumRow<'a>> {
     // The identifier every refusal below names. ProForma rather than a format's own spelling, so
@@ -474,7 +487,7 @@ fn spectrum_row<'a>(
         peptide: &item.peptide,
         proforma,
         decoy: item.decoy,
-        decoy_pair_id: item.decoy_pair_id,
+        decoy_pair_id: item.decoy_pair_id(charge_index),
         charge,
         precursor_mz: prediction.precursor_mz,
         neutral_mass: (prediction.precursor_mz - msspeculator_core::chem::PROTON) * charge as f64,
@@ -494,7 +507,12 @@ fn predict_batch(
 ) -> Result<Vec<PredictedPeptide>> {
     let (metadata, peptides): (Vec<_>, Vec<_>) = batch
         .into_iter()
-        .map(|item| ((item.source, item.decoy, item.decoy_pair_id), item.peptide))
+        .map(|item| {
+            (
+                (item.source, item.decoy, item.decoy_pair_base),
+                item.peptide,
+            )
+        })
         .unzip();
     let predictions = predict_peptide_batch_charges_prepared(
         artifact,
@@ -510,12 +528,12 @@ fn predict_batch(
         .zip(peptides)
         .zip(predictions)
         .map(
-            |(((source, decoy, decoy_pair_id), peptide), predictions)| PredictedPeptide {
+            |(((source, decoy, decoy_pair_base), peptide), predictions)| PredictedPeptide {
                 source,
                 peptide,
                 predictions,
                 decoy,
-                decoy_pair_id,
+                decoy_pair_base,
             },
         )
         .collect())
@@ -528,8 +546,10 @@ fn write_predicted_batch(
     max_fragments: Option<usize>,
 ) -> Result<()> {
     for item in batch {
-        for prediction in &item.predictions {
-            let row = spectrum_row(item, prediction, max_fragments)?;
+        // Predictions come back one per requested charge, in the order they were requested, so
+        // the position here is the offset into the peptidoform's pair block.
+        for (charge_index, prediction) in item.predictions.iter().enumerate() {
+            let row = spectrum_row(item, prediction, charge_index, max_fragments)?;
             stats.precursors += 1;
             stats.decoys += usize::from(row.decoy);
             stats.fragments += row.peaks.len();
@@ -782,14 +802,15 @@ fn run_library(
         // method would break first.
         let emit_decoy =
             opts.generate_decoys && !digest.contains(Residues::pseudo_reversed(sequence));
-        // Assign the ID even when the decoy is skipped, so consumers can distinguish a target-only
-        // collision group from a library generated with decoys disabled.
-        let decoy_pair_id = opts.generate_decoys.then(|| {
-            let pair_id = next_decoy_pair_id;
-            next_decoy_pair_id += 1;
-            pair_id
-        });
         for peptide in target_forms {
+            // A block per modified form, one ID per charge, since each precursor is its own
+            // target/decoy pair. Assigned even when the decoy is skipped, so a target-only
+            // collision group stays distinguishable from a library built without decoys.
+            let decoy_pair_base = opts.generate_decoys.then(|| {
+                let base = next_decoy_pair_id;
+                next_decoy_pair_id += charges.len();
+                base
+            });
             consumers_gone |= !queue_pending(
                 &mut pending,
                 &work_tx,
@@ -797,7 +818,7 @@ fn run_library(
                     source: source.clone(),
                     peptide: peptide.clone(),
                     decoy: false,
-                    decoy_pair_id,
+                    decoy_pair_base,
                 },
             );
             if emit_decoy {
@@ -808,7 +829,7 @@ fn run_library(
                         source: source.clone(),
                         peptide: pseudo_reverse_peptide(&peptide),
                         decoy: true,
-                        decoy_pair_id,
+                        decoy_pair_base,
                     },
                 );
             }
@@ -873,6 +894,8 @@ mod tests {
     #[derive(Default)]
     struct Collected {
         rows: Vec<(String, i64, usize)>,
+        /// Proforma, charge, decoy flag and pair ID, for the decoy tests.
+        pairs: Vec<(String, i64, bool, Option<usize>)>,
         proteins: Vec<String>,
         model: Option<String>,
         output_present: Option<bool>,
@@ -896,6 +919,12 @@ mod tests {
             collected
                 .rows
                 .push((row.proforma.to_string(), row.charge, row.peaks.len()));
+            collected.pairs.push((
+                row.proforma.to_string(),
+                row.charge,
+                row.decoy,
+                row.decoy_pair_id,
+            ));
             collected.proteins = row.proteins.iter().map(|id| id.to_string()).collect();
             Ok(())
         }
@@ -1171,6 +1200,47 @@ mod tests {
             std::fs::read_to_string(out.path()).unwrap(),
             "EXISTING LIBRARY\n"
         );
+    }
+
+    /// A pair ID names one precursor pair, so a peptide's modified forms and charge states each
+    /// get their own. The fixture is one peptide with an oxidizable methionine at two charges:
+    /// four target precursors, four decoys, four pairs.
+    #[test]
+    fn pair_ids_are_per_modified_form_and_charge() {
+        let fasta = tiny_fasta();
+        let collected = Arc::new(Mutex::new(Collected::default()));
+        let variable = vec!["M[UNIMOD:35]".to_string()];
+        let mut opts = stream_options(fasta.path());
+        opts.generate_decoys = true;
+        opts.max_charge = 3;
+        opts.variable_mods = &variable;
+        opts.max_variable_mods = 1;
+
+        stream_library(&opts, CollectingSink(Arc::clone(&collected))).unwrap();
+
+        let pairs = collected.lock().unwrap().pairs.clone();
+        assert_eq!(pairs.len(), 8, "{pairs:?}");
+        let mut by_id: BTreeMap<usize, Vec<(String, i64, bool)>> = BTreeMap::new();
+        for (proforma, charge, decoy, pair_id) in pairs {
+            let pair_id = pair_id.expect("decoys are on, so every row carries a pair ID");
+            by_id
+                .entry(pair_id)
+                .or_default()
+                .push((proforma, charge, decoy));
+        }
+        assert_eq!(by_id.len(), 4, "{by_id:?}");
+        for (pair_id, mut members) in by_id {
+            members.sort();
+            assert_eq!(members.len(), 2, "pair {pair_id}: {members:?}");
+            // One target and one decoy, at the same charge: what a pair ID is for.
+            assert_ne!(members[0].2, members[1].2, "pair {pair_id}: {members:?}");
+            assert_eq!(members[0].1, members[1].1, "pair {pair_id}: {members:?}");
+            assert_eq!(
+                members[0].0.contains("[UNIMOD:35]"),
+                members[1].0.contains("[UNIMOD:35]"),
+                "pair {pair_id} crosses modified forms: {members:?}"
+            );
+        }
     }
 
     #[test]

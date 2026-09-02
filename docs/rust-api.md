@@ -235,9 +235,10 @@ PSI-MS [`unnatural peptidoform decoy spectrum`](https://github.com/HUPO-PSI/psi-
 origin term.
 The `shuffle-and-reposition decoy spectrum` term is for rearranging peaks from an existing
 spectrum, which this predicted-decoy path does not do.
-For mzSpecLib output, each accepted target/decoy sequence pair shares a project-defined
-`msspeculator:decoy_pair_id` attribute. Collision-skipped pairs retain the ID on the target only;
-IDs are absent when decoys are off.
+For mzSpecLib output, each accepted target/decoy precursor pair shares a project-defined
+`msspeculator:decoy_pair_id` attribute: one ID per target peptidoform and charge, so a peptide's
+modified forms and charge states are separate pairs. Collision-skipped pairs retain the ID on the
+target only; IDs are absent when decoys are off.
 
 Use the CLI when its FASTA defaults and file formats are sufficient. Use the inference crate when
 the application needs the same throughput with its own model source, paths, or surrounding
