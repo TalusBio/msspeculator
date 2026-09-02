@@ -5,9 +5,7 @@ use std::str::FromStr;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use msspeculator_core::{
-    builtin, fit, predict, speclib, BuiltinModel, ModelSource, MsContext, Prediction,
-};
+use msspeculator_core::{builtin, fit, predict, speclib, ModelSource, MsContext, Prediction};
 use serde_json::json;
 
 mod diagnostics;
@@ -404,17 +402,6 @@ fn run_predict(args: PredictArgs) -> Result<()> {
     Ok(())
 }
 
-fn parse_model_source(spec: &str) -> Result<ModelSource> {
-    match spec.strip_prefix(builtin::BUILTIN_PREFIX) {
-        Some("small-v0") => Ok(ModelSource::Builtin(BuiltinModel::SmallV0)),
-        Some(name) => anyhow::bail!(
-            "unknown builtin model {name:?}; this build carries: {}",
-            builtin::names().join(", ")
-        ),
-        None => Ok(ModelSource::File(PathBuf::from(spec))),
-    }
-}
-
 impl LibraryArgs {
     /// Written by default: a library whose settings live only in a shell history cannot be
     /// regenerated. `--no-config-out` is the explicit opt out, and clap already refuses it
@@ -433,30 +420,26 @@ impl LibraryArgs {
 
 /// Say what a rebuild is about to replace, before it truncates anything.
 ///
-/// A warning and not a refusal: regenerating a library in place is the ordinary case, and the
-/// only thing the old file knew that nothing else does is what it was built from.
-fn report_overwrite(path: &Path, stream: &library::StreamOptions<'_>) -> Result<()> {
+/// A warning and not a refusal, and one that cannot fail the build either: regenerating a library
+/// in place is the ordinary case, and the only thing the old file knew that nothing else does is
+/// what it was built from. A run that could not work that out says so and carries on.
+fn report_overwrite(path: &Path, sidecar: Option<&Path>, stream: &library::StreamOptions<'_>) {
     let out = path.display();
-    match check_library(path, stream)? {
-        LibraryCheck::Same => {
+    match check_library(path, sidecar, stream) {
+        Ok(LibraryCheck::Same) => {
             eprintln!("{out} was already built with these settings; rebuilding it")
         }
-        LibraryCheck::Different { differences } => {
+        Ok(LibraryCheck::Different(differences)) => {
             eprintln!("overwriting {out}, built with different settings:");
             for difference in differences {
-                // A key one side never recorded reads as `unset`, which is what an omitted knob
-                // is; the other spelling would be inventing a value for it.
-                eprintln!(
-                    "  {} was {}, now {}",
-                    difference.key,
-                    difference.library.as_deref().unwrap_or("unset"),
-                    difference.expected.as_deref().unwrap_or("unset"),
-                );
+                eprintln!("  {difference}");
             }
         }
-        LibraryCheck::Unknown => eprintln!("overwriting {out}, which carries no provenance"),
+        Ok(LibraryCheck::Unknown) => eprintln!("overwriting {out}, which carries no provenance"),
+        Err(error) => {
+            eprintln!("overwriting {out}; could not read what it was built from: {error}")
+        }
     }
-    Ok(())
 }
 
 fn run_library(args: LibraryArgs) -> Result<()> {
@@ -479,7 +462,7 @@ fn run_library(args: LibraryArgs) -> Result<()> {
     let line = progress::ProgressLine::for_stderr(!args.no_progress);
     let report = |progress| line.update(progress);
     let stream = library::StreamOptions {
-        model: parse_model_source(&args.artifact.model)?,
+        model: ModelSource::from_spec(&args.artifact.model)?,
         fasta: &args.fasta,
         activation: args.artifact.activation.as_deref(),
         ms_context: ms_context.as_ref(),
@@ -498,7 +481,7 @@ fn run_library(args: LibraryArgs) -> Result<()> {
         progress: Some(&report),
     };
     if args.out.exists() {
-        report_overwrite(&args.out, &stream)?;
+        report_overwrite(&args.out, config_out.as_deref(), &stream);
     }
     let stats = library::write_library(&library::LibraryOptions {
         out: &args.out,

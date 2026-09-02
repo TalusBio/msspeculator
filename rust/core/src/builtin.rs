@@ -26,11 +26,44 @@ pub enum BuiltinModel {
 }
 
 impl BuiltinModel {
+    /// Every variant, so a lookup or a listing cannot go stale against the enum.
+    const ALL: [Self; 1] = [Self::SmallV0];
+
     /// Stable name used in provenance and by the command-line interface.
     pub const fn name(self) -> &'static str {
         match self {
             Self::SmallV0 => "small-v0",
         }
+    }
+
+    /// The variant a name addresses, or `None` for a name this build does not carry.
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|model| model.name() == name)
+    }
+
+    /// Which row of [`BUNDLED`] holds this variant's payload.
+    ///
+    /// Reaching the payload is infallible because of this: the enum is closed, every variant
+    /// names a row, and `every_variant_has_its_row` keeps the two in step. A lookup by name
+    /// would have to answer "what if it is missing", which for a compiled-in artifact is not a
+    /// question the caller can do anything about.
+    const fn row(self) -> usize {
+        match self {
+            Self::SmallV0 => 0,
+        }
+    }
+
+    /// The weights compiled into this build.
+    pub fn bytes(self) -> &'static [u8] {
+        BUNDLED[self.row()].1
+    }
+
+    /// The digest recorded for those weights when they were vendored, without loading them.
+    ///
+    /// The same value [`load_builtin`] reports, from the same row, so a caller that needs only
+    /// the identity of a model does not pay for its tensors.
+    pub fn digest(self) -> &'static str {
+        BUNDLED[self.row()].2
     }
 }
 
@@ -42,11 +75,41 @@ pub enum ModelSource {
 }
 
 impl ModelSource {
+    /// `builtin:<name>` addresses the binary; anything else is a filesystem path.
+    ///
+    /// The only place a `--model` string is interpreted, so the command line, [`load_model`] and
+    /// a library's provenance cannot disagree about what one means.
+    pub fn from_spec(spec: &str) -> Result<Self> {
+        match spec.strip_prefix(BUILTIN_PREFIX) {
+            Some(name) => BuiltinModel::from_name(name)
+                .map(Self::Builtin)
+                .ok_or_else(|| {
+                    anyhow!(
+                        "unknown builtin model {name:?}; this build carries: {}",
+                        names().join(", ")
+                    )
+                }),
+            None => Ok(Self::File(PathBuf::from(spec))),
+        }
+    }
+
     /// Stable human-readable source used in provenance and logs.
     pub fn spec(&self) -> String {
         match self {
             Self::Builtin(model) => format!("{BUILTIN_PREFIX}{}", model.name()),
             Self::File(path) => path.to_string_lossy().into_owned(),
+        }
+    }
+
+    /// The identity of the weights this addresses, without loading them.
+    ///
+    /// Beside [`spec`](Self::spec) because the two answer one question — which model is this —
+    /// and a caller should not have to know that a bundled artifact's digest is a recorded
+    /// constant while a file's is a full read of it.
+    pub fn digest(&self) -> Result<String> {
+        match self {
+            Self::Builtin(model) => Ok(model.digest().to_string()),
+            Self::File(path) => digest_file(path),
         }
     }
 }
@@ -69,49 +132,60 @@ const BUNDLED: [(&str, &[u8], &str); 1] = [(
     "8dc9edf567606df1ce2b98530d679ebce139f364021062b72a20d4eaca7162a3",
 )];
 
-/// blake2b-256 of some bytes, hex.
+/// A blake2b-256 hasher and the hex its output is spelled as.
 ///
 /// Identity rather than integrity: two libraries generated from the same model and settings are
 /// the same library, and a name means nothing without it.
-pub fn digest_bytes(bytes: &[u8]) -> String {
-    use blake2::digest::{Update, VariableOutput};
-    let mut hasher = blake2::Blake2bVar::new(32).expect("32 is a valid blake2b output length");
-    hasher.update(bytes);
+fn hasher() -> blake2::Blake2bVar {
+    use blake2::digest::VariableOutput;
+    blake2::Blake2bVar::new(32).expect("32 is a valid blake2b output length")
+}
+
+fn hex(hasher: blake2::Blake2bVar) -> String {
+    use blake2::digest::VariableOutput;
     let mut out = [0u8; 32];
     hasher.finalize_variable(&mut out).expect("32-byte output");
     out.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-/// The recorded digest of a bundled artifact, without loading it.
-///
-/// The same value [`load_builtin`] reports, read from the same constant, so a caller that needs
-/// only the identity of a model does not pay for its tensors.
-pub fn builtin_digest(model: BuiltinModel) -> Result<&'static str> {
-    let name = model.name();
-    BUNDLED
-        .iter()
-        .find(|(bundled, _, _)| *bundled == name)
-        .map(|(_, _, recorded)| *recorded)
-        .ok_or_else(|| anyhow!("builtin model {name:?} is not included in this build"))
+/// blake2b-256 of some bytes, hex.
+pub fn digest_bytes(bytes: &[u8]) -> String {
+    use blake2::digest::Update;
+    let mut hasher = hasher();
+    hasher.update(bytes);
+    hex(hasher)
+}
+
+/// blake2b-256 of a file's bytes, hex, streamed so a multi-GB input is not held in memory.
+pub fn digest_file(path: &std::path::Path) -> Result<String> {
+    use blake2::digest::Update;
+    use std::io::Read;
+    let mut file =
+        std::fs::File::open(path).with_context(|| format!("hashing {}", path.display()))?;
+    let mut hasher = hasher();
+    let mut buffer = vec![0u8; 1 << 20];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(hex(hasher))
 }
 
 /// Names of every artifact compiled into this build.
 pub fn names() -> Vec<&'static str> {
-    BUNDLED.iter().map(|(name, _, _)| *name).collect()
+    BuiltinModel::ALL.iter().map(|model| model.name()).collect()
 }
 
 /// Load one of the artifacts compiled into this crate.
 pub fn load_builtin(model: BuiltinModel) -> Result<LoadedModel> {
-    let name = model.name();
-    let (_, bytes, recorded) = BUNDLED
-        .iter()
-        .find(|(bundled, _, _)| *bundled == name)
-        .ok_or_else(|| anyhow!("builtin model {name:?} is not included in this build"))?;
     Ok(LoadedModel {
-        artifact: Artifact::from_bytes(bytes)
-            .with_context(|| format!("loading builtin model {name}"))?,
-        spec: format!("{BUILTIN_PREFIX}{name}"),
-        digest: (*recorded).to_string(),
+        artifact: Artifact::from_bytes(model.bytes())
+            .with_context(|| format!("loading builtin model {}", model.name()))?,
+        spec: ModelSource::Builtin(model).spec(),
+        digest: model.digest().to_string(),
     })
 }
 
@@ -154,34 +228,7 @@ impl std::fmt::Debug for LoadedModel {
 
 /// Load `builtin:<name>` from the binary, or anything else as a filesystem path.
 pub fn load_model(spec: &str) -> Result<LoadedModel> {
-    match spec.strip_prefix(BUILTIN_PREFIX) {
-        Some(name) => {
-            let (_, bytes, recorded) = BUNDLED
-                .iter()
-                .find(|(bundled, _, _)| *bundled == name)
-                .ok_or_else(|| {
-                    anyhow!(
-                        "unknown builtin model {name:?}; this build carries: {}",
-                        names().join(", ")
-                    )
-                })?;
-            Ok(LoadedModel {
-                artifact: Artifact::from_bytes(bytes)
-                    .with_context(|| format!("loading builtin model {name}"))?,
-                spec: spec.to_string(),
-                digest: (*recorded).to_string(),
-            })
-        }
-        None => {
-            let bytes = std::fs::read(spec).with_context(|| format!("reading {spec}"))?;
-            Ok(LoadedModel {
-                artifact: Artifact::from_bytes(&bytes)
-                    .with_context(|| format!("loading {spec}"))?,
-                spec: spec.to_string(),
-                digest: digest_bytes(&bytes),
-            })
-        }
-    }
+    load_source(ModelSource::from_spec(spec)?)
 }
 
 #[cfg(test)]
@@ -207,6 +254,36 @@ mod tests {
                 bytes.len()
             );
         }
+    }
+
+    /// `BuiltinModel::row` indexes [`BUNDLED`] directly, which is what makes `bytes` and
+    /// `digest` infallible. Adding a variant without its row would index the wrong artifact or
+    /// panic; this is the check that turns either into a build failure.
+    #[test]
+    fn every_variant_has_its_row() {
+        assert_eq!(BuiltinModel::ALL.len(), BUNDLED.len());
+        for model in BuiltinModel::ALL {
+            assert_eq!(BUNDLED[model.row()].0, model.name());
+            assert_eq!(BuiltinModel::from_name(model.name()), Some(model));
+        }
+        assert_eq!(BuiltinModel::from_name("nonexistent"), None);
+    }
+
+    #[test]
+    fn a_source_reports_its_digest_without_loading_the_tensors() {
+        assert_eq!(
+            ModelSource::Builtin(BuiltinModel::SmallV0)
+                .digest()
+                .unwrap(),
+            BuiltinModel::SmallV0.digest()
+        );
+        // The same identity the loader reports, reached without paying for the artifact.
+        assert_eq!(
+            ModelSource::Builtin(BuiltinModel::SmallV0)
+                .digest()
+                .unwrap(),
+            load_builtin(BuiltinModel::SmallV0).unwrap().digest
+        );
     }
 
     #[test]

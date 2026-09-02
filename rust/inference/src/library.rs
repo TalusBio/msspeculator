@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::fs::File;
-use std::io::{BufWriter, Write};
+use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
@@ -140,7 +140,7 @@ impl LibraryFormat {
 /// suffix match on the lossy form is correct for any path the OS will accept.
 fn output_spelling(path: &Path) -> (LibraryFormat, bool) {
     let text = path.to_string_lossy();
-    let compressed = is_compressed(path);
+    let compressed = text.ends_with(".gz");
     let stem = text.strip_suffix(".gz").unwrap_or(&text);
     let format = if stem.ends_with(".mzspeclib.txt") || stem.ends_with(".mzspeclib") {
         LibraryFormat::MzSpecLib
@@ -150,10 +150,17 @@ fn output_spelling(path: &Path) -> (LibraryFormat, bool) {
     (format, compressed)
 }
 
-/// A `.gz` suffix is the whole of the compression rule, and the same rule going out and coming
-/// back in: written here, read by [`crate::mzspeclib::read_header_attributes`].
-pub(crate) fn is_compressed(path: &Path) -> bool {
-    path.to_string_lossy().ends_with(".gz")
+/// Open a library for reading, decompressing it if the path says it is compressed.
+///
+/// The mirror of the `.gz` decision [`write_library`] makes when it builds its sink, and here
+/// beside it so the two cannot come to different answers about one suffix.
+pub(crate) fn open_library(path: &Path) -> Result<Box<dyn BufRead>> {
+    let file = File::open(path).with_context(|| format!("reading {}", path.display()))?;
+    Ok(if output_spelling(path).1 {
+        Box::new(BufReader::new(flate2::read::GzDecoder::new(file)))
+    } else {
+        Box::new(BufReader::new(file))
+    })
 }
 
 /// One kept transition, borrowed from the prediction it came out of.
@@ -915,7 +922,7 @@ mod tests {
             let mut collected = self.0.lock().expect("collector mutex poisoned");
             // Asserted through the typed provenance, not through JSON: reaching back through a
             // `Value` here would be reaching past the interface this whole split exists to give.
-            collected.model = Some(provenance.inputs.model.clone());
+            collected.model = Some(provenance.settings.inputs.model.clone());
             collected.output_present = Some(provenance.output.is_some());
             Ok(())
         }

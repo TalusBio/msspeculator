@@ -5,11 +5,11 @@
 //! orchestration, which is the rest of [`crate::library`].
 
 use std::collections::BTreeMap;
-use std::fs::File;
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use msspeculator_core::{Artifact, ModelSource};
+use msspeculator_core::Artifact;
+use serde_json::Value;
 
 use crate::library::{LibraryStats, StreamOptions};
 
@@ -24,27 +24,56 @@ use crate::library::{LibraryStats, StreamOptions};
 /// - **`null`** is a knob nobody set. `context.ms`, `context.chrom`, `retention.raw`,
 ///   `fragments.max_fragments` and `output` all serialize this way, so a reader can see the
 ///   question was considered and declined.
-/// - **omitted** is not known yet, or was never measured here. `output.counts` exists once the
-///   last spectrum has been written; `retention.normalized.anchor_check` exists only where an
-///   artifact was loaded to predict the anchors, which a build always does and a reader
-///   verifying one never does.
+/// - **omitted** is not known yet. Only `output.counts`, which exists once the last spectrum has
+///   been written.
 ///
 /// A new field picks one of those two deliberately.
 #[derive(Clone, Debug, serde::Serialize)]
 #[non_exhaustive]
 pub struct LibraryProvenance {
     pub generator: Generator,
-    pub inputs: Inputs,
-    pub digestion: Digestion,
-    pub modifications: Modifications,
-    pub context: Contexts,
+    /// Everything the options decided, flattened so `digestion`, `context` and the rest sit at
+    /// the top of the document where they always have.
+    #[serde(flatten)]
+    pub settings: Settings,
     pub retention: Retention,
-    pub fragments: FragmentPolicy,
-    pub decoys: DecoyPolicy,
     /// Absent when a caller supplied its own sink: there is then no path, no suffix-chosen
     /// format, and no compression, and inventing values for them would put claims in the
     /// provenance that nothing produced.
     pub output: Option<Output>,
+}
+
+/// Everything that determines what a library contains.
+///
+/// The question this answers is not "were the same arguments typed" but "would the same library
+/// be generated", and that is the test for whether a field belongs here: does changing it change
+/// a byte of the output? Everything that does is in, including the constants — a library built
+/// when `decoys.collision_policy` meant something else is a different library, so those strings
+/// are published values rather than documentation. Everything that does not is out, which is why
+/// nothing here needs a loaded artifact, a written file, or the version of the tool that did the
+/// writing; those live on [`LibraryProvenance`] beside it.
+///
+/// `every_option_that_changes_the_library_changes_the_settings` is that rule as a test. It is the
+/// check worth keeping green: a knob missing from here is a knob two libraries can differ by and
+/// still compare equal, which is the one way [`crate::check`] can give a wrong answer rather than
+/// no answer.
+///
+/// The one thing it cannot promise is equivalence across releases. Two builds of this tool from
+/// different commits can generate different libraries from identical settings, and comparing
+/// `generator.*` would flag every upgrade; so the claim is scoped to what a settings document can
+/// support, and a reader wanting more has the commit recorded beside it.
+///
+/// Flattened into the published document, so these are top-level keys and moving a field between
+/// here and `LibraryProvenance` renames nothing.
+#[derive(Clone, Debug, serde::Serialize)]
+#[non_exhaustive]
+pub struct Settings {
+    pub inputs: Inputs,
+    pub digestion: Digestion,
+    pub modifications: Modifications,
+    pub context: Contexts,
+    pub fragments: FragmentPolicy,
+    pub decoys: DecoyPolicy,
 }
 
 /// Which build of which tool wrote this.
@@ -64,6 +93,13 @@ pub struct Inputs {
     /// is not an identity; the digest is, and it is computed from the loaded bytes either way.
     pub model: String,
     pub model_blake2b_256: String,
+    /// The `--activation` override, or `None` where the artifact's own activation was used.
+    ///
+    /// Beside the model because it is a change to the model: it rewrites the artifact's
+    /// activation, so it changes every predicted spectrum while leaving the digest alone. Two
+    /// libraries that differ only by this differ in every peak, which is why it is recorded and
+    /// not left to the bench notebook it was added for.
+    pub activation_override: Option<String>,
     pub fasta: String,
     pub fasta_blake2b_256: String,
 }
@@ -127,11 +163,7 @@ pub struct NormalizedRetention {
     pub term: &'static str,
     pub kind: &'static str,
     pub scale: &'static str,
-    /// Absent when nothing predicted the anchors, which is the case for every provenance
-    /// resolved from settings alone. A build always fills it, so a written library always
-    /// carries it.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub anchor_check: Option<AnchorCheck>,
+    pub anchor_check: AnchorCheck,
 }
 
 /// Which index is a property of the corpus the model trained on, so the scale is stated as the
@@ -263,34 +295,101 @@ impl LibraryProvenance {
     }
 }
 
-/// blake2b-256 of a file's bytes, hex, streamed so a multi-GB input is not held in memory.
-///
-/// Identity rather than integrity: two libraries generated from the same digests and the same
-/// settings are the same library, which is what makes a published one reproducible.
-fn file_digest(path: &Path) -> Result<String> {
-    use blake2::digest::{Update, VariableOutput};
-    let mut file = File::open(path).with_context(|| format!("hashing {}", path.display()))?;
-    let mut hasher = blake2::Blake2bVar::new(32).expect("32 is a valid blake2b output length");
-    let mut buffer = vec![0u8; 1 << 20];
-    loop {
-        let read = std::io::Read::read(&mut file, &mut buffer)?;
-        if read == 0 {
-            break;
-        }
-        hasher.update(&buffer[..read]);
+impl Settings {
+    /// The top-level keys these own in the published document.
+    ///
+    /// The document is flat, so a reader narrowing a library's provenance down to its settings
+    /// needs to know which prefixes are ours. Written out rather than read off an instance
+    /// because `context` disappears from one whose knobs were all left unset, and a prefix that
+    /// vanishes when nobody set anything is a prefix that would stop being compared exactly when
+    /// one side set something. `the_settings_own_exactly_these_keys` holds it against the struct.
+    pub(crate) const KEYS: [&'static str; 6] = [
+        "context",
+        "decoys",
+        "digestion",
+        "fragments",
+        "inputs",
+        "modifications",
+    ];
+
+    /// Whether a published provenance key is one the settings decided.
+    pub(crate) fn owns(key: &str) -> bool {
+        let prefix = key.split_once('.').map_or(key, |(head, _)| head);
+        Self::KEYS.contains(&prefix)
     }
-    let mut out = [0u8; 32];
-    hasher.finalize_variable(&mut out).expect("32-byte output");
-    Ok(out.iter().map(|byte| format!("{byte:02x}")).collect())
+
+    /// Resolve every knob as it applied, not as it was typed: defaults are recorded explicitly.
+    ///
+    /// Nothing here loads a model — a [`ModelSource`](msspeculator_core::ModelSource) reports its
+    /// own digest — but the FASTA is hashed, which is a full read of it.
+    pub(crate) fn resolve(opts: &StreamOptions<'_>, model_digest: &str) -> Result<Self> {
+        Ok(Self {
+            inputs: Inputs {
+                model: opts.model.spec(),
+                model_blake2b_256: model_digest.to_string(),
+                activation_override: opts.activation.map(str::to_string),
+                fasta: opts.fasta.display().to_string(),
+                fasta_blake2b_256: msspeculator_core::digest_file(opts.fasta)?,
+            },
+            digestion: Digestion {
+                enzyme: "trypsin",
+                missed_cleavages: opts.missed_cleavages,
+                min_length: opts.min_length,
+                max_length: opts.max_length,
+                min_charge: opts.min_charge,
+                max_charge: opts.max_charge,
+            },
+            modifications: Modifications {
+                fixed: opts.fixed_mods.to_vec(),
+                variable: opts.variable_mods.to_vec(),
+                max_variable_mods: opts.max_variable_mods,
+            },
+            context: Contexts {
+                ms: opts.ms_context.map(|context| match context {
+                    msspeculator_core::MsContext::Named(name) => MsContextProvenance::Named {
+                        setup: name.clone(),
+                    },
+                    msspeculator_core::MsContext::Factors {
+                        instrument,
+                        detector,
+                        fragmentation,
+                        energy,
+                    } => MsContextProvenance::Factors {
+                        instrument: instrument.clone(),
+                        detector: detector.clone(),
+                        fragmentation: fragmentation.clone(),
+                        energy: *energy,
+                    },
+                }),
+                chrom: opts.chrom_context.map(str::to_string),
+            },
+            fragments: FragmentPolicy {
+                min_intensity: opts.min_intensity,
+                max_fragments: opts.max_fragments,
+            },
+            decoys: DecoyPolicy {
+                enabled: opts.generate_decoys,
+                method: "pseudo-reverse",
+                protein_prefix: "DECOY_",
+                collision_policy: "skip_if_stripped_sequence_is_a_target",
+            },
+        })
+    }
+
+    /// The settings as dotted `key -> value` pairs, which is how a check compares two of them.
+    pub(crate) fn attributes(&self) -> BTreeMap<String, String> {
+        flatten(&serde_json::to_value(self).expect("settings are plain data"))
+    }
 }
 
 /// Resolve everything that determined the library's bytes.
 ///
-/// The digests of the two inputs and every knob as resolved, not as typed: defaults are recorded
-/// explicitly. Counts are not here; they are only known once the library is written, so
-/// [`write_sidecar`] appends them. A library whose provenance lives only in a shell history is one
-/// nobody can regenerate or trust, which is why this value is both embedded (mzSpecLib) and
-/// written beside the library (sidecar) rather than reassembled per format.
+/// The settings, plus what only a build knows: which release wrote it, where it went, and how
+/// this artifact's retention anchors actually measured. Counts are not here; they are only known
+/// once the library is written, so [`write_sidecar`] appends them. A library whose provenance
+/// lives only in a shell history is one nobody can regenerate or trust, which is why this value
+/// is both embedded (mzSpecLib) and written beside the library (sidecar) rather than reassembled
+/// per format.
 pub(crate) fn resolve_provenance(
     opts: &StreamOptions<'_>,
     output: Option<Output>,
@@ -298,87 +397,31 @@ pub(crate) fn resolve_provenance(
     model_digest: &str,
 ) -> Result<LibraryProvenance> {
     let anchors = msspeculator_core::landmarks::check_retention_scale(artifact)?;
-    resolve(
-        opts,
-        output,
-        model_digest,
-        Some(AnchorCheck {
-            on_scale: anchors.on_scale(),
-            max_abs_error: anchors.max_abs_error,
-            anchors: anchors
-                .anchors
-                .iter()
-                .map(|(peptide, expected, predicted)| Anchor {
-                    peptide: peptide.to_string(),
-                    expected: *expected,
-                    predicted: *predicted,
-                })
-                .collect(),
-        }),
-    )
-}
-
-/// Everything a configuration determines, with the two things it does not passed in.
-///
-/// The anchor check is a measurement of a loaded artifact rather than a resolved setting, and the
-/// model digest comes from bytes somebody else read; splitting them out is what lets
-/// [`check_library`] answer the same question without loading a model.
-fn resolve(
-    opts: &StreamOptions<'_>,
-    output: Option<Output>,
-    model_digest: &str,
-    anchor_check: Option<AnchorCheck>,
-) -> Result<LibraryProvenance> {
     Ok(LibraryProvenance {
         generator: Generator {
             tool: "msspeculator-cli library",
             version: env!("CARGO_PKG_VERSION"),
             commit: env!("MSSPECULATOR_GIT_COMMIT"),
         },
-        inputs: Inputs {
-            model: opts.model.spec(),
-            model_blake2b_256: model_digest.to_string(),
-            fasta: opts.fasta.display().to_string(),
-            fasta_blake2b_256: file_digest(opts.fasta)?,
-        },
-        digestion: Digestion {
-            enzyme: "trypsin",
-            missed_cleavages: opts.missed_cleavages,
-            min_length: opts.min_length,
-            max_length: opts.max_length,
-            min_charge: opts.min_charge,
-            max_charge: opts.max_charge,
-        },
-        modifications: Modifications {
-            fixed: opts.fixed_mods.to_vec(),
-            variable: opts.variable_mods.to_vec(),
-            max_variable_mods: opts.max_variable_mods,
-        },
-        context: Contexts {
-            ms: opts.ms_context.map(|context| match context {
-                msspeculator_core::MsContext::Named(name) => MsContextProvenance::Named {
-                    setup: name.clone(),
-                },
-                msspeculator_core::MsContext::Factors {
-                    instrument,
-                    detector,
-                    fragmentation,
-                    energy,
-                } => MsContextProvenance::Factors {
-                    instrument: instrument.clone(),
-                    detector: detector.clone(),
-                    fragmentation: fragmentation.clone(),
-                    energy: *energy,
-                },
-            }),
-            chrom: opts.chrom_context.map(str::to_string),
-        },
+        settings: Settings::resolve(opts, model_digest)?,
         retention: Retention {
             normalized: NormalizedRetention {
                 term: "MS:1000896|normalized retention time",
                 kind: "dimensionless index, minutes-like",
                 scale: msspeculator_core::landmarks::SCALE_DESCRIPTION,
-                anchor_check,
+                anchor_check: AnchorCheck {
+                    on_scale: anchors.on_scale(),
+                    max_abs_error: anchors.max_abs_error,
+                    anchors: anchors
+                        .anchors
+                        .iter()
+                        .map(|(peptide, expected, predicted)| Anchor {
+                            peptide: peptide.to_string(),
+                            expected: *expected,
+                            predicted: *predicted,
+                        })
+                        .collect(),
+                },
             },
             raw: opts.chrom_context.map(|name| RawRetention {
                 term: "MS:1000894|retention time",
@@ -386,18 +429,46 @@ fn resolve(
                 chrom_context: name.to_string(),
             }),
         },
-        fragments: FragmentPolicy {
-            min_intensity: opts.min_intensity,
-            max_fragments: opts.max_fragments,
-        },
-        decoys: DecoyPolicy {
-            enabled: opts.generate_decoys,
-            method: "pseudo-reverse",
-            protein_prefix: "DECOY_",
-            collision_policy: "skip_if_stripped_sequence_is_a_target",
-        },
         output,
     })
+}
+
+/// Flatten a provenance document into dotted `key -> value` pairs, dropping nulls.
+///
+/// Objects recurse; anything else is a leaf. Arrays stay JSON text: `["C[UNIMOD:2057]", ...]`
+/// reads as what was passed on the command line, which is the point of recording it. A knob that
+/// was not set says nothing a reader can use, and the sidecar keeps the explicit null for anyone
+/// who wants to see that it was considered.
+///
+/// Keyed, and the key order is the order the mzSpecLib header writes its attributes in: a
+/// depth-first walk of a [`serde_json::Value`] visits sorted siblings, and that is the same
+/// sequence as sorting the dotted keys, because `.` sorts below every letter.
+/// `sidecar_keys_are_stable` pins it.
+pub(crate) fn flatten(config: &Value) -> BTreeMap<String, String> {
+    fn walk(prefix: &str, value: &Value, out: &mut BTreeMap<String, String>) {
+        match value {
+            Value::Object(fields) => {
+                for (key, value) in fields {
+                    let key = if prefix.is_empty() {
+                        key.clone()
+                    } else {
+                        format!("{prefix}.{key}")
+                    };
+                    walk(&key, value, out);
+                }
+            }
+            Value::Null => {}
+            Value::String(text) => {
+                out.insert(prefix.to_string(), text.clone());
+            }
+            leaf => {
+                out.insert(prefix.to_string(), leaf.to_string());
+            }
+        }
+    }
+    let mut out = BTreeMap::new();
+    walk("", config, &mut out);
+    out
 }
 
 /// Where the sidecar for a library goes by default: `lib.tsv` -> `lib.tsv.config.json`.
@@ -406,8 +477,8 @@ fn resolve(
 /// `Path::with_extension` would do: `lib.mzspeclib.config.json` has lost which format the
 /// sidecar describes. Built as an OS string, since a path need not be UTF-8.
 ///
-/// Public because it is the convention that lets [`check_library`] find the provenance of a
-/// library whose format has no header to carry it.
+/// Public because it is the convention that lets [`crate::check_library`] find the provenance of
+/// a library whose format has no header to carry it.
 pub fn sidecar_path(library: &Path) -> std::path::PathBuf {
     let mut name = library.to_path_buf().into_os_string();
     name.push(".config.json");
@@ -434,185 +505,64 @@ pub(crate) fn write_sidecar(
     .with_context(|| format!("writing {}", path.display()))
 }
 
-/// Whether a library on disk was built the way a set of options describes.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum LibraryCheck {
-    /// Same keys, same values: a build with these options would produce this library.
-    Same,
-    /// Built differently. Never empty: a key only one side records is a difference like any
-    /// other, since `--max-fragments` dropped from a rebuild is exactly as much a change as one
-    /// given a new value.
-    Different { differences: Vec<Difference> },
-    /// Nothing to compare against: no `msspeculator:` attributes in the header and no sidecar
-    /// beside it. Another tool's library, or one of ours written with `--no-config-out` in a
-    /// format that carries no header. Not a mismatch.
-    Unknown,
-}
-
-/// One provenance key that a library and a set of options spell differently.
-///
-/// Either side can be `None`, and it means the same thing on both: nothing was recorded under
-/// that key. An unset knob is dropped from a header rather than written as a null, so a setting
-/// present in one build and absent from the other shows up here as a missing side.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Difference {
-    /// The provenance key, as the header spells it without the `msspeculator:` prefix.
-    pub key: String,
-    /// What the library on disk says.
-    pub library: Option<String>,
-    /// What a build with these options would have recorded.
-    pub expected: Option<String>,
-}
-
-/// Whether the library at `path` was built the way `opts` describes.
-///
-/// For a search reading someone else's library: warn per [`Difference`], naming both values, and
-/// run anyway. For a build about to overwrite one: [`LibraryCheck::Same`] means the file already
-/// is what this run would produce.
-///
-/// Reads the header and stops at the first spectrum, so the library itself costs one open
-/// whatever its size. A format with no header to carry provenance falls back to the
-/// [`sidecar_path`] beside it. The other side is resolved from `opts` without loading a model,
-/// but it does hash the FASTA, and that is a full read of it.
-///
-/// Only what the settings determine is compared. Which build wrote the library, the paths its
-/// inputs were named by, where it was written and how its retention anchors measured are all
-/// left out: none of them is a disagreement about how the library was built.
-pub fn check_library(path: &Path, opts: &StreamOptions<'_>) -> Result<LibraryCheck> {
-    // The header first, because that copy cannot be separated from the library it describes. A
-    // DIA-NN TSV has no header to put it in, so for that format the sidecar is the only copy.
-    let mut recorded = crate::mzspeclib::read_header_attributes(path)?;
-    if recorded.is_empty() {
-        recorded = sidecar_attributes(&sidecar_path(path));
-    }
-    if recorded.is_empty() {
-        return Ok(LibraryCheck::Unknown);
-    }
-    let library = comparable(recorded);
-    let expected = comparable(crate::mzspeclib::attributes(&expected_provenance(opts)?));
-    // Over the union, so that `Same` is a claim about every key either side records rather than
-    // only the ones they happen to share. A key one side has alone is a difference: it is either
-    // a knob set in one build and not the other, or a library from a version that recorded
-    // something this one does not, and both are answers a reader wants rather than silence.
-    let differences = library
-        .keys()
-        .chain(expected.keys())
-        .collect::<std::collections::BTreeSet<_>>()
-        .into_iter()
-        .filter(|key| library.get(*key) != expected.get(*key))
-        .map(|key| Difference {
-            key: key.clone(),
-            library: library.get(key).cloned(),
-            expected: expected.get(key).cloned(),
-        })
-        .collect::<Vec<_>>();
-    if differences.is_empty() {
-        Ok(LibraryCheck::Same)
-    } else {
-        Ok(LibraryCheck::Different { differences })
-    }
-}
-
-/// The provenance beside a library, in the spelling a header would have carried it.
-///
-/// Nothing here is an error: a missing sidecar is the ordinary case, and a file at that name
-/// that is not one of ours says nothing about the library either way. Both come back as no
-/// provenance, because a check that refuses to run is worse than a check that reports it has
-/// nothing to compare.
-fn sidecar_attributes(path: &Path) -> BTreeMap<String, String> {
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
-        .map(|config| crate::mzspeclib::attributes_from_json(&config))
-        .unwrap_or_default()
-}
-
-/// The provenance a build with these settings would record, minus what settings cannot say.
-///
-/// No model load: a bundled artifact's digest is a constant and a file's is its bytes, so
-/// neither needs the tensors. No anchor check and no output, both of which say nothing when
-/// nothing was predicted and nothing was written.
-fn expected_provenance(opts: &StreamOptions<'_>) -> Result<LibraryProvenance> {
-    let digest = match &opts.model {
-        ModelSource::Builtin(model) => msspeculator_core::builtin_digest(*model)?.to_string(),
-        ModelSource::File(path) => file_digest(path)?,
-    };
-    resolve(opts, None, &digest, None)
-}
-
-/// The keys worth comparing, of the ones a header carries.
-///
-/// Dropped, each because a difference in it is not a disagreement about how the library was
-/// built:
-///
-/// - `generator.*` is which build wrote the file. The same settings through a later release are
-///   still the same library, and comparing this would warn on every upgrade.
-/// - `inputs.model` and `inputs.fasta` are paths as they were typed. `../human.fasta` and
-///   `/data/human.fasta` are one file; the digest beside each of them is the identity, and it is
-///   kept.
-/// - `output.*` is where the library went, which nobody reading one is claiming.
-/// - `retention.normalized.anchor_check.*` is measured from a loaded artifact rather than
-///   resolved from settings, so only a build has it — and a different model is already visible
-///   as `inputs.model_blake2b_256`.
-fn comparable(pairs: BTreeMap<String, String>) -> BTreeMap<String, String> {
-    pairs
-        .into_iter()
-        .filter(|(key, _)| {
-            !(key.starts_with("generator.")
-                || key.starts_with("output.")
-                || key.starts_with("retention.normalized.anchor_check.")
-                || key == "inputs.model"
-                || key == "inputs.fasta")
-        })
-        .collect()
-}
-
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
-    use crate::scratch::Scratch;
 
-    fn sample() -> LibraryProvenance {
+    pub(crate) fn sample() -> LibraryProvenance {
         LibraryProvenance {
             generator: Generator {
                 tool: "msspeculator-cli library",
                 version: "0.1.0",
                 commit: "abc123",
             },
-            inputs: Inputs {
-                model: "builtin:small-v0".into(),
-                model_blake2b_256: "0".repeat(64),
-                fasta: "proteome.fasta".into(),
-                fasta_blake2b_256: "1".repeat(64),
-            },
-            digestion: Digestion {
-                enzyme: "trypsin",
-                missed_cleavages: 2,
-                min_length: 7,
-                max_length: 30,
-                min_charge: 2,
-                max_charge: 4,
-            },
-            modifications: Modifications {
-                fixed: vec!["C[UNIMOD:4]".into()],
-                variable: vec!["M[UNIMOD:35]".into()],
-                max_variable_mods: 1,
-            },
-            context: Contexts {
-                ms: Some(MsContextProvenance::Factors {
-                    instrument: "Lumos".into(),
-                    detector: "FTMS".into(),
-                    fragmentation: "HCD".into(),
-                    energy: Some(27.0),
-                }),
-                chrom: Some("dsA".into()),
+            settings: Settings {
+                inputs: Inputs {
+                    model: "builtin:small-v0".into(),
+                    model_blake2b_256: "0".repeat(64),
+                    activation_override: None,
+                    fasta: "proteome.fasta".into(),
+                    fasta_blake2b_256: "1".repeat(64),
+                },
+                digestion: Digestion {
+                    enzyme: "trypsin",
+                    missed_cleavages: 2,
+                    min_length: 7,
+                    max_length: 30,
+                    min_charge: 2,
+                    max_charge: 4,
+                },
+                modifications: Modifications {
+                    fixed: vec!["C[UNIMOD:4]".into()],
+                    variable: vec!["M[UNIMOD:35]".into()],
+                    max_variable_mods: 1,
+                },
+                context: Contexts {
+                    ms: Some(MsContextProvenance::Factors {
+                        instrument: "Lumos".into(),
+                        detector: "FTMS".into(),
+                        fragmentation: "HCD".into(),
+                        energy: Some(27.0),
+                    }),
+                    chrom: Some("dsA".into()),
+                },
+                fragments: FragmentPolicy {
+                    min_intensity: 0.01,
+                    max_fragments: Some(15),
+                },
+                decoys: DecoyPolicy {
+                    enabled: true,
+                    method: "pseudo-reverse",
+                    protein_prefix: "DECOY_",
+                    collision_policy: "skip",
+                },
             },
             retention: Retention {
                 normalized: NormalizedRetention {
                     term: "MS:1000896|normalized retention time",
                     kind: "dimensionless index, minutes-like",
                     scale: "anchored",
-                    anchor_check: Some(AnchorCheck {
+                    anchor_check: AnchorCheck {
                         on_scale: true,
                         max_abs_error: 0.5,
                         anchors: vec![Anchor {
@@ -620,23 +570,13 @@ mod tests {
                             expected: 0.0,
                             predicted: 0.1,
                         }],
-                    }),
+                    },
                 },
                 raw: Some(RawRetention {
                     term: "MS:1000894|retention time",
                     unit: "minute",
                     chrom_context: "dsA".into(),
                 }),
-            },
-            fragments: FragmentPolicy {
-                min_intensity: 0.01,
-                max_fragments: Some(15),
-            },
-            decoys: DecoyPolicy {
-                enabled: true,
-                method: "pseudo-reverse",
-                protein_prefix: "DECOY_",
-                collision_policy: "skip",
             },
             output: Some(Output {
                 path: "library.tsv".into(),
@@ -703,6 +643,7 @@ mod tests {
                 "generator.commit",
                 "generator.tool",
                 "generator.version",
+                "inputs.activation_override",
                 "inputs.fasta",
                 "inputs.fasta_blake2b_256",
                 "inputs.model",
@@ -728,178 +669,48 @@ mod tests {
         );
     }
 
-    fn options(fasta: &Path) -> StreamOptions<'_> {
-        StreamOptions {
-            model: ModelSource::Builtin(msspeculator_core::BuiltinModel::SmallV0),
-            fasta,
-            activation: None,
-            ms_context: None,
-            chrom_context: None,
-            min_intensity: 0.01,
-            missed_cleavages: 2,
-            min_length: 7,
-            max_length: 30,
-            min_charge: 2,
-            max_charge: 4,
-            fixed_mods: &[],
-            variable_mods: &[],
-            max_variable_mods: 1,
-            max_fragments: None,
-            generate_decoys: false,
-            progress: None,
+    /// [`Settings::KEYS`] is what a check narrows a library's provenance down to, and it is a
+    /// hand-written list of the struct's fields. This is the check that adding a field to
+    /// `Settings` without listing it — which would leave the new setting silently uncompared —
+    /// fails the build.
+    #[test]
+    fn the_settings_own_exactly_these_keys() {
+        let Value::Object(fields) = serde_json::to_value(&sample().settings).unwrap() else {
+            panic!("settings serialize as an object");
+        };
+        assert_eq!(
+            fields.keys().collect::<Vec<_>>(),
+            Settings::KEYS.iter().collect::<Vec<_>>()
+        );
+        assert!(Settings::owns("digestion.missed_cleavages"));
+        assert!(!Settings::owns("generator.version"));
+        assert!(!Settings::owns("retention.normalized.term"));
+    }
+
+    /// `Settings` is flattened into the document, so which struct a field lives on is not
+    /// published and moving one between here and [`LibraryProvenance`] renames nothing. What is
+    /// published is the split itself: the settings own every key an option decided, and none of
+    /// the keys only a build can fill.
+    #[test]
+    fn the_settings_are_the_options_half_of_the_document() {
+        let provenance = sample();
+        let published = flatten(&provenance.to_json());
+        let settings = provenance.settings.attributes();
+        for (key, value) in &settings {
+            assert_eq!(published.get(key), Some(value), "{key}");
         }
-    }
-
-    /// The provenance a real build resolves: an output block, and an anchor check measured from
-    /// a loaded artifact. Both are things a reader checking the library cannot have.
-    fn built(path: &Path, opts: &StreamOptions<'_>) -> LibraryProvenance {
-        resolve(
-            opts,
-            Some(Output {
-                path: path.display().to_string(),
-                format: "mzspeclib-text",
-                compressed: false,
-                counts: None,
-                timing: None,
-            }),
-            msspeculator_core::builtin_digest(msspeculator_core::BuiltinModel::SmallV0).unwrap(),
-            Some(AnchorCheck {
-                on_scale: true,
-                max_abs_error: 0.5,
-                anchors: Vec::new(),
-            }),
-        )
-        .unwrap()
-    }
-
-    fn write_header(path: &Path, opts: &StreamOptions<'_>) {
-        let provenance = built(path, opts);
-        let file = File::create(path).unwrap();
-        let mut sink = crate::mzspeclib::MzSpecLibSink::new(file, path);
-        crate::library::LibrarySink::header(&mut sink, &provenance).unwrap();
-    }
-
-    #[test]
-    fn a_library_these_options_would_produce_is_the_same_library() {
-        let fasta = Scratch::holding("check.fasta", ">P1\nPEPTIDEK\n");
-        let library = Scratch::new("check.mzspeclib.txt");
-        write_header(library.path(), &options(fasta.path()));
-        assert_eq!(
-            check_library(library.path(), &options(fasta.path())).unwrap(),
-            LibraryCheck::Same,
-            "a path, a format and an anchor measurement are not settings"
-        );
-    }
-
-    #[test]
-    fn a_changed_setting_is_the_only_difference() {
-        let fasta = Scratch::holding("changed.fasta", ">P1\nPEPTIDEK\n");
-        let library = Scratch::new("changed.mzspeclib.txt");
-        write_header(library.path(), &options(fasta.path()));
-        let searching = StreamOptions {
-            missed_cleavages: 3,
-            ..options(fasta.path())
-        };
-        assert_eq!(
-            check_library(library.path(), &searching).unwrap(),
-            LibraryCheck::Different {
-                differences: vec![Difference {
-                    key: "digestion.missed_cleavages".into(),
-                    library: Some("2".into()),
-                    expected: Some("3".into()),
-                }]
-            }
-        );
-    }
-
-    /// The headline case: same settings, another proteome. The digest carries it, and the path it
-    /// was typed as does not enter into it.
-    #[test]
-    fn another_fasta_differs_by_digest_and_not_by_path() {
-        let built = Scratch::holding("built.fasta", ">P1\nPEPTIDEK\n");
-        let searched = Scratch::holding("searched.fasta", ">P1\nPEPTIDEKK\n");
-        let library = Scratch::new("fasta.mzspeclib.txt");
-        write_header(library.path(), &options(built.path()));
-        let LibraryCheck::Different { differences } =
-            check_library(library.path(), &options(searched.path())).unwrap()
-        else {
-            panic!("a library from another proteome is not the same library");
-        };
-        let keys: Vec<&str> = differences.iter().map(|d| d.key.as_str()).collect();
-        assert_eq!(keys, vec!["inputs.fasta_blake2b_256"]);
-    }
-
-    /// A knob set in one build and left alone in the other is dropped from one header and not
-    /// the other, so comparing only the keys both sides carry would call these the same library.
-    #[test]
-    fn a_setting_dropped_from_a_rebuild_is_a_difference() {
-        let fasta = Scratch::holding("dropped.fasta", ">P1\nPEPTIDEK\n");
-        let library = Scratch::new("dropped.mzspeclib.txt");
-        write_header(
-            library.path(),
-            &StreamOptions {
-                max_fragments: Some(15),
-                ..options(fasta.path())
-            },
-        );
-        assert_eq!(
-            check_library(library.path(), &options(fasta.path())).unwrap(),
-            LibraryCheck::Different {
-                differences: vec![Difference {
-                    key: "fragments.max_fragments".into(),
-                    library: Some("15".into()),
-                    expected: None,
-                }]
-            }
-        );
-    }
-
-    #[test]
-    fn a_library_without_provenance_is_unknown_rather_than_a_mismatch() {
-        let fasta = Scratch::holding("unknown.fasta", ">P1\nPEPTIDEK\n");
-        let library = Scratch::holding("unknown.tsv", "PrecursorMz\tProductMz\n100.0\t200.0\n");
-        assert_eq!(
-            check_library(library.path(), &options(fasta.path())).unwrap(),
-            LibraryCheck::Unknown
-        );
-    }
-
-    /// `.config.json` appends to the whole name, so which format the sidecar describes stays
-    /// visible and the two files sort next to each other.
-    #[test]
-    fn the_sidecar_sits_beside_the_library_it_describes() {
-        for (library, expected) in [
-            ("lib.tsv", "lib.tsv.config.json"),
-            ("lib.mzspeclib.txt", "lib.mzspeclib.txt.config.json"),
-            ("lib.mzspeclib.txt.gz", "lib.mzspeclib.txt.gz.config.json"),
-            ("no-extension", "no-extension.config.json"),
+        for key in ["inputs.fasta_blake2b_256", "digestion.missed_cleavages"] {
+            assert!(settings.contains_key(key), "{key}");
+        }
+        for key in [
+            "generator.version",
+            "output.path",
+            "retention.normalized.anchor_check.on_scale",
+            "retention.raw.chrom_context",
         ] {
-            assert_eq!(
-                sidecar_path(Path::new(library)),
-                std::path::PathBuf::from(expected),
-                "{library}"
-            );
+            assert!(published.contains_key(key), "{key} left the document");
+            assert!(!settings.contains_key(key), "{key} is not an option");
         }
-    }
-
-    /// A DIA-NN TSV has no header to carry provenance, so the sidecar is the only copy it has —
-    /// and the two copies have to compare the same way, nulls and software version included.
-    #[test]
-    fn a_format_with_no_header_is_checked_against_its_sidecar() {
-        let fasta = Scratch::holding("sidecar.fasta", ">P1\nPEPTIDEK\n");
-        let library = Scratch::holding("sidecar.tsv", "PrecursorMz\tProductMz\n100.0\t200.0\n");
-        // Named after the library rather than handed out by `Scratch`, since the name is the
-        // convention under test.
-        let beside_it = sidecar_path(library.path());
-        write_sidecar(
-            &beside_it,
-            &built(library.path(), &options(fasta.path())),
-            &LibraryStats::default(),
-        )
-        .unwrap();
-        let checked = check_library(library.path(), &options(fasta.path()));
-        let _ = std::fs::remove_file(&beside_it);
-        assert_eq!(checked.unwrap(), LibraryCheck::Same);
     }
 
     /// A knob nobody set is null; something not known yet is omitted. Both are absent to a reader
@@ -907,12 +718,12 @@ mod tests {
     #[test]
     fn unset_knobs_are_null_and_unknown_counts_are_omitted() {
         let mut bare = sample();
-        bare.context = Contexts {
+        bare.settings.context = Contexts {
             ms: None,
             chrom: None,
         };
         bare.retention.raw = None;
-        bare.fragments.max_fragments = None;
+        bare.settings.fragments.max_fragments = None;
         let json = bare.to_json();
         for key in ["/context/ms", "/context/chrom", "/retention/raw"] {
             assert_eq!(json.pointer(key), Some(&serde_json::Value::Null), "{key}");

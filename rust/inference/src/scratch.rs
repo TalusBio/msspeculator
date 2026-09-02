@@ -17,9 +17,22 @@ impl Scratch {
         )))
     }
 
+    /// A scratch file at a path the test did not get to choose, because the name is a convention
+    /// under test — a sidecar sits beside the library it describes and nowhere else.
+    pub(crate) fn at(path: std::path::PathBuf) -> Self {
+        Self(path)
+    }
+
     /// A scratch file that already holds `contents`.
     pub(crate) fn holding(name: &str, contents: &str) -> Self {
         let scratch = Self::new(name);
+        std::fs::write(scratch.path(), contents).unwrap();
+        scratch
+    }
+
+    /// [`holding`](Self::holding) at a chosen path.
+    pub(crate) fn holding_at(path: std::path::PathBuf, contents: &str) -> Self {
+        let scratch = Self::at(path);
         std::fs::write(scratch.path(), contents).unwrap();
         scratch
     }

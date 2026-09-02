@@ -128,22 +128,18 @@ source commit, along with the resolved model, input FASTA, and settings.
 ## Check what a library was built from
 
 A search reading a library someone else built can ask whether it matches the settings it is about
-to search with. `check_library` compares the provenance the library carries against the
-provenance these options would produce.
+to search with. `check_library` compares the provenance the library carries against the `Settings`
+these options resolve to.
 
 ```rust
 use msspeculator_inference::{check_library, LibraryCheck};
 
-match check_library(&library_path, &stream)? {
+// `None` for the sidecar looks beside the library, at `sidecar_path(&library_path)`.
+match check_library(&library_path, None, &stream)? {
     LibraryCheck::Same => {}
-    LibraryCheck::Different { differences } => {
+    LibraryCheck::Different(differences) => {
         for difference in differences {
-            eprintln!(
-                "{} was {}, now {}",
-                difference.key,
-                difference.library.as_deref().unwrap_or("unset"),
-                difference.expected.as_deref().unwrap_or("unset"),
-            );
+            eprintln!("{difference}");
         }
     }
     LibraryCheck::Unknown => eprintln!("no msspeculator provenance to compare against"),
@@ -151,20 +147,21 @@ match check_library(&library_path, &stream)? {
 ```
 
 Warn and proceed rather than refuse: a mismatch says the library answers a different question,
-not that searching it is invalid. `Unknown` is not a mismatch — it is another tool's library, or
-one written with no sidecar in a format that carries no header.
+not that searching it is invalid. `Unknown` covers every library this cannot read a provenance
+from, including a missing or unreadable one, and it is not a mismatch.
 
-An mzSpecLib library is read to the first spectrum and no further, so the library costs one open
-whatever its size; a DIA-NN TSV has no header, so the `.config.json` sidecar beside it is used
-instead, at `sidecar_path(&library)`. Neither side loads a model. The expected side does hash the
-FASTA, which is a full read of it.
+A library is read to the end of its header and no further, so it costs one open whatever its
+size. A DIA-NN TSV has no header, so the sidecar is its only copy; pass its path when
+`--config-out` put it somewhere other than beside the library. Neither side loads a model. The
+expected side does hash the FASTA, which is a full read of it.
 
-Only what the settings determine is compared. Which build wrote the library, the paths its inputs
-were named by, where it went and how its retention anchors measured are all left out: a later
-release writing the same settings from a differently spelled path is the same library. Both input
-digests are compared, so a different FASTA or a different model is a difference. A key only one
-side records is one too, since an unset knob is dropped from a header rather than written as a
-null — `--max-fragments` dropped from a rebuild is as much a change as one given a new value.
+What is compared is exactly what `Settings` holds, and the question it answers is "would the same
+library be generated", not "were the same arguments typed" — so a knob belongs in it when
+changing that knob changes a byte of the output. A key only one side records is a difference,
+since an unset knob is dropped from a header rather than written as a null: `--max-fragments`
+dropped from a rebuild is as much a change as one given a new value. Equivalence across releases
+is the one thing it cannot claim; `generator.commit` is recorded beside the settings for a reader
+who needs that.
 
 ## Report progress
 

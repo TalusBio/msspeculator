@@ -12,15 +12,13 @@
 //! which also runs its validator; we are not the authority on whether this is a valid file.
 
 use std::collections::BTreeMap;
-use std::fs::File;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, Write};
 use std::path::Path;
 
-use anyhow::{Context, Result};
-use serde_json::Value;
+use anyhow::Result;
 
 use crate::library::{LibrarySink, SpectrumRow};
-use crate::provenance::LibraryProvenance;
+use crate::provenance::{flatten, LibraryProvenance};
 
 /// The format version of the grammar emitted here, not of our library.
 const FORMAT_VERSION: &str = "1.0";
@@ -72,76 +70,40 @@ impl<W: Write> MzSpecLibSink<W> {
     }
 }
 
-/// Flatten the provenance into dotted `key -> value` pairs, dropping nulls.
+/// The provenance pairs a header carries, in the spelling [`header_attributes`] reads back.
 ///
-/// Objects recurse; anything else is a leaf. Arrays stay JSON text: `["C[UNIMOD:2057]", ...]`
-/// reads as what was passed on the command line, which is the point of recording it.
-fn provenance_attributes(config: &Value) -> Vec<(String, String)> {
-    fn walk(prefix: &str, value: &Value, out: &mut Vec<(String, String)>) {
-        match value {
-            Value::Object(fields) => {
-                for (key, value) in fields {
-                    let key = if prefix.is_empty() {
-                        key.clone()
-                    } else {
-                        format!("{prefix}.{key}")
-                    };
-                    walk(&key, value, out);
-                }
-            }
-            // A knob that was not set says nothing a reader can use, and the sidecar keeps the
-            // explicit null for anyone who wants to see that it was considered.
-            Value::Null => {}
-            Value::String(text) => out.push((prefix.to_string(), text.clone())),
-            leaf => out.push((prefix.to_string(), leaf.to_string())),
-        }
-    }
-    let mut out = Vec::new();
-    walk("", config, &mut out);
-    out.retain(|(key, _)| key != VERSION_KEY);
-    out
-}
-
-/// The provenance as a header carries it: dotted keys with the `msspeculator:` prefix stripped,
-/// nulls dropped, `generator.version` dropped.
-///
-/// Keyed rather than ordered, because the only thing that reads this is a comparison against
-/// what some header actually says. The order attributes are written in stays [`MzSpecLibSink`]'s
-/// business, and is not the sort order of these keys.
+/// `generator.version` drops out because the header spells it as `MS:1003200|software version`
+/// rather than as one of the generic pairs.
 pub(crate) fn attributes(provenance: &LibraryProvenance) -> BTreeMap<String, String> {
-    attributes_from_json(&provenance.to_json())
+    let mut pairs = flatten(&provenance.to_json());
+    pairs.remove(VERSION_KEY);
+    pairs
 }
 
-/// The same, from a provenance document that was read back rather than resolved — the sidecar.
+/// The `msspeculator:` pairs a library's header carries, keyed the way [`attributes`] spells them.
 ///
-/// In the header's spelling, deliberately: a library's two copies of its provenance are the same
-/// provenance, so whichever one a reader finds has to compare the same way. The sidecar keeps
-/// nulls and the software version that the header spells as `MS:1003200`, and both drop out here.
-pub(crate) fn attributes_from_json(config: &Value) -> BTreeMap<String, String> {
-    provenance_attributes(config).into_iter().collect()
-}
-
-/// The provenance pairs a library's header carries, keyed the way [`attributes`] spells them.
-///
-/// One pass, stopping at the first `<Spectrum>`: a library is one of those per precursor and
-/// there can be tens of millions of them, so the whole check costs the header. Pairs are
+/// One pass, stopping at the end of the header: a library carries one `<Spectrum>` per precursor
+/// and there can be tens of millions of them, so the whole read costs the header. Pairs are
 /// collected by attribute group, since the name and the value are two lines that nothing but the
 /// group id relates, and only `msspeculator:` keys are kept — the same syntax carries any other
 /// writer's attributes, and those are not ours to interpret.
 ///
 /// An empty map means the header carried none of ours. That is every library another tool wrote,
-/// and every library of ours in a format with no header to put them in.
-pub(crate) fn header_attributes(reader: impl BufRead) -> Result<BTreeMap<String, String>> {
-    let mut lines = reader.lines();
-    match lines.next().transpose()? {
-        Some(first) if first.trim_end() == MAGIC => {}
-        _ => return Ok(BTreeMap::new()),
+/// and every library of ours in a format with no header to put them in. A line that is not valid
+/// UTF-8 is one of those too: a file we cannot read carries none of our attributes by definition,
+/// and refusing to answer would be worse than answering "nothing here".
+pub(crate) fn header_attributes(reader: impl BufRead) -> BTreeMap<String, String> {
+    let mut lines = utf8_lines(reader);
+    if lines.next().as_deref().map(str::trim_end) != Some(MAGIC) {
+        return BTreeMap::new();
     }
     let mut names = BTreeMap::new();
     let mut values = BTreeMap::new();
     for line in lines {
-        let line = line?;
-        if line.starts_with("<Spectrum") {
+        // Every section after the header opens with `<`, so this is where the header ends. Wider
+        // than `<Spectrum` on purpose: an attribute set may one day carry a grouped pair of ours
+        // — `spectrum` already writes one per decoy — and those are not provenance.
+        if line.starts_with('<') {
             break;
         }
         // Matched on the accession alone, unlike everything we write: a reader that insists on
@@ -159,13 +121,31 @@ pub(crate) fn header_attributes(reader: impl BufRead) -> Result<BTreeMap<String,
             _ => {}
         }
     }
-    Ok(names
+    names
         .into_iter()
         .filter_map(|(group, name)| {
             let key = name.strip_prefix(ATTRIBUTE_PREFIX)?;
             Some((key.to_string(), values.remove(&group)?))
         })
-        .collect())
+        .collect()
+}
+
+/// Lines a header could be written in, stopping at the first byte that says it was not.
+///
+/// An I/O failure or a non-UTF-8 line both end the iteration rather than raising: this reader
+/// answers "which of our attributes does this file carry", and every answer to that is a map.
+fn utf8_lines(mut reader: impl BufRead) -> impl Iterator<Item = String> {
+    std::iter::from_fn(move || {
+        let mut line = Vec::new();
+        match reader.read_until(b'\n', &mut line) {
+            Ok(0) | Err(_) => None,
+            Ok(_) => String::from_utf8(line).ok().map(|line| {
+                line.trim_end_matches('\n')
+                    .trim_end_matches('\r')
+                    .to_string()
+            }),
+        }
+    })
 }
 
 /// `[3]MS:1003276|other attribute value=4242` -> `("3", "MS:1003276|other attribute value", "4242")`.
@@ -175,17 +155,6 @@ fn attribute_line(line: &str) -> Option<(&str, &str, &str)> {
     let (group, rest) = line.strip_prefix('[')?.split_once(']')?;
     let (term, value) = rest.split_once('=')?;
     Some((group, term, value))
-}
-
-/// [`header_attributes`] for a library on disk, compressed or not.
-pub(crate) fn read_header_attributes(path: &Path) -> Result<BTreeMap<String, String>> {
-    let file = File::open(path).with_context(|| format!("reading {}", path.display()))?;
-    let reader: Box<dyn BufRead> = if crate::library::is_compressed(path) {
-        Box::new(BufReader::new(flate2::read::GzDecoder::new(file)))
-    } else {
-        Box::new(BufReader::new(file))
-    };
-    header_attributes(reader).with_context(|| format!("reading the header of {}", path.display()))
 }
 
 /// mzPAF annotation for one of our fragments, e.g. `y7` or `b2^2`.
@@ -202,19 +171,17 @@ fn annotation(ion: &str, ordinal: i64, charge: i64) -> String {
 
 impl<W: Write + Send> LibrarySink for MzSpecLibSink<W> {
     fn header(&mut self, provenance: &LibraryProvenance) -> Result<()> {
-        let config = provenance.to_json();
-        writeln!(self.writer, "<mzSpecLib>")?;
+        writeln!(self.writer, "{MAGIC}")?;
         writeln!(
             self.writer,
             "MS:1003186|library format version={FORMAT_VERSION}"
         )?;
         writeln!(self.writer, "MS:1003188|library name={}", self.name)?;
-        if let Some(version) = config
-            .pointer("/generator/version")
-            .and_then(serde_json::Value::as_str)
-        {
-            writeln!(self.writer, "MS:1003200|software version={version}")?;
-        }
+        writeln!(
+            self.writer,
+            "MS:1003200|software version={}",
+            provenance.generator.version
+        )?;
         // `MS:1003207|library creation software` is deliberately absent: its value has to be a
         // child term of itself, and the vocabulary's children are Spectronaut, SpectraST,
         // BiblioSpec, PeakForest, DIA-NN and CompoundDb. Claiming one of those would be a lie
@@ -224,7 +191,7 @@ impl<W: Write + Send> LibrarySink for MzSpecLibSink<W> {
         // the provenance rides as name/value pairs; the grammar's own escape hatch
         // for an attribute the vocabulary has no term for. One group per key: the pair is the
         // attribute, which is why both lines carry the same group id.
-        for (group, (key, value)) in provenance_attributes(&config).into_iter().enumerate() {
+        for (group, (key, value)) in attributes(provenance).into_iter().enumerate() {
             let group = group + 1;
             writeln!(self.writer, "[{group}]{NAME_TERM}={ATTRIBUTE_PREFIX}{key}")?;
             writeln!(self.writer, "[{group}]{VALUE_TERM}={value}")?;
@@ -450,51 +417,54 @@ mod tests {
                 version: "0.1.0",
                 commit: "abc123",
             },
-            inputs: Inputs {
-                model: "m.safetensors".into(),
-                model_blake2b_256: "0".repeat(64),
-                fasta: "proteome.fasta".into(),
-                fasta_blake2b_256: "1".repeat(64),
-            },
-            digestion: Digestion {
-                enzyme: "trypsin",
-                missed_cleavages: 2,
-                min_length: 7,
-                max_length: 30,
-                min_charge: 2,
-                max_charge: 4,
-            },
-            modifications: Modifications {
-                fixed: Vec::new(),
-                variable: vec!["M[UNIMOD:35]".into()],
-                max_variable_mods: 1,
-            },
-            context: Contexts {
-                ms: None,
-                chrom: None,
+            settings: Settings {
+                inputs: Inputs {
+                    model: "m.safetensors".into(),
+                    model_blake2b_256: "0".repeat(64),
+                    activation_override: None,
+                    fasta: "proteome.fasta".into(),
+                    fasta_blake2b_256: "1".repeat(64),
+                },
+                digestion: Digestion {
+                    enzyme: "trypsin",
+                    missed_cleavages: 2,
+                    min_length: 7,
+                    max_length: 30,
+                    min_charge: 2,
+                    max_charge: 4,
+                },
+                modifications: Modifications {
+                    fixed: Vec::new(),
+                    variable: vec!["M[UNIMOD:35]".into()],
+                    max_variable_mods: 1,
+                },
+                context: Contexts {
+                    ms: None,
+                    chrom: None,
+                },
+                fragments: FragmentPolicy {
+                    min_intensity: 0.01,
+                    max_fragments: Some(15),
+                },
+                decoys: DecoyPolicy {
+                    enabled: false,
+                    method: "pseudo-reverse",
+                    protein_prefix: "DECOY_",
+                    collision_policy: "skip",
+                },
             },
             retention: Retention {
                 normalized: NormalizedRetention {
                     term: "MS:1000896|normalized retention time",
                     kind: "dimensionless index, minutes-like",
                     scale: "anchored",
-                    anchor_check: Some(AnchorCheck {
+                    anchor_check: AnchorCheck {
                         on_scale: true,
                         max_abs_error: 0.5,
                         anchors: Vec::new(),
-                    }),
+                    },
                 },
                 raw: None,
-            },
-            fragments: FragmentPolicy {
-                min_intensity: 0.01,
-                max_fragments: Some(15),
-            },
-            decoys: DecoyPolicy {
-                enabled: false,
-                method: "pseudo-reverse",
-                protein_prefix: "DECOY_",
-                collision_policy: "skip",
             },
             output: None,
         }
@@ -529,14 +499,14 @@ mod tests {
     fn every_attribute_written_reads_back() {
         let text = rendered(None);
         assert_eq!(
-            header_attributes(text.as_bytes()).unwrap(),
+            header_attributes(text.as_bytes()),
             attributes(&provenance()),
             "the header is the only copy of the provenance a reader gets"
         );
     }
 
     #[test]
-    fn reading_stops_at_the_first_spectrum() {
+    fn reading_stops_at_the_end_of_the_header() {
         let mut sink = MzSpecLibSink::new(Vec::new(), Path::new("lib.mzspeclib.txt"));
         sink.header(&provenance()).unwrap();
         sink.spectrum(&SpectrumRow {
@@ -548,18 +518,19 @@ mod tests {
         // Written with the same group syntax as the header's pairs, one per spectrum, and not
         // provenance. Reading it back would be reading the library.
         assert!(text.contains("decoy_pair_id"));
-        assert!(!header_attributes(text.as_bytes())
-            .unwrap()
-            .contains_key("decoy_pair_id"));
+        assert!(!header_attributes(text.as_bytes()).contains_key("decoy_pair_id"));
     }
 
     #[test]
-    fn a_file_that_is_not_mzspeclib_carries_no_attributes() {
-        assert!(
-            header_attributes(&b"PrecursorMz\tProductMz\n100.0\t200.0\n"[..])
-                .unwrap()
-                .is_empty()
-        );
+    fn nothing_we_cannot_read_carries_attributes() {
+        for bytes in [
+            &b"PrecursorMz\tProductMz\n100.0\t200.0\n"[..],
+            // Not UTF-8, so not a header we wrote — and not an error either.
+            &[0xffu8, 0xfe, 0x00, 0x41, 0x0a, 0xc3][..],
+            &b""[..],
+        ] {
+            assert!(header_attributes(bytes).is_empty(), "{bytes:?}");
+        }
     }
 
     #[test]
