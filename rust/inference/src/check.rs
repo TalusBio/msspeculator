@@ -26,7 +26,7 @@ const NOT_A_SETTING: [&str; 3] = ["generator", "output", "retention"];
 /// They sit in `inputs` beside the digests, but they are paths as they were typed.
 /// `../human.fasta` and `/data/human.fasta` are one file, and the digest beside each of them is
 /// the identity.
-const NOT_AN_IDENTITY: [&str; 2] = ["inputs.model", "inputs.fasta"];
+const NOT_AN_IDENTITY: [&str; 2] = ["inputs.model", "inputs.sequence.path"];
 
 /// Whether a library on disk was built the way a set of options describes.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -167,7 +167,17 @@ fn from_sidecar(path: &Path) -> Option<BTreeMap<String, String>> {
 /// build has never heard of, which arrives as a [`Difference`] with no expected side.
 ///
 /// `narrowing_the_document_leaves_exactly_the_settings` holds the two lists against the struct.
-fn comparable(pairs: BTreeMap<String, String>) -> BTreeMap<String, String> {
+fn comparable(mut pairs: BTreeMap<String, String>) -> BTreeMap<String, String> {
+    // Libraries written before `inputs.sequence` used two flat FASTA fields.
+    // Compare their digest and kind against the tagged representation so a
+    // provenance schema change alone does not trigger a rebuild warning.
+    if let Some(digest) = pairs.remove("inputs.fasta_blake2b_256") {
+        pairs.insert("inputs.sequence.kind".into(), "fasta".into());
+        pairs.insert("inputs.sequence.blake2b_256".into(), digest);
+    }
+    if let Some(path) = pairs.remove("inputs.fasta") {
+        pairs.insert("inputs.sequence.path".into(), path);
+    }
     pairs
         .into_iter()
         .filter(|(key, _)| {
@@ -290,6 +300,24 @@ mod tests {
         )
     }
 
+    #[test]
+    fn legacy_fasta_input_fields_compare_with_tagged_fasta_source() {
+        let fasta = Scratch::holding("legacy.fasta", ">P1\nPEPTIDEK\n");
+        let expected = Settings::resolve(&options(fasta.path()), BuiltinModel::SmallV0.digest())
+            .unwrap()
+            .attributes();
+        let mut legacy = expected.clone();
+        let path = legacy.remove("inputs.sequence.path").unwrap();
+        let digest = legacy.remove("inputs.sequence.blake2b_256").unwrap();
+        legacy.insert("inputs.fasta".into(), path);
+        legacy.insert("inputs.fasta_blake2b_256".into(), digest);
+        legacy.remove("inputs.sequence.kind");
+        assert_eq!(
+            compare(comparable(legacy), comparable(expected)),
+            LibraryCheck::Same
+        );
+    }
+
     /// The promise is "would the same library be generated", not "were the same arguments typed".
     /// So every option that changes what comes out has to change these attributes: a knob missing
     /// from [`Settings`] is a knob two libraries can differ by while comparing equal, which is the
@@ -409,7 +437,7 @@ mod tests {
             panic!("a library from another proteome is not the same library");
         };
         let keys: Vec<&str> = differences.iter().map(|d| d.key.as_str()).collect();
-        assert_eq!(keys, vec!["inputs.fasta_blake2b_256"]);
+        assert_eq!(keys, vec!["inputs.sequence.blake2b_256"]);
     }
 
     /// A knob set in one build and left alone in the other is dropped from one header and not the

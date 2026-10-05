@@ -214,7 +214,15 @@ fn shuffle_peptide(peptide: &Peptide, seed: u64) -> Peptide {
     Peptide::new(sequence, mods)
 }
 
-fn add_decoys(rows: &mut Vec<Row>, method: DecoyMethod, seed: u64) {
+fn add_decoys(rows: &mut Vec<Row>, method: DecoyMethod, seed: u64) -> Result<()> {
+    // A decoy must not have the identity of any target, even when that target
+    // was requested at another charge. Decoys remain charge-specific: the
+    // same generated peptidoform can serve a target's /2 and /3 entries.
+    let target_peptidoforms: HashSet<String> = rows
+        .iter()
+        .filter(|row| !row.decoy)
+        .map(|row| row.peptide.modified_sequence())
+        .collect();
     let mut occupied: HashSet<(String, i64)> = rows
         .iter()
         .map(|row| (row.peptide.modified_sequence(), row.charge))
@@ -229,6 +237,7 @@ fn add_decoys(rows: &mut Vec<Row>, method: DecoyMethod, seed: u64) {
         .iter()
         .filter(|row| !row.decoy && !supplied_groups.contains(&row.group))
     {
+        let mut found = false;
         for attempt in 0..32 {
             let candidate = match method {
                 DecoyMethod::PseudoReverse => pseudo_reverse_peptide(&row.peptide),
@@ -237,7 +246,8 @@ fn add_decoys(rows: &mut Vec<Row>, method: DecoyMethod, seed: u64) {
                     seed_for(seed, &row.peptide.sequence, row.charge, attempt),
                 ),
             };
-            if occupied.insert((candidate.modified_sequence(), row.charge)) {
+            let identity = candidate.modified_sequence();
+            if !target_peptidoforms.contains(&identity) && occupied.insert((identity, row.charge)) {
                 generated.push(Row {
                     peptide: candidate,
                     charge: row.charge,
@@ -247,14 +257,25 @@ fn add_decoys(rows: &mut Vec<Row>, method: DecoyMethod, seed: u64) {
                     group: row.group.clone(),
                     generated: true,
                 });
+                found = true;
                 break;
             }
             if method == DecoyMethod::PseudoReverse {
                 break;
             }
         }
+        if !found {
+            bail!(
+                "cannot generate a collision-free {} decoy for {}/{} with seed {}; choose another method or seed, or supply a decoy",
+                method.name(),
+                row.peptide.modified_sequence(),
+                row.charge,
+                seed,
+            );
+        }
     }
     rows.extend(generated);
+    Ok(())
 }
 
 /// Predict exactly the supplied modified peptidoforms and charges. TSV columns are
@@ -277,7 +298,7 @@ pub fn write_peptide_library(opts: &PeptideLibraryOptions<'_>) -> Result<Library
     let proteins = unique_proteins.len();
     let input_count = rows.len();
     if opts.generate_decoys {
-        add_decoys(&mut rows, opts.decoy_method, opts.decoy_seed);
+        add_decoys(&mut rows, opts.decoy_method, opts.decoy_seed)?;
     }
     let read_elapsed = started.elapsed();
     reporter.at(Phase::Digesting, 1, 1);
@@ -412,7 +433,7 @@ mod tests {
             "proforma\tprotein_ids\nPEC[UNIMOD:4]TIDEK/2\tP1\nPECTIDEK/2\tP1\n",
         );
         let mut rows = read_rows(input.path()).unwrap();
-        add_decoys(&mut rows, DecoyMethod::PseudoReverse, 42);
+        add_decoys(&mut rows, DecoyMethod::PseudoReverse, 42).unwrap();
         assert_eq!(rows.len(), 4);
         assert_ne!(
             rows[2].peptide.modified_sequence(),
@@ -429,6 +450,62 @@ mod tests {
             seed_for(42, &rows[0].peptide.sequence, 2, 0),
         );
         assert_eq!(a.modified_sequence(), b.modified_sequence());
+    }
+
+    #[test]
+    fn a_target_at_another_charge_blocks_a_generated_decoy() {
+        let input = Scratch::holding(
+            "colliding-targets.tsv",
+            "proforma\tprotein_ids\nPEPTIDEK/2\tP1\nPEDITPEK/3\tP2\n",
+        );
+        let mut rows = read_rows(input.path()).unwrap();
+        let err = add_decoys(&mut rows, DecoyMethod::PseudoReverse, 7).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("collision-free pseudo-reverse decoy"),
+            "{err}"
+        );
+        assert_eq!(
+            rows.len(),
+            2,
+            "failed generation must leave the input untouched"
+        );
+    }
+
+    #[test]
+    fn charge_states_of_one_target_each_get_a_decoy() {
+        let input = Scratch::holding(
+            "two-charges.tsv",
+            "proforma\tprotein_ids\nPEPTIDEK/2\tP1\nPEPTIDEK/3\tP1\n",
+        );
+        let mut rows = read_rows(input.path()).unwrap();
+        add_decoys(&mut rows, DecoyMethod::PseudoReverse, 7).unwrap();
+        assert_eq!(rows.len(), 4);
+        assert_eq!(
+            rows[2].peptide.modified_sequence(),
+            rows[3].peptide.modified_sequence()
+        );
+        assert_ne!(rows[2].charge, rows[3].charge);
+    }
+
+    #[test]
+    fn shuffle_retries_when_its_first_candidate_is_a_target_at_another_charge() {
+        let peptide = Peptide::parse("PEPTIDEK").unwrap();
+        let first = shuffle_peptide(&peptide, seed_for(7, &peptide.sequence, 2, 0));
+        let input = Scratch::holding(
+            "shuffle-collision.tsv",
+            &format!(
+                "proforma\tprotein_ids\nPEPTIDEK/2\tP1\n{}/3\tP2\n",
+                first.modified_sequence()
+            ),
+        );
+        let mut rows = read_rows(input.path()).unwrap();
+        add_decoys(&mut rows, DecoyMethod::Shuffle, 7).unwrap();
+        let decoy = rows
+            .iter()
+            .find(|row| row.decoy && row.charge == 2)
+            .unwrap();
+        assert_ne!(decoy.peptide.modified_sequence(), first.modified_sequence());
     }
 
     #[test]
@@ -465,9 +542,11 @@ mod tests {
         let config: serde_json::Value =
             serde_json::from_slice(&std::fs::read(sidecar.path()).unwrap()).unwrap();
         assert_eq!(
-            config["inputs"]["peptides"],
+            config["inputs"]["sequence"]["path"],
             input.path().display().to_string()
         );
+        assert_eq!(config["inputs"]["sequence"]["kind"], "peptides");
+        assert!(config.get("digestion").is_none());
         assert_eq!(config["decoys"]["seed"], 42);
     }
 }

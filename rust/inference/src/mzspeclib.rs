@@ -446,24 +446,24 @@ mod tests {
                     model: "m.safetensors".into(),
                     model_blake2b_256: "0".repeat(64),
                     activation_override: None,
-                    fasta: Some("proteome.fasta".into()),
-                    fasta_blake2b_256: Some("1".repeat(64)),
-                    peptides: None,
-                    peptides_blake2b_256: None,
+                    sequence: SequenceInput::Fasta {
+                        path: "proteome.fasta".into(),
+                        blake2b_256: "1".repeat(64),
+                    },
                 },
-                digestion: Digestion {
+                digestion: Some(Digestion {
                     enzyme: "trypsin",
                     missed_cleavages: 2,
                     min_length: 7,
                     max_length: 30,
                     min_charge: 2,
                     max_charge: 4,
-                },
-                modifications: Modifications {
+                }),
+                modifications: Some(Modifications {
                     fixed: Vec::new(),
                     variable: vec!["M[UNIMOD:35]".into()],
                     max_variable_mods: 1,
-                },
+                }),
                 context: Contexts {
                     ms: None,
                     chrom: None,
