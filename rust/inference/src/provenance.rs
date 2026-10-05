@@ -100,8 +100,14 @@ pub struct Inputs {
     /// libraries that differ only by this differ in every peak, which is why it is recorded and
     /// not left to the bench notebook it was added for.
     pub activation_override: Option<String>,
-    pub fasta: String,
-    pub fasta_blake2b_256: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fasta: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fasta_blake2b_256: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub peptides: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub peptides_blake2b_256: Option<String>,
 }
 
 #[derive(Clone, Debug, serde::Serialize)]
@@ -206,6 +212,8 @@ pub struct FragmentPolicy {
 pub struct DecoyPolicy {
     pub enabled: bool,
     pub method: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seed: Option<u64>,
     pub protein_prefix: &'static str,
     pub collision_policy: &'static str,
 }
@@ -306,8 +314,10 @@ impl Settings {
                 model: opts.model.spec(),
                 model_blake2b_256: model_digest.to_string(),
                 activation_override: opts.activation.map(str::to_string),
-                fasta: opts.fasta.display().to_string(),
-                fasta_blake2b_256: msspeculator_core::digest_file(opts.fasta)?,
+                fasta: Some(opts.fasta.display().to_string()),
+                fasta_blake2b_256: Some(msspeculator_core::digest_file(opts.fasta)?),
+                peptides: None,
+                peptides_blake2b_256: None,
             },
             digestion: Digestion {
                 enzyme: "trypsin",
@@ -348,6 +358,7 @@ impl Settings {
             decoys: DecoyPolicy {
                 enabled: opts.generate_decoys,
                 method: "pseudo-reverse",
+                seed: None,
                 protein_prefix: "DECOY_",
                 collision_policy: "skip_if_stripped_sequence_is_a_target",
             },
@@ -409,6 +420,43 @@ pub(crate) fn resolve_provenance(
         },
         output,
     })
+}
+
+pub(crate) fn resolve_peptide_provenance(
+    opts: &crate::peptide_library::PeptideLibraryOptions<'_>,
+    output: Option<Output>,
+    artifact: &Artifact,
+    model_digest: &str,
+) -> Result<LibraryProvenance> {
+    let empty: &[String] = &[];
+    let base = StreamOptions {
+        model: opts.model.clone(),
+        fasta: opts.peptides,
+        activation: None,
+        ms_context: None,
+        chrom_context: None,
+        min_intensity: opts.min_intensity,
+        missed_cleavages: 0,
+        min_length: 2,
+        max_length: 2,
+        min_charge: 1,
+        max_charge: 1,
+        fixed_mods: empty,
+        variable_mods: empty,
+        max_variable_mods: 0,
+        max_fragments: opts.max_fragments,
+        generate_decoys: opts.generate_decoys,
+        progress: None,
+    };
+    let mut provenance = resolve_provenance(&base, output, artifact, model_digest)?;
+    let inputs = &mut provenance.settings.inputs;
+    inputs.peptides = inputs.fasta.take();
+    inputs.peptides_blake2b_256 = inputs.fasta_blake2b_256.take();
+    provenance.settings.digestion.enzyme = "none";
+    provenance.settings.decoys.method = opts.decoy_method.name();
+    provenance.settings.decoys.seed = Some(opts.decoy_seed);
+    provenance.settings.decoys.collision_policy = "skip_if_stripped_sequence_is_a_target_or_decoy";
+    Ok(provenance)
 }
 
 /// Flatten a provenance document into dotted `key -> value` pairs, dropping nulls.
@@ -499,8 +547,10 @@ pub(crate) mod tests {
                     model: "builtin:small-v0".into(),
                     model_blake2b_256: "0".repeat(64),
                     activation_override: None,
-                    fasta: "proteome.fasta".into(),
-                    fasta_blake2b_256: "1".repeat(64),
+                    fasta: Some("proteome.fasta".into()),
+                    fasta_blake2b_256: Some("1".repeat(64)),
+                    peptides: None,
+                    peptides_blake2b_256: None,
                 },
                 digestion: Digestion {
                     enzyme: "trypsin",
@@ -531,6 +581,7 @@ pub(crate) mod tests {
                 decoys: DecoyPolicy {
                     enabled: true,
                     method: "pseudo-reverse",
+                    seed: None,
                     protein_prefix: "DECOY_",
                     collision_policy: "skip",
                 },
