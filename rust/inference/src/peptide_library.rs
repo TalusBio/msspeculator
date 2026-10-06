@@ -377,12 +377,16 @@ pub fn write_peptide_library(opts: &PeptideLibraryOptions<'_>) -> Result<Library
         peptides: input_count,
         ..LibraryStats::default()
     };
-    let mut by_charge: BTreeMap<i64, Vec<usize>> = BTreeMap::new();
+    // Grouped by (charge, length): the batch predictor takes one charge and one shared length.
+    let mut batches: BTreeMap<(i64, usize), Vec<usize>> = BTreeMap::new();
     for (index, row) in rows.iter().enumerate() {
-        by_charge.entry(row.charge).or_default().push(index);
+        batches
+            .entry((row.charge, row.peptide.sequence.len()))
+            .or_default()
+            .push(index);
     }
     let mut done = 0;
-    for (charge, indices) in by_charge {
+    for ((charge, _), indices) in batches {
         for chunk in indices.chunks(64) {
             let peptides: Vec<Peptide> = chunk
                 .iter()
@@ -630,5 +634,32 @@ mod tests {
         assert_eq!(config["inputs"]["sequence"]["kind"], "peptides");
         assert!(config.get("digestion").is_none());
         assert_eq!(config["decoys"]["seed"], 42);
+    }
+
+    #[test]
+    fn predicts_peptides_of_different_lengths_at_one_charge() {
+        let input = Scratch::holding(
+            "mixed-lengths.tsv",
+            "proforma\tprotein_ids\nPEPTIDK/2\tP1\nPEPTIDEK/2\tP2\n",
+        );
+        let out = Scratch::new("mixed-lengths.mzspeclib.txt");
+        let stats = write_peptide_library(&PeptideLibraryOptions {
+            model: ModelSource::Builtin(BuiltinModel::SmallV0),
+            peptides: input.path(),
+            out: out.path(),
+            config_out: None,
+            min_intensity: 0.01,
+            max_fragments: Some(4),
+            generate_decoys: false,
+            decoy_method: DecoyMethod::Shuffle,
+            decoy_seed: 42,
+            progress: None,
+            before_writing: None,
+        })
+        .unwrap();
+        assert_eq!(stats.precursors, 2);
+        let text = std::fs::read_to_string(out.path()).unwrap();
+        assert!(text.contains("PEPTIDK/2"));
+        assert!(text.contains("PEPTIDEK/2"));
     }
 }
