@@ -22,7 +22,7 @@ This installs the Python package and its Rust extension. A Rust toolchain with `
 The Rust CLI includes a small built-in model, so no checkpoint is needed for a first run:
 
 ```bash
-cargo run --release -p msspeculator-cli -- \
+cargo run --manifest-path rust/Cargo.toml --release -p msspeculator-cli -- \
   library --model builtin:small-v0 \
   --fasta proteome.fasta --out library.tsv
 ```
@@ -46,7 +46,7 @@ give it the same group and charge as its target. A group contains one target and
 so targets may be unpaired.
 
 ```bash
-cargo run --release -p msspeculator-cli -- \
+cargo run --manifest-path rust/Cargo.toml --release -p msspeculator-cli -- \
   library --model builtin:small-v0 \
   --peptides peptides.tsv --out library.mzspeclib.txt \
   --decoys --decoy-method pseudo-reverse --decoy-seed 42
@@ -63,14 +63,14 @@ Use an exported checkpoint instead:
 
 ```bash
 uv run msspeculator export-rust --model model.ckpt -o model.safetensors
-cargo run --release -p msspeculator-cli -- \
+cargo run --manifest-path rust/Cargo.toml --release -p msspeculator-cli -- \
   library --model model.safetensors \
   --fasta proteome.fasta --out library.tsv
 ```
 
 FASTA builds write DIA-NN TSV by default. Use a `.mzspeclib.txt` suffix for mzSpecLib text and add
 `.gz` to compress either format. The CLI also supports single-peptide JSON prediction. Run
-`cargo run -p msspeculator-cli -- --help` for all options.
+`cargo run --manifest-path rust/Cargo.toml -p msspeculator-cli -- --help` for all options.
 
 ## Checking a model
 
@@ -78,7 +78,7 @@ FASTA builds write DIA-NN TSV by default. Use a `.mzspeclib.txt` suffix for mzSp
 Python:
 
 ```bash
-cargo run --release -p msspeculator-cli -- run-doctor --model model.safetensors --out doctor
+cargo run --manifest-path rust/Cargo.toml --release -p msspeculator-cli -- run-doctor --model model.safetensors --out doctor
 ```
 
 Retention is scored against the Biognosys iRT standards (slope, intercept, R², MAE). Fragmentation
@@ -97,7 +97,7 @@ Training writes a `.ckpt`, which the Rust CLI cannot read. Export it to portable
 ```bash
 uv sync --locked --no-dev --extra torch-cpu
 uv run msspeculator export-rust --model model.ckpt -o model.safetensors
-cargo run --release -p msspeculator-cli -- \
+cargo run --manifest-path rust/Cargo.toml --release -p msspeculator-cli -- \
   library --model model.safetensors --fasta proteome.fasta --out library.tsv
 ```
 
