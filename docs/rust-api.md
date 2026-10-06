@@ -284,7 +284,7 @@ origin term.
 The `shuffle-and-reposition decoy spectrum` term is for rearranging peaks from an existing
 spectrum, which this predicted-decoy path does not do.
 For mzSpecLib output, each accepted target/decoy precursor pair shares a project-defined
-`msspeculator:decoy_pair_id` attribute: one ID per target peptidoform and charge, so a peptide's
+numeric `msspeculator:decoy_group` attribute: one ID per target peptidoform and charge, so a peptide's
 modified forms and charge states are separate pairs. Collision-skipped pairs retain the ID on the
 target only; IDs are absent when decoys are off.
 

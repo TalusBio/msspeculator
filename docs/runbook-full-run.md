@@ -85,7 +85,7 @@ cargo run -q --release -p msspeculator-cli -- \
 Add `--decoys` to include pseudo-reversed target-decoy entries. The generator preserves the first
 and last residues, skips sequence collisions with targets, and marks decoys in either output
 format.
-mzSpecLib entries also carry a shared `msspeculator:decoy_pair_id` on each target/decoy pair, one
+mzSpecLib entries also carry a shared numeric `msspeculator:decoy_group` on each target/decoy pair, one
 per target peptidoform and charge. A collision-skipped pair keeps the ID on its target only. DIA-NN
 has no column for that relationship.
 

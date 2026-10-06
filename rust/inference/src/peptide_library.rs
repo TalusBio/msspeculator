@@ -54,7 +54,7 @@ struct Row {
     proteins: Vec<String>,
     members: Vec<u32>,
     decoy: bool,
-    group: String,
+    group: usize,
     generated: bool,
 }
 
@@ -69,6 +69,8 @@ fn read_rows(path: &Path) -> Result<Vec<Row>> {
     let decoy_col = column("decoy");
     let group_col = column("decoy_group");
     let mut rows = Vec::new();
+    let mut ungrouped = Vec::new();
+    let mut max_declared_group = 0usize;
     for (offset, line) in lines.enumerate() {
         let line_no = offset + 2;
         let line = line.with_context(|| format!("reading peptide TSV line {line_no}"))?;
@@ -118,8 +120,17 @@ fn read_rows(path: &Path) -> Result<Vec<Row>> {
             bail!("peptide TSV line {line_no}: a supplied decoy needs decoy_group");
         }
         let group = declared_group
-            .map(str::to_owned)
-            .unwrap_or_else(|| notation.to_owned());
+            .map(|value| {
+                value.parse::<usize>().with_context(|| {
+                    format!("peptide TSV line {line_no}: decoy_group must be an integer")
+                })
+            })
+            .transpose()?;
+        if let Some(group) = group {
+            max_declared_group = max_declared_group.max(group);
+        } else {
+            ungrouped.push(rows.len());
+        }
         let members = (0..proteins.len()).map(|i| i as u32).collect();
         rows.push(Row {
             peptide,
@@ -127,19 +138,24 @@ fn read_rows(path: &Path) -> Result<Vec<Row>> {
             proteins,
             members,
             decoy,
-            group,
+            group: group.unwrap_or(0),
             generated: false,
         });
     }
     if rows.is_empty() {
         bail!("peptide TSV has no rows");
     }
+    for (offset, index) in ungrouped.into_iter().enumerate() {
+        rows[index].group = max_declared_group
+            .checked_add(offset + 1)
+            .context("no numeric decoy_group IDs remain for ungrouped targets")?;
+    }
     validate_groups(&rows)?;
     Ok(rows)
 }
 
 fn validate_groups(rows: &[Row]) -> Result<()> {
-    let mut groups: HashMap<&str, (usize, usize, i64)> = HashMap::new();
+    let mut groups: HashMap<usize, (usize, usize, i64)> = HashMap::new();
     let mut identities = HashSet::new();
     for row in rows {
         let identity = (row.peptide.modified_sequence(), row.charge);
@@ -150,7 +166,7 @@ fn validate_groups(rows: &[Row]) -> Result<()> {
                 row.charge
             );
         }
-        let entry = groups.entry(&row.group).or_insert((0, 0, row.charge));
+        let entry = groups.entry(row.group).or_insert((0, 0, row.charge));
         if entry.2 != row.charge {
             bail!("decoy_group {:?} mixes charge states", row.group);
         }
@@ -238,10 +254,10 @@ fn add_decoys(rows: &mut Vec<Row>, method: DecoyMethod, seed: u64) -> usize {
         .iter()
         .map(|row| (row.peptide.modified_sequence(), row.charge))
         .collect();
-    let supplied_groups: HashSet<String> = rows
+    let supplied_groups: HashSet<usize> = rows
         .iter()
         .filter(|row| row.decoy)
-        .map(|row| row.group.clone())
+        .map(|row| row.group)
         .collect();
     let mut generated = Vec::new();
     let mut skipped = 0;
@@ -270,7 +286,7 @@ fn add_decoys(rows: &mut Vec<Row>, method: DecoyMethod, seed: u64) -> usize {
                     proteins: row.proteins.clone(),
                     members: row.members.clone(),
                     decoy: true,
-                    group: row.group.clone(),
+                    group: row.group,
                     generated: true,
                 });
                 found = true;
@@ -389,8 +405,7 @@ pub fn write_peptide_library(opts: &PeptideLibraryOptions<'_>) -> Result<Library
                         proteins: protein_group,
                         peptide: &row.peptide,
                         decoy: row.decoy,
-                        decoy_pair_id: None,
-                        decoy_group: Some(&row.group),
+                        decoy_group: Some(row.group),
                     },
                     prediction,
                     opts.max_fragments,
@@ -425,10 +440,10 @@ mod tests {
         let input = Scratch::holding(
             "peptides.tsv",
             "proforma\tprotein_ids\tdecoy\tdecoy_group\n\
-             PEC[UNIMOD:4]TIDEK/2\tP1;P2\tfalse\tcam\n\
-             PECTIDEK/3\tP1\tfalse\tplain\n\
-             PEK[UNIMOD:259]TIDEK/2\tPRTC\tfalse\theavy\n\
-             PECTDIEK/3\tP1\ttrue\tplain\n",
+             PEC[UNIMOD:4]TIDEK/2\tP1;P2\tfalse\t7\n\
+             PECTIDEK/3\tP1\tfalse\t8\n\
+             PEK[UNIMOD:259]TIDEK/2\tPRTC\tfalse\t9\n\
+             PECTDIEK/3\tP1\ttrue\t8\n",
         );
         let rows = read_rows(input.path()).unwrap();
         assert_eq!(rows.len(), 4);
@@ -436,7 +451,7 @@ mod tests {
         assert_eq!(rows[1].charge, 3);
         assert_eq!(rows[2].peptide.modified_sequence(), "PEK[UNIMOD:259]TIDEK");
         assert!(rows[3].decoy);
-        assert_eq!(rows[3].group, "plain");
+        assert_eq!(rows[3].group, 8);
     }
 
     #[test]
@@ -446,6 +461,7 @@ mod tests {
             "proforma\tprotein_ids\nPEC[UNIMOD:4]TIDEK/2\tP1\nPECTIDEK/2\tP1\n",
         );
         let mut rows = read_rows(input.path()).unwrap();
+        assert_eq!((rows[0].group, rows[1].group), (1, 2));
         assert_eq!(add_decoys(&mut rows, DecoyMethod::PseudoReverse, 42), 0);
         assert_eq!(rows.len(), 4);
         assert_ne!(
@@ -463,6 +479,26 @@ mod tests {
             seed_for(42, &rows[0].peptide.sequence, 2, 0),
         );
         assert_eq!(a.modified_sequence(), b.modified_sequence());
+    }
+
+    #[test]
+    fn supplied_groups_must_be_numeric_and_automatic_groups_avoid_them() {
+        let invalid = Scratch::holding(
+            "invalid-groups.tsv",
+            "proforma\tprotein_ids\tdecoy_group\nPEPTIDEK/2\tP1\tpair-1\n",
+        );
+        assert!(read_rows(invalid.path())
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("integer"));
+
+        let input = Scratch::holding(
+            "mixed-groups.tsv",
+            "proforma\tprotein_ids\tdecoy_group\nPEPTIDEK/2\tP1\t42\nPECTIDEK/2\tP2\t\n",
+        );
+        let rows = read_rows(input.path()).unwrap();
+        assert_eq!((rows[0].group, rows[1].group), (42, 43));
     }
 
     #[test]
@@ -559,8 +595,8 @@ mod tests {
         let input = Scratch::holding(
             "input.tsv",
             "proforma\tprotein_ids\tdecoy\tdecoy_group\n\
-             PECTIDEK/2\tP1\tfalse\tpair-1\n\
-             PECTDIEK/2\tP1\ttrue\tpair-1\n",
+             PECTIDEK/2\tP1\tfalse\t314159\n\
+             PECTDIEK/2\tP1\ttrue\t314159\n",
         );
         let out = Scratch::new("output.mzspeclib.txt");
         let sidecar = Scratch::new("output.config.json");
@@ -584,7 +620,7 @@ mod tests {
         assert!(text.contains("PECTIDEK/2"));
         assert!(text.contains("PECTDIEK/2"));
         assert_eq!(text.matches("msspeculator:decoy_group").count(), 2);
-        assert_eq!(text.matches("other attribute value=pair-1").count(), 2);
+        assert_eq!(text.matches("other attribute value=314159").count(), 2);
         let config: serde_json::Value =
             serde_json::from_slice(&std::fs::read(sidecar.path()).unwrap()).unwrap();
         assert_eq!(

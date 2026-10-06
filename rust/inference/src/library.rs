@@ -201,12 +201,9 @@ pub struct SpectrumRow<'a> {
     pub proforma: &'a str,
     /// Whether this spectrum belongs to the generated decoy set.
     pub decoy: bool,
-    /// Stable ID for a target/decoy precursor pair: one ID per target peptidoform and charge. The
-    /// target keeps the ID when its decoy is collision-skipped; the ID is absent when decoys are
-    /// disabled.
-    pub decoy_pair_id: Option<usize>,
-    /// Caller supplied group label, shared by a target and its decoy.
-    pub decoy_group: Option<&'a str>,
+    /// Stable numeric competition group: one per target peptidoform and charge. The target keeps
+    /// its group when the decoy is collision-skipped; absent when decoys are disabled.
+    pub decoy_group: Option<usize>,
     pub charge: i64,
     pub precursor_mz: f64,
     /// Monoisotopic mass of the neutral peptidoform, which is what a library states about an
@@ -385,8 +382,8 @@ struct PendingPeptide {
     source: PeptideRef,
     peptide: Peptide,
     decoy: bool,
-    /// First ID of this peptidoform's pair block; see `PredictedPeptide::decoy_pair_id`.
-    decoy_pair_base: Option<usize>,
+    /// First group ID of this peptidoform's charge block; see `PredictedPeptide::decoy_group`.
+    decoy_group_base: Option<usize>,
 }
 
 struct PredictedPeptide {
@@ -396,18 +393,18 @@ struct PredictedPeptide {
     peptide: Peptide,
     predictions: Vec<Prediction>,
     decoy: bool,
-    /// First ID of this peptidoform's pair block; see `decoy_pair_id`.
-    decoy_pair_base: Option<usize>,
+    /// First group ID of this peptidoform's charge block; see `decoy_group`.
+    decoy_group_base: Option<usize>,
 }
 
 impl PredictedPeptide {
-    /// The pair ID for one of this peptidoform's charge states.
+    /// The competition group for one of this peptidoform's charge states.
     ///
     /// A pair is two precursors: a search scores `PEPTIDEK/2` against its own decoy, never
     /// against `PEPTIDEK/3`'s. Each peptidoform owns a block of consecutive IDs, one per
     /// requested charge, and a target and its decoy read the same block at the same offset.
-    fn decoy_pair_id(&self, charge_index: usize) -> Option<usize> {
-        self.decoy_pair_base.map(|base| base + charge_index)
+    fn decoy_group(&self, charge_index: usize) -> Option<usize> {
+        self.decoy_group_base.map(|base| base + charge_index)
     }
 
     fn stripped(&self) -> Residues<'_> {
@@ -432,8 +429,7 @@ fn spectrum_row<'a>(
             proteins: item.source.proteins(item.decoy),
             peptide: &item.peptide,
             decoy: item.decoy,
-            decoy_pair_id: item.decoy_pair_id(charge_index),
-            decoy_group: None,
+            decoy_group: item.decoy_group(charge_index),
         },
         prediction,
         max_fragments,
@@ -445,8 +441,7 @@ pub(crate) struct SpectrumIdentity<'a> {
     pub proteins: ProteinGroup<'a>,
     pub peptide: &'a Peptide,
     pub decoy: bool,
-    pub decoy_pair_id: Option<usize>,
-    pub decoy_group: Option<&'a str>,
+    pub decoy_group: Option<usize>,
 }
 
 pub(crate) fn make_spectrum_row<'a>(
@@ -540,7 +535,6 @@ pub(crate) fn make_spectrum_row<'a>(
         peptide: identity.peptide,
         proforma,
         decoy: identity.decoy,
-        decoy_pair_id: identity.decoy_pair_id,
         decoy_group: identity.decoy_group,
         charge,
         precursor_mz: prediction.precursor_mz,
@@ -563,7 +557,7 @@ fn predict_batch(
         .into_iter()
         .map(|item| {
             (
-                (item.source, item.decoy, item.decoy_pair_base),
+                (item.source, item.decoy, item.decoy_group_base),
                 item.peptide,
             )
         })
@@ -582,12 +576,12 @@ fn predict_batch(
         .zip(peptides)
         .zip(predictions)
         .map(
-            |(((source, decoy, decoy_pair_base), peptide), predictions)| PredictedPeptide {
+            |(((source, decoy, decoy_group_base), peptide), predictions)| PredictedPeptide {
                 source,
                 peptide,
                 predictions,
                 decoy,
-                decoy_pair_base,
+                decoy_group_base,
             },
         )
         .collect())
@@ -845,7 +839,7 @@ fn run_library(
     // instead of reporting the error it already has.
     drop(work_rx);
 
-    let mut next_decoy_pair_id = 1usize;
+    let mut next_decoy_group = 1usize;
     let mut pending: BTreeMap<usize, Vec<PendingPeptide>> = BTreeMap::new();
     let mut peptides_done = 0u64;
     // Set when the workers have gone, which only happens once the writer has failed. The producer
@@ -872,9 +866,9 @@ fn run_library(
             // A block per modified form, one ID per charge, since each precursor is its own
             // target/decoy pair. Assigned even when the decoy is skipped, so a target-only
             // collision group stays distinguishable from a library built without decoys.
-            let decoy_pair_base = opts.generate_decoys.then(|| {
-                let base = next_decoy_pair_id;
-                next_decoy_pair_id += charges.len();
+            let decoy_group_base = opts.generate_decoys.then(|| {
+                let base = next_decoy_group;
+                next_decoy_group += charges.len();
                 base
             });
             consumers_gone |= !queue_pending(
@@ -884,7 +878,7 @@ fn run_library(
                     source: source.clone(),
                     peptide: peptide.clone(),
                     decoy: false,
-                    decoy_pair_base,
+                    decoy_group_base,
                 },
             );
             if emit_decoy {
@@ -895,7 +889,7 @@ fn run_library(
                         source: source.clone(),
                         peptide: pseudo_reverse_peptide(&peptide),
                         decoy: true,
-                        decoy_pair_base,
+                        decoy_group_base,
                     },
                 );
             }
@@ -960,7 +954,7 @@ mod tests {
     #[derive(Default)]
     struct Collected {
         rows: Vec<(String, i64, usize)>,
-        /// Proforma, charge, decoy flag and pair ID, for the decoy tests.
+        /// Proforma, charge, decoy flag and group ID, for the decoy tests.
         pairs: Vec<(String, i64, bool, Option<usize>)>,
         proteins: Vec<String>,
         model: Option<String>,
@@ -989,7 +983,7 @@ mod tests {
                 row.proforma.to_string(),
                 row.charge,
                 row.decoy,
-                row.decoy_pair_id,
+                row.decoy_group,
             ));
             collected.proteins = row.proteins.iter().map(|id| id.to_string()).collect();
             Ok(())
@@ -1270,11 +1264,11 @@ mod tests {
         );
     }
 
-    /// A pair ID names one precursor pair, so a peptide's modified forms and charge states each
+    /// A group ID names one precursor pair, so a peptide's modified forms and charge states each
     /// get their own. The fixture is one peptide with an oxidizable methionine at two charges:
     /// four target precursors, four decoys, four pairs.
     #[test]
-    fn pair_ids_are_per_modified_form_and_charge() {
+    fn decoy_groups_are_per_modified_form_and_charge() {
         let fasta = tiny_fasta();
         let collected = Arc::new(Mutex::new(Collected::default()));
         let variable = vec!["M[UNIMOD:35]".to_string()];
@@ -1289,24 +1283,24 @@ mod tests {
         let pairs = collected.lock().unwrap().pairs.clone();
         assert_eq!(pairs.len(), 8, "{pairs:?}");
         let mut by_id: BTreeMap<usize, Vec<(String, i64, bool)>> = BTreeMap::new();
-        for (proforma, charge, decoy, pair_id) in pairs {
-            let pair_id = pair_id.expect("decoys are on, so every row carries a pair ID");
+        for (proforma, charge, decoy, group_id) in pairs {
+            let group_id = group_id.expect("decoys are on, so every row carries a group ID");
             by_id
-                .entry(pair_id)
+                .entry(group_id)
                 .or_default()
                 .push((proforma, charge, decoy));
         }
         assert_eq!(by_id.len(), 4, "{by_id:?}");
-        for (pair_id, mut members) in by_id {
+        for (group_id, mut members) in by_id {
             members.sort();
-            assert_eq!(members.len(), 2, "pair {pair_id}: {members:?}");
-            // One target and one decoy, at the same charge: what a pair ID is for.
-            assert_ne!(members[0].2, members[1].2, "pair {pair_id}: {members:?}");
-            assert_eq!(members[0].1, members[1].1, "pair {pair_id}: {members:?}");
+            assert_eq!(members.len(), 2, "group {group_id}: {members:?}");
+            // One target and one decoy compete at the same charge.
+            assert_ne!(members[0].2, members[1].2, "group {group_id}: {members:?}");
+            assert_eq!(members[0].1, members[1].1, "group {group_id}: {members:?}");
             assert_eq!(
                 members[0].0.contains("[UNIMOD:35]"),
                 members[1].0.contains("[UNIMOD:35]"),
-                "pair {pair_id} crosses modified forms: {members:?}"
+                "group {group_id} crosses modified forms: {members:?}"
             );
         }
     }
