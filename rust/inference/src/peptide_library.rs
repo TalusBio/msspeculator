@@ -214,7 +214,7 @@ fn shuffle_peptide(peptide: &Peptide, seed: u64) -> Peptide {
     Peptide::new(sequence, mods)
 }
 
-fn add_decoys(rows: &mut Vec<Row>, method: DecoyMethod, seed: u64) -> Result<()> {
+fn add_decoys(rows: &mut Vec<Row>, method: DecoyMethod, seed: u64) -> usize {
     // A decoy must not have the identity of any target, even when that target
     // was requested at another charge. Decoys remain charge-specific: the
     // same generated peptidoform can serve a target's /2 and /3 entries.
@@ -233,6 +233,7 @@ fn add_decoys(rows: &mut Vec<Row>, method: DecoyMethod, seed: u64) -> Result<()>
         .map(|row| row.group.clone())
         .collect();
     let mut generated = Vec::new();
+    let mut skipped = 0;
     for row in rows
         .iter()
         .filter(|row| !row.decoy && !supplied_groups.contains(&row.group))
@@ -265,17 +266,11 @@ fn add_decoys(rows: &mut Vec<Row>, method: DecoyMethod, seed: u64) -> Result<()>
             }
         }
         if !found {
-            bail!(
-                "cannot generate a collision-free {} decoy for {}/{} with seed {}; choose another method or seed, or supply a decoy",
-                method.name(),
-                row.peptide.modified_sequence(),
-                row.charge,
-                seed,
-            );
+            skipped += 1;
         }
     }
     rows.extend(generated);
-    Ok(())
+    skipped
 }
 
 /// Predict exactly the supplied modified peptidoforms and charges. TSV columns are
@@ -298,7 +293,13 @@ pub fn write_peptide_library(opts: &PeptideLibraryOptions<'_>) -> Result<Library
     let proteins = unique_proteins.len();
     let input_count = rows.len();
     if opts.generate_decoys {
-        add_decoys(&mut rows, opts.decoy_method, opts.decoy_seed)?;
+        let skipped = add_decoys(&mut rows, opts.decoy_method, opts.decoy_seed);
+        if skipped > 0 {
+            eprintln!(
+                "warning: skipped {skipped} generated decoys with no collision-free {} candidate; targets remain in the library",
+                opts.decoy_method.name()
+            );
+        }
     }
     let read_elapsed = started.elapsed();
     reporter.at(Phase::Digesting, 1, 1);
@@ -433,7 +434,7 @@ mod tests {
             "proforma\tprotein_ids\nPEC[UNIMOD:4]TIDEK/2\tP1\nPECTIDEK/2\tP1\n",
         );
         let mut rows = read_rows(input.path()).unwrap();
-        add_decoys(&mut rows, DecoyMethod::PseudoReverse, 42).unwrap();
+        assert_eq!(add_decoys(&mut rows, DecoyMethod::PseudoReverse, 42), 0);
         assert_eq!(rows.len(), 4);
         assert_ne!(
             rows[2].peptide.modified_sequence(),
@@ -459,17 +460,8 @@ mod tests {
             "proforma\tprotein_ids\nPEPTIDEK/2\tP1\nPEDITPEK/3\tP2\n",
         );
         let mut rows = read_rows(input.path()).unwrap();
-        let err = add_decoys(&mut rows, DecoyMethod::PseudoReverse, 7).unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("collision-free pseudo-reverse decoy"),
-            "{err}"
-        );
-        assert_eq!(
-            rows.len(),
-            2,
-            "failed generation must leave the input untouched"
-        );
+        assert_eq!(add_decoys(&mut rows, DecoyMethod::PseudoReverse, 7), 2);
+        assert_eq!(rows.len(), 2, "colliding targets stay in the library");
     }
 
     #[test]
@@ -479,7 +471,7 @@ mod tests {
             "proforma\tprotein_ids\nPEPTIDEK/2\tP1\nPEPTIDEK/3\tP1\n",
         );
         let mut rows = read_rows(input.path()).unwrap();
-        add_decoys(&mut rows, DecoyMethod::PseudoReverse, 7).unwrap();
+        assert_eq!(add_decoys(&mut rows, DecoyMethod::PseudoReverse, 7), 0);
         assert_eq!(rows.len(), 4);
         assert_eq!(
             rows[2].peptide.modified_sequence(),
@@ -500,7 +492,7 @@ mod tests {
             ),
         );
         let mut rows = read_rows(input.path()).unwrap();
-        add_decoys(&mut rows, DecoyMethod::Shuffle, 7).unwrap();
+        assert_eq!(add_decoys(&mut rows, DecoyMethod::Shuffle, 7), 0);
         let decoy = rows
             .iter()
             .find(|row| row.decoy && row.charge == 2)

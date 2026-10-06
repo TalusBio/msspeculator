@@ -471,7 +471,7 @@ pub(crate) fn resolve_peptide_provenance(
             method: opts.decoy_method.name(),
             seed: Some(opts.decoy_seed),
             protein_prefix: "DECOY_",
-            collision_policy: "retry_shuffle_or_error_on_peptidoform_collision",
+            collision_policy: "retry_shuffle_or_skip_on_peptidoform_collision",
         },
     };
     assemble_provenance(settings, output, artifact, None)
