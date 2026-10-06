@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use clap::{Parser, Subcommand};
 use msspeculator_core::{builtin, fit, predict, speclib, ModelSource, MsContext, Prediction};
 use serde_json::json;
@@ -11,7 +11,8 @@ use serde_json::json;
 mod diagnostics;
 mod progress;
 use msspeculator_inference::{
-    check_against, library, sidecar_path, LibraryCheck, LibraryProvenance, Settings,
+    check_against, library, sidecar_path, write_peptide_library, DecoyMethod, LibraryCheck,
+    LibraryProvenance, PeptideLibraryOptions, Settings,
 };
 
 #[derive(Parser)]
@@ -28,7 +29,7 @@ struct Cli {
 enum Command {
     /// Predict one peptide and print one JSON object.
     Predict(PredictArgs),
-    /// Digest a FASTA and write a DIA-NN TSV spectral library.
+    /// Build a spectral library from a FASTA or charged peptide TSV.
     Library(LibraryArgs),
     /// Run a built-in model health panel and write diagnostic artifacts.
     RunDoctor(DoctorArgs),
@@ -179,38 +180,57 @@ struct PredictArgs {
     min_intensity: f64,
 }
 
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum CliDecoyMethod {
+    PseudoReverse,
+    Shuffle,
+}
+
+impl From<CliDecoyMethod> for DecoyMethod {
+    fn from(value: CliDecoyMethod) -> Self {
+        match value {
+            CliDecoyMethod::PseudoReverse => Self::PseudoReverse,
+            CliDecoyMethod::Shuffle => Self::Shuffle,
+        }
+    }
+}
+
 #[derive(clap::Args)]
+#[command(group(clap::ArgGroup::new("sequence_source").required(true).args(["fasta", "peptides"])))]
 struct LibraryArgs {
     #[command(flatten)]
     artifact: ArtifactArgs,
     /// FASTA to digest.
     #[arg(long)]
-    fasta: PathBuf,
-    /// Output path. The suffix picks the format: `.mzspeclib.txt` writes mzSpecLib, which carries
-    /// its own provenance, and anything else writes DIA-NN TSV. A trailing `.gz` compresses either.
+    fasta: Option<PathBuf>,
+    /// TSV with charged ProForma and protein IDs. Requires mzSpecLib output.
+    #[arg(long)]
+    peptides: Option<PathBuf>,
+    /// Output path. Peptide TSV input requires `.mzspeclib.txt` or `.mzspeclib` (optionally `.gz`).
+    /// FASTA input also supports DIA-NN TSV for other suffixes.
     #[arg(long)]
     out: PathBuf,
-    #[arg(long, default_value_t = 2)]
+    #[arg(long, default_value_t = 2, conflicts_with = "peptides")]
     missed_cleavages: usize,
-    #[arg(long, default_value_t = 7)]
+    #[arg(long, default_value_t = 7, conflicts_with = "peptides")]
     min_length: usize,
-    #[arg(long, default_value_t = 30)]
+    #[arg(long, default_value_t = 30, conflicts_with = "peptides")]
     max_length: usize,
-    #[arg(long, default_value_t = 2)]
+    #[arg(long, default_value_t = 2, conflicts_with = "peptides")]
     min_charge: i64,
-    #[arg(long, default_value_t = 4)]
+    #[arg(long, default_value_t = 4, conflicts_with = "peptides")]
     max_charge: i64,
     /// Fixed modification rule. Repeat to add rules; defaults to `C[UNIMOD:4]`.
-    #[arg(long, value_name = "TARGETS[MOD]", action = clap::ArgAction::Append)]
+    #[arg(long, value_name = "TARGETS[MOD]", action = clap::ArgAction::Append, conflicts_with = "peptides")]
     fixed_mod: Vec<String>,
     /// Disable the default fixed `C[UNIMOD:4]` rule.
-    #[arg(long, conflicts_with = "fixed_mod")]
+    #[arg(long, conflicts_with_all = ["fixed_mod", "peptides"])]
     no_fixed_mods: bool,
     /// Variable modification rule. Repeat to add rules; defaults to `M[UNIMOD:35]`.
-    #[arg(long, value_name = "TARGETS[MOD]", action = clap::ArgAction::Append)]
+    #[arg(long, value_name = "TARGETS[MOD]", action = clap::ArgAction::Append, conflicts_with = "peptides")]
     variable_mod: Vec<String>,
     /// Maximum total number of variable modification placements per peptide.
-    #[arg(long, default_value_t = 1)]
+    #[arg(long, default_value_t = 1, conflicts_with = "peptides")]
     max_variable_mods: usize,
     #[command(flatten)]
     context: ContextArgs,
@@ -227,9 +247,15 @@ struct LibraryArgs {
     /// Skip the resolved-configuration sidecar.
     #[arg(long)]
     no_config_out: bool,
-    /// Add pseudo-reversed decoy precursors. Decoys colliding with target sequences are skipped.
+    /// Generate decoys. FASTA uses pseudo-reverse; peptide TSV uses --decoy-method.
     #[arg(long)]
     decoys: bool,
+    /// Decoy method for peptide TSV builds.
+    #[arg(long, value_enum, requires = "peptides")]
+    decoy_method: Option<CliDecoyMethod>,
+    /// Seed for shuffled peptide TSV decoys.
+    #[arg(long, requires = "peptides")]
+    decoy_seed: Option<u64>,
     /// Suppress the progress line. It already goes quiet when stderr is not a terminal, so this
     /// is for a log that should carry only the summary.
     #[arg(long)]
@@ -449,55 +475,85 @@ fn report_overwrite(path: &Path, sidecar: Option<&Path>, expected: &Settings) {
 }
 
 fn run_library(args: LibraryArgs) -> Result<()> {
-    let ms_context = args.context.ms_context();
-    let default_fixed = ["C[UNIMOD:4]".to_string()];
-    let default_variable = ["M[UNIMOD:35]".to_string()];
-    let fixed_mods: &[String] = if args.no_fixed_mods {
-        &[]
-    } else if args.fixed_mod.is_empty() {
-        &default_fixed
-    } else {
-        &args.fixed_mod
-    };
-    let variable_mods: &[String] = if args.variable_mod.is_empty() {
-        &default_variable
-    } else {
-        &args.variable_mod
-    };
     let config_out = args.sidecar_path();
     let line = progress::ProgressLine::for_stderr(!args.no_progress);
     let report = |progress| line.update(progress);
-    let stream = library::StreamOptions {
-        model: ModelSource::from_spec(&args.artifact.model)?,
-        fasta: &args.fasta,
-        activation: args.artifact.activation.as_deref(),
-        ms_context: ms_context.as_ref(),
-        chrom_context: args.context.chrom_context.as_deref(),
-        min_intensity: args.min_intensity,
-        missed_cleavages: args.missed_cleavages,
-        min_length: args.min_length,
-        max_length: args.max_length,
-        min_charge: args.min_charge,
-        max_charge: args.max_charge,
-        fixed_mods,
-        variable_mods,
-        max_variable_mods: args.max_variable_mods,
-        max_fragments: args.max_fragments,
-        generate_decoys: args.decoys,
-        progress: Some(&report),
-    };
     // Runs inside the build, at the moment everything has been resolved and nothing has been
     // truncated. That is the only point where the settings about to be written and the file about
     // to be replaced both exist.
     let overwrite = |provenance: &LibraryProvenance| {
         report_overwrite(&args.out, config_out.as_deref(), &provenance.settings);
     };
-    let stats = library::write_library(&library::LibraryOptions {
-        out: &args.out,
-        config_out: config_out.as_deref(),
-        stream,
-        before_writing: Some(&overwrite),
-    })?;
+    let model = ModelSource::from_spec(&args.artifact.model)?;
+    let stats = if let Some(peptides) = &args.peptides {
+        if args.artifact.activation.is_some()
+            || args.context.ms_context.is_some()
+            || args.context.nce.is_some()
+            || args.context.chrom_context.is_some()
+        {
+            bail!("peptide TSV builds do not support activation or acquisition context overrides");
+        }
+        write_peptide_library(&PeptideLibraryOptions {
+            model,
+            peptides,
+            out: &args.out,
+            config_out: config_out.as_deref(),
+            min_intensity: args.min_intensity,
+            max_fragments: args.max_fragments,
+            generate_decoys: args.decoys,
+            decoy_method: args
+                .decoy_method
+                .unwrap_or(CliDecoyMethod::PseudoReverse)
+                .into(),
+            decoy_seed: args.decoy_seed.unwrap_or(42),
+            progress: Some(&report),
+            before_writing: Some(&overwrite),
+        })?
+    } else {
+        let ms_context = args.context.ms_context();
+        let default_fixed = ["C[UNIMOD:4]".to_string()];
+        let default_variable = ["M[UNIMOD:35]".to_string()];
+        let fixed_mods: &[String] = if args.no_fixed_mods {
+            &[]
+        } else if args.fixed_mod.is_empty() {
+            &default_fixed
+        } else {
+            &args.fixed_mod
+        };
+        let variable_mods: &[String] = if args.variable_mod.is_empty() {
+            &default_variable
+        } else {
+            &args.variable_mod
+        };
+        let stream = library::StreamOptions {
+            model,
+            fasta: args
+                .fasta
+                .as_deref()
+                .expect("clap requires a sequence source"),
+            activation: args.artifact.activation.as_deref(),
+            ms_context: ms_context.as_ref(),
+            chrom_context: args.context.chrom_context.as_deref(),
+            min_intensity: args.min_intensity,
+            missed_cleavages: args.missed_cleavages,
+            min_length: args.min_length,
+            max_length: args.max_length,
+            min_charge: args.min_charge,
+            max_charge: args.max_charge,
+            fixed_mods,
+            variable_mods,
+            max_variable_mods: args.max_variable_mods,
+            max_fragments: args.max_fragments,
+            generate_decoys: args.decoys,
+            progress: Some(&report),
+        };
+        library::write_library(&library::LibraryOptions {
+            out: &args.out,
+            config_out: config_out.as_deref(),
+            stream,
+            before_writing: Some(&overwrite),
+        })?
+    };
     // No explicit wipe: `ProgressLine`'s `Drop` restores the terminal on the error path too,
     // which is the path that has it drawn.
     drop(line);
@@ -560,6 +616,48 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn library_accepts_one_sequence_source_and_peptide_decoy_options() {
+        let parsed = Cli::try_parse_from([
+            "msspeculator-cli",
+            "library",
+            "--peptides",
+            "peptides.tsv",
+            "--out",
+            "library.mzspeclib.txt",
+            "--decoys",
+            "--decoy-method",
+            "shuffle",
+            "--decoy-seed",
+            "7",
+        ])
+        .unwrap();
+        let Command::Library(args) = parsed.command else {
+            panic!("expected library command");
+        };
+        assert_eq!(args.peptides.as_deref(), Some(Path::new("peptides.tsv")));
+        assert!(matches!(args.decoy_method, Some(CliDecoyMethod::Shuffle)));
+        assert_eq!(args.decoy_seed, Some(7));
+
+        for extra in ["--fasta", "--min-length"] {
+            let mut argv = vec![
+                "msspeculator-cli",
+                "library",
+                "--peptides",
+                "peptides.tsv",
+                "--out",
+                "library.mzspeclib.txt",
+                extra,
+            ];
+            argv.push(if extra == "--fasta" {
+                "proteome.fasta"
+            } else {
+                "7"
+            });
+            assert!(Cli::try_parse_from(argv).is_err());
+        }
+    }
 
     #[test]
     fn ms_context_reads_a_bare_name_as_a_setup_and_four_parts_as_factors() {

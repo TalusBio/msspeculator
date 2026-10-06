@@ -30,6 +30,35 @@ cargo run --release -p msspeculator-cli -- \
 Add `--decoys` for pseudo-reversed target-decoy entries. The CLI skips a decoy when its stripped
 sequence collides with a target sequence.
 
+To predict an explicit list, pass a tab-separated file with `proforma` and `protein_ids` columns:
+
+```tsv
+proforma	protein_ids
+PEC[UNIMOD:4]TIDEK/2	P1;P2
+PECTIDEK/2	P1
+PEK[UNIMOD:259]TIDEK/3	PRTC
+```
+
+Each `proforma` value includes the modification and charge to predict. The builder preserves both
+in the library, so modified, unmodified, and heavy peptides can coexist. Protein IDs are separated
+by semicolons. To supply a decoy, add `decoy` and `decoy_group` columns; mark the decoy `true` and
+give it the same group and charge as its target. A group contains one target and at most one decoy,
+so targets may be unpaired.
+
+```bash
+cargo run --release -p msspeculator-cli -- \
+  library --model builtin:small-v0 \
+  --peptides peptides.tsv --out library.mzspeclib.txt \
+  --decoys --decoy-method pseudo-reverse --decoy-seed 42
+```
+
+Peptide TSV output must be mzSpecLib so decoy groups survive. `--decoys` generates decoys for
+targets without supplied decoys; omit it to keep only the supplied rows. Use
+`--decoy-method shuffle` for seeded shuffling. Pseudo-reverse tries successively shorter interior
+spans if a candidate matches a target; shuffle retries with the chosen seed. If no candidate is
+distinct, the builder warns and keeps the target unpaired. The builder assigns generated decoy flags
+and groups.
+
 Use an exported checkpoint instead:
 
 ```bash
@@ -39,7 +68,7 @@ cargo run --release -p msspeculator-cli -- \
   --fasta proteome.fasta --out library.tsv
 ```
 
-The output is DIA-NN TSV by default. Use a `.mzspeclib.txt` suffix for mzSpecLib text and add
+FASTA builds write DIA-NN TSV by default. Use a `.mzspeclib.txt` suffix for mzSpecLib text and add
 `.gz` to compress either format. The CLI also supports single-peptide JSON prediction. Run
 `cargo run -p msspeculator-cli -- --help` for all options.
 

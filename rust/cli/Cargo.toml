@@ -2,7 +2,7 @@
 name = "msspeculator-cli"
 version = "0.1.0"
 edition = "2021"
-description = "msspeculator Rust inference: FASTA libraries and single-peptide prediction."
+description = "msspeculator Rust inference: FASTA and peptide libraries, single-peptide prediction."
 license.workspace = true
 
 [[bin]]

@@ -12,8 +12,7 @@ use msspeculator_core::{predict_peptide_batch_charges_prepared, ModelSource, Pre
 
 use crate::diann::DiannSink;
 use crate::library::{
-    make_spectrum_row, output_spelling, pseudo_reverse_peptide, LibraryFormat, LibrarySink,
-    LibraryStats, SpectrumIdentity,
+    make_spectrum_row, output_spelling, LibraryFormat, LibrarySink, LibraryStats, SpectrumIdentity,
 };
 use crate::mzspeclib::{check_representable, MzSpecLibSink};
 use crate::progress::{Phase, ProgressFn, Reporter};
@@ -192,6 +191,18 @@ fn shuffle_peptide(peptide: &Peptide, seed: u64) -> Peptide {
         let j = 1 + (state as usize % i);
         order.swap(i, j);
     }
+    reorder_peptide(peptide, &order)
+}
+
+fn reverse_interior(peptide: &Peptide, flank: usize) -> Peptide {
+    let length = peptide.sequence.len();
+    let mut order: Vec<usize> = (0..length).collect();
+    order[flank..length - flank].reverse();
+    reorder_peptide(peptide, &order)
+}
+
+fn reorder_peptide(peptide: &Peptide, order: &[usize]) -> Peptide {
+    let length = peptide.sequence.len();
     let bytes = peptide.sequence.as_bytes();
     let sequence: String = order.iter().map(|&index| bytes[index] as char).collect();
     let mut inverse = vec![0; length];
@@ -239,12 +250,16 @@ fn add_decoys(rows: &mut Vec<Row>, method: DecoyMethod, seed: u64) -> usize {
         .filter(|row| !row.decoy && !supplied_groups.contains(&row.group))
     {
         let mut found = false;
-        for attempt in 0..32 {
+        let attempts = match method {
+            DecoyMethod::PseudoReverse => row.peptide.sequence.len().saturating_sub(2) / 2,
+            DecoyMethod::Shuffle => 32,
+        };
+        for attempt in 0..attempts {
             let candidate = match method {
-                DecoyMethod::PseudoReverse => pseudo_reverse_peptide(&row.peptide),
+                DecoyMethod::PseudoReverse => reverse_interior(&row.peptide, attempt + 1),
                 DecoyMethod::Shuffle => shuffle_peptide(
                     &row.peptide,
-                    seed_for(seed, &row.peptide.sequence, row.charge, attempt),
+                    seed_for(seed, &row.peptide.sequence, row.charge, attempt as u64),
                 ),
             };
             let identity = candidate.modified_sequence();
@@ -259,9 +274,6 @@ fn add_decoys(rows: &mut Vec<Row>, method: DecoyMethod, seed: u64) -> usize {
                     generated: true,
                 });
                 found = true;
-                break;
-            }
-            if method == DecoyMethod::PseudoReverse {
                 break;
             }
         }
@@ -454,14 +466,56 @@ mod tests {
     }
 
     #[test]
-    fn a_target_at_another_charge_blocks_a_generated_decoy() {
+    fn pseudo_reverse_narrows_its_interior_and_carries_modifications() {
+        let peptide = Peptide::parse("PEPTIDEK").unwrap();
+        assert_eq!(
+            reverse_interior(&peptide, 1).modified_sequence(),
+            "PEDITPEK"
+        );
+        assert_eq!(
+            reverse_interior(&peptide, 2).modified_sequence(),
+            "PEDITPEK"
+        );
+        assert_eq!(
+            reverse_interior(&peptide, 3).modified_sequence(),
+            "PEPITDEK"
+        );
+
+        let modified = Peptide::parse("PEC[UNIMOD:4]TIDEK").unwrap();
+        assert_eq!(
+            reverse_interior(&modified, 1).modified_sequence(),
+            "PEDITC[UNIMOD:4]EK"
+        );
+        assert_eq!(
+            reverse_interior(&modified, 3).modified_sequence(),
+            "PEC[UNIMOD:4]ITDEK"
+        );
+    }
+
+    #[test]
+    fn a_target_at_another_charge_triggers_a_shorter_reversal() {
         let input = Scratch::holding(
             "colliding-targets.tsv",
             "proforma\tprotein_ids\nPEPTIDEK/2\tP1\nPEDITPEK/3\tP2\n",
         );
         let mut rows = read_rows(input.path()).unwrap();
-        assert_eq!(add_decoys(&mut rows, DecoyMethod::PseudoReverse, 7), 2);
-        assert_eq!(rows.len(), 2, "colliding targets stay in the library");
+        assert_eq!(add_decoys(&mut rows, DecoyMethod::PseudoReverse, 7), 0);
+        assert_eq!(rows.len(), 4);
+        let decoy = rows
+            .iter()
+            .find(|row| row.decoy && row.charge == 2)
+            .unwrap();
+        assert_eq!(decoy.peptide.modified_sequence(), "PEPITDEK");
+        assert_eq!(decoy.group, rows[0].group);
+    }
+
+    #[test]
+    fn a_target_can_remain_unpaired_when_every_reversal_collides() {
+        let input = Scratch::holding("palindrome.tsv", "proforma\tprotein_ids\nPEEEEEEK/2\tP1\n");
+        let mut rows = read_rows(input.path()).unwrap();
+        assert_eq!(add_decoys(&mut rows, DecoyMethod::PseudoReverse, 7), 1);
+        assert_eq!(rows.len(), 1);
+        assert!(!rows[0].decoy);
     }
 
     #[test]
