@@ -127,7 +127,7 @@ pub fn apply_activation_override(artifact: &mut Artifact, activation: Option<&st
 /// compression (`.gz`), and a format flag that can disagree with the extension is a defect
 /// waiting for a caller: `library.mzspeclib.txt` holding DIA-NN TSV is worse than no option.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum LibraryFormat {
+pub(crate) enum LibraryFormat {
     DiannTsv,
     MzSpecLib,
 }
@@ -147,7 +147,7 @@ impl LibraryFormat {
 /// `.gz` be detected two ways that disagreed on `--out .gz`. Read lossily rather than requiring
 /// UTF-8: the suffixes are ASCII, and lossy replacement only ever touches bytes above 0x7f, so a
 /// suffix match on the lossy form is correct for any path the OS will accept.
-fn output_spelling(path: &Path) -> (LibraryFormat, bool) {
+pub(crate) fn output_spelling(path: &Path) -> (LibraryFormat, bool) {
     let text = path.to_string_lossy();
     let compressed = text.ends_with(".gz");
     let stem = text.strip_suffix(".gz").unwrap_or(&text);
@@ -205,6 +205,8 @@ pub struct SpectrumRow<'a> {
     /// target keeps the ID when its decoy is collision-skipped; the ID is absent when decoys are
     /// disabled.
     pub decoy_pair_id: Option<usize>,
+    /// Caller supplied group label, shared by a target and its decoy.
+    pub decoy_group: Option<&'a str>,
     pub charge: i64,
     pub precursor_mz: f64,
     /// Monoisotopic mass of the neutral peptidoform, which is what a library states about an
@@ -283,7 +285,7 @@ fn target_overlap(a: &ModificationTarget, b: &ModificationTarget) -> bool {
 
 /// The decoy peptidoform: residues pseudo-reversed, and each residue modification carried to
 /// wherever its residue ended up. Terminal modifications stay terminal.
-fn pseudo_reverse_peptide(peptide: &Peptide) -> Peptide {
+pub(crate) fn pseudo_reverse_peptide(peptide: &Peptide) -> Peptide {
     let length = peptide.sequence.chars().count();
     let mods = peptide
         .mods
@@ -424,6 +426,34 @@ fn spectrum_row<'a>(
     charge_index: usize,
     max_fragments: Option<usize>,
 ) -> Result<SpectrumRow<'a>> {
+    make_spectrum_row(
+        SpectrumIdentity {
+            stripped: item.stripped(),
+            proteins: item.source.proteins(item.decoy),
+            peptide: &item.peptide,
+            decoy: item.decoy,
+            decoy_pair_id: item.decoy_pair_id(charge_index),
+            decoy_group: None,
+        },
+        prediction,
+        max_fragments,
+    )
+}
+
+pub(crate) struct SpectrumIdentity<'a> {
+    pub stripped: Residues<'a>,
+    pub proteins: ProteinGroup<'a>,
+    pub peptide: &'a Peptide,
+    pub decoy: bool,
+    pub decoy_pair_id: Option<usize>,
+    pub decoy_group: Option<&'a str>,
+}
+
+pub(crate) fn make_spectrum_row<'a>(
+    identity: SpectrumIdentity<'a>,
+    prediction: &'a Prediction,
+    max_fragments: Option<usize>,
+) -> Result<SpectrumRow<'a>> {
     // The identifier every refusal below names. ProForma rather than a format's own spelling, so
     // an error message does not speak DIA-NN at someone writing mzSpecLib.
     let proforma = prediction.peptide.as_str();
@@ -505,12 +535,13 @@ fn spectrum_row<'a>(
         });
     }
     Ok(SpectrumRow {
-        stripped: item.stripped(),
-        proteins: item.source.proteins(item.decoy),
-        peptide: &item.peptide,
+        stripped: identity.stripped,
+        proteins: identity.proteins,
+        peptide: identity.peptide,
         proforma,
-        decoy: item.decoy,
-        decoy_pair_id: item.decoy_pair_id(charge_index),
+        decoy: identity.decoy,
+        decoy_pair_id: identity.decoy_pair_id,
+        decoy_group: identity.decoy_group,
         charge,
         precursor_mz: prediction.precursor_mz,
         neutral_mass: (prediction.precursor_mz - msspeculator_core::chem::PROTON) * charge as f64,

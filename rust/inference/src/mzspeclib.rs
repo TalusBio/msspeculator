@@ -247,7 +247,16 @@ impl<W: Write + Send> LibrarySink for MzSpecLibSink<W> {
         if row.decoy {
             writeln!(self.writer, "MS:1003212|library attribute set name=Decoy")?;
         }
-        if let Some(pair_id) = row.decoy_pair_id {
+        if let Some(group) = row.decoy_group {
+            writeln!(
+                self.writer,
+                "[3]{NAME_ACCESSION}|other attribute name={ATTRIBUTE_PREFIX}decoy_group"
+            )?;
+            writeln!(
+                self.writer,
+                "[3]{VALUE_ACCESSION}|other attribute value={group}"
+            )?;
+        } else if let Some(pair_id) = row.decoy_pair_id {
             // No PSI-MS term identifies the target paired with a decoy. Keep the relationship as
             // a project-defined spectrum attribute; each spectrum has one analyte in this file.
             writeln!(
@@ -396,6 +405,7 @@ mod tests {
             proforma: "PEPTIDEK",
             decoy: false,
             decoy_pair_id: None,
+            decoy_group: None,
             charge: 2,
             precursor_mz: 456.75,
             neutral_mass: 911.48544707,
@@ -436,22 +446,24 @@ mod tests {
                     model: "m.safetensors".into(),
                     model_blake2b_256: "0".repeat(64),
                     activation_override: None,
-                    fasta: "proteome.fasta".into(),
-                    fasta_blake2b_256: "1".repeat(64),
+                    sequence: SequenceInput::Fasta {
+                        path: "proteome.fasta".into(),
+                        blake2b_256: "1".repeat(64),
+                    },
                 },
-                digestion: Digestion {
+                digestion: Some(Digestion {
                     enzyme: "trypsin",
                     missed_cleavages: 2,
                     min_length: 7,
                     max_length: 30,
                     min_charge: 2,
                     max_charge: 4,
-                },
-                modifications: Modifications {
+                }),
+                modifications: Some(Modifications {
                     fixed: Vec::new(),
                     variable: vec!["M[UNIMOD:35]".into()],
                     max_variable_mods: 1,
-                },
+                }),
                 context: Contexts {
                     ms: None,
                     chrom: None,
@@ -463,6 +475,7 @@ mod tests {
                 decoys: DecoyPolicy {
                     enabled: false,
                     method: "pseudo-reverse",
+                    seed: None,
                     protein_prefix: "DECOY_",
                     collision_policy: "skip",
                 },
@@ -525,6 +538,7 @@ mod tests {
         sink.header(&provenance()).unwrap();
         sink.spectrum(&SpectrumRow {
             decoy_pair_id: Some(4242),
+            decoy_group: None,
             ..row()
         })
         .unwrap();

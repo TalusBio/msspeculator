@@ -10,6 +10,7 @@ pub mod check;
 mod diann;
 pub mod library;
 pub mod mzspeclib;
+pub mod peptide_library;
 pub mod progress;
 mod proteome;
 pub mod provenance;
@@ -22,6 +23,7 @@ pub use library::{
 pub use msspeculator_core::{
     Artifact, BuiltinModel, ModelSource, MsContext, Prediction, PreparedContext,
 };
+pub use peptide_library::{write_peptide_library, DecoyMethod, PeptideLibraryOptions};
 pub use progress::{Exactness, Phase, Progress, ProgressFn};
 pub use proteome::{FastaId, ProteinGroup, Residues};
 pub use provenance::{sidecar_path, LibraryProvenance, Settings};

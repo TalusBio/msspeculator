@@ -69,8 +69,10 @@ pub struct LibraryProvenance {
 #[non_exhaustive]
 pub struct Settings {
     pub inputs: Inputs,
-    pub digestion: Digestion,
-    pub modifications: Modifications,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub digestion: Option<Digestion>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub modifications: Option<Modifications>,
     pub context: Contexts,
     pub fragments: FragmentPolicy,
     pub decoys: DecoyPolicy,
@@ -100,8 +102,16 @@ pub struct Inputs {
     /// libraries that differ only by this differ in every peak, which is why it is recorded and
     /// not left to the bench notebook it was added for.
     pub activation_override: Option<String>,
-    pub fasta: String,
-    pub fasta_blake2b_256: String,
+    pub sequence: SequenceInput,
+}
+
+/// One sequence source. The tag makes FASTA and peptide TSV mutually exclusive
+/// in the published provenance, and keeps their path and digest together.
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SequenceInput {
+    Fasta { path: String, blake2b_256: String },
+    Peptides { path: String, blake2b_256: String },
 }
 
 #[derive(Clone, Debug, serde::Serialize)]
@@ -206,6 +216,8 @@ pub struct FragmentPolicy {
 pub struct DecoyPolicy {
     pub enabled: bool,
     pub method: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seed: Option<u64>,
     pub protein_prefix: &'static str,
     pub collision_policy: &'static str,
 }
@@ -306,22 +318,24 @@ impl Settings {
                 model: opts.model.spec(),
                 model_blake2b_256: model_digest.to_string(),
                 activation_override: opts.activation.map(str::to_string),
-                fasta: opts.fasta.display().to_string(),
-                fasta_blake2b_256: msspeculator_core::digest_file(opts.fasta)?,
+                sequence: SequenceInput::Fasta {
+                    path: opts.fasta.display().to_string(),
+                    blake2b_256: msspeculator_core::digest_file(opts.fasta)?,
+                },
             },
-            digestion: Digestion {
+            digestion: Some(Digestion {
                 enzyme: "trypsin",
                 missed_cleavages: opts.missed_cleavages,
                 min_length: opts.min_length,
                 max_length: opts.max_length,
                 min_charge: opts.min_charge,
                 max_charge: opts.max_charge,
-            },
-            modifications: Modifications {
+            }),
+            modifications: Some(Modifications {
                 fixed: opts.fixed_mods.to_vec(),
                 variable: opts.variable_mods.to_vec(),
                 max_variable_mods: opts.max_variable_mods,
-            },
+            }),
             context: Contexts {
                 ms: opts.ms_context.map(|context| match context {
                     msspeculator_core::MsContext::Named(name) => MsContextProvenance::Named {
@@ -348,6 +362,7 @@ impl Settings {
             decoys: DecoyPolicy {
                 enabled: opts.generate_decoys,
                 method: "pseudo-reverse",
+                seed: None,
                 protein_prefix: "DECOY_",
                 collision_policy: "skip_if_stripped_sequence_is_a_target",
             },
@@ -374,6 +389,20 @@ pub(crate) fn resolve_provenance(
     artifact: &Artifact,
     model_digest: &str,
 ) -> Result<LibraryProvenance> {
+    assemble_provenance(
+        Settings::resolve(opts, model_digest)?,
+        output,
+        artifact,
+        opts.chrom_context,
+    )
+}
+
+fn assemble_provenance(
+    settings: Settings,
+    output: Option<Output>,
+    artifact: &Artifact,
+    chrom_context: Option<&str>,
+) -> Result<LibraryProvenance> {
     let anchors = msspeculator_core::landmarks::check_retention_scale(artifact)?;
     Ok(LibraryProvenance {
         generator: Generator {
@@ -381,7 +410,7 @@ pub(crate) fn resolve_provenance(
             version: env!("CARGO_PKG_VERSION"),
             commit: env!("MSSPECULATOR_GIT_COMMIT"),
         },
-        settings: Settings::resolve(opts, model_digest)?,
+        settings,
         retention: Retention {
             normalized: NormalizedRetention {
                 term: "MS:1000896|normalized retention time",
@@ -401,7 +430,7 @@ pub(crate) fn resolve_provenance(
                         .collect(),
                 },
             },
-            raw: opts.chrom_context.map(|name| RawRetention {
+            raw: chrom_context.map(|name| RawRetention {
                 term: "MS:1000894|retention time",
                 unit: "minute",
                 chrom_context: name.to_string(),
@@ -409,6 +438,43 @@ pub(crate) fn resolve_provenance(
         },
         output,
     })
+}
+
+pub(crate) fn resolve_peptide_provenance(
+    opts: &crate::peptide_library::PeptideLibraryOptions<'_>,
+    output: Option<Output>,
+    artifact: &Artifact,
+    model_digest: &str,
+) -> Result<LibraryProvenance> {
+    let settings = Settings {
+        inputs: Inputs {
+            model: opts.model.spec(),
+            model_blake2b_256: model_digest.to_string(),
+            activation_override: None,
+            sequence: SequenceInput::Peptides {
+                path: opts.peptides.display().to_string(),
+                blake2b_256: msspeculator_core::digest_file(opts.peptides)?,
+            },
+        },
+        digestion: None,
+        modifications: None,
+        context: Contexts {
+            ms: None,
+            chrom: None,
+        },
+        fragments: FragmentPolicy {
+            min_intensity: opts.min_intensity,
+            max_fragments: opts.max_fragments,
+        },
+        decoys: DecoyPolicy {
+            enabled: opts.generate_decoys,
+            method: opts.decoy_method.name(),
+            seed: Some(opts.decoy_seed),
+            protein_prefix: "DECOY_",
+            collision_policy: "retry_reverse_flanks_or_shuffle_then_skip_on_peptidoform_collision",
+        },
+    };
+    assemble_provenance(settings, output, artifact, None)
 }
 
 /// Flatten a provenance document into dotted `key -> value` pairs, dropping nulls.
@@ -499,22 +565,24 @@ pub(crate) mod tests {
                     model: "builtin:small-v0".into(),
                     model_blake2b_256: "0".repeat(64),
                     activation_override: None,
-                    fasta: "proteome.fasta".into(),
-                    fasta_blake2b_256: "1".repeat(64),
+                    sequence: SequenceInput::Fasta {
+                        path: "proteome.fasta".into(),
+                        blake2b_256: "1".repeat(64),
+                    },
                 },
-                digestion: Digestion {
+                digestion: Some(Digestion {
                     enzyme: "trypsin",
                     missed_cleavages: 2,
                     min_length: 7,
                     max_length: 30,
                     min_charge: 2,
                     max_charge: 4,
-                },
-                modifications: Modifications {
+                }),
+                modifications: Some(Modifications {
                     fixed: vec!["C[UNIMOD:4]".into()],
                     variable: vec!["M[UNIMOD:35]".into()],
                     max_variable_mods: 1,
-                },
+                }),
                 context: Contexts {
                     ms: Some(MsContextProvenance::Factors {
                         instrument: "Lumos".into(),
@@ -531,6 +599,7 @@ pub(crate) mod tests {
                 decoys: DecoyPolicy {
                     enabled: true,
                     method: "pseudo-reverse",
+                    seed: None,
                     protein_prefix: "DECOY_",
                     collision_policy: "skip",
                 },
@@ -622,10 +691,11 @@ pub(crate) mod tests {
                 "generator.tool",
                 "generator.version",
                 "inputs.activation_override",
-                "inputs.fasta",
-                "inputs.fasta_blake2b_256",
                 "inputs.model",
                 "inputs.model_blake2b_256",
+                "inputs.sequence.blake2b_256",
+                "inputs.sequence.kind",
+                "inputs.sequence.path",
                 "modifications.fixed[]",
                 "modifications.max_variable_mods",
                 "modifications.variable[]",
@@ -659,7 +729,7 @@ pub(crate) mod tests {
         for (key, value) in &settings {
             assert_eq!(published.get(key), Some(value), "{key}");
         }
-        for key in ["inputs.fasta_blake2b_256", "digestion.missed_cleavages"] {
+        for key in ["inputs.sequence.blake2b_256", "digestion.missed_cleavages"] {
             assert!(settings.contains_key(key), "{key}");
         }
         for key in [
