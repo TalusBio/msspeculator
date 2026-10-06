@@ -42,8 +42,8 @@ PEK[UNIMOD:259]TIDEK/3	PRTC
 Each `proforma` value includes the modification and charge to predict. The builder preserves both
 in the library, so modified, unmodified, and heavy peptides can coexist. Protein IDs are separated
 by semicolons. To supply a decoy, add `decoy` and `decoy_group` columns; mark the decoy `true` and
-give it the same group and charge as its target. A group contains one target and at most one decoy,
-so targets may be unpaired.
+give it the same integer group ID and charge as its target. A group contains one target and at most
+one decoy, so targets may be unpaired. Targets without a group ID get unique numeric IDs.
 
 ```bash
 cargo run --manifest-path rust/Cargo.toml --release -p msspeculator-cli -- \

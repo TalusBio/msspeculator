@@ -248,6 +248,8 @@ impl<W: Write + Send> LibrarySink for MzSpecLibSink<W> {
             writeln!(self.writer, "MS:1003212|library attribute set name=Decoy")?;
         }
         if let Some(group) = row.decoy_group {
+            // No PSI-MS term identifies the target paired with a decoy. Keep the relationship as
+            // a project-defined spectrum attribute; each spectrum has one analyte in this file.
             writeln!(
                 self.writer,
                 "[3]{NAME_ACCESSION}|other attribute name={ATTRIBUTE_PREFIX}decoy_group"
@@ -255,17 +257,6 @@ impl<W: Write + Send> LibrarySink for MzSpecLibSink<W> {
             writeln!(
                 self.writer,
                 "[3]{VALUE_ACCESSION}|other attribute value={group}"
-            )?;
-        } else if let Some(pair_id) = row.decoy_pair_id {
-            // No PSI-MS term identifies the target paired with a decoy. Keep the relationship as
-            // a project-defined spectrum attribute; each spectrum has one analyte in this file.
-            writeln!(
-                self.writer,
-                "[3]{NAME_ACCESSION}|other attribute name={ATTRIBUTE_PREFIX}decoy_pair_id"
-            )?;
-            writeln!(
-                self.writer,
-                "[3]{VALUE_ACCESSION}|other attribute value={pair_id}"
             )?;
         }
         // No `MS:1003062|library spectrum index`: a reader assigns that from position as it goes,
@@ -404,7 +395,6 @@ mod tests {
             peptide: &PEPTIDE,
             proforma: "PEPTIDEK",
             decoy: false,
-            decoy_pair_id: None,
             decoy_group: None,
             charge: 2,
             precursor_mz: 456.75,
@@ -537,16 +527,15 @@ mod tests {
         let mut sink = MzSpecLibSink::new(Vec::new(), Path::new("lib.mzspeclib.txt"));
         sink.header(&provenance()).unwrap();
         sink.spectrum(&SpectrumRow {
-            decoy_pair_id: Some(4242),
-            decoy_group: None,
+            decoy_group: Some(4242),
             ..row()
         })
         .unwrap();
         let text = String::from_utf8(sink.writer).unwrap();
         // Written with the same group syntax as the header's pairs, one per spectrum, and not
         // provenance. Reading it back would be reading the library.
-        assert!(text.contains("decoy_pair_id"));
-        assert!(!header_attributes(text.as_bytes()).contains_key("decoy_pair_id"));
+        assert!(text.contains("decoy_group"));
+        assert!(!header_attributes(text.as_bytes()).contains_key("decoy_group"));
     }
 
     #[test]
@@ -657,19 +646,19 @@ mod tests {
     }
 
     #[test]
-    fn target_and_decoy_spectra_carry_the_same_pair_id() {
+    fn target_and_decoy_spectra_carry_the_same_numeric_group() {
         let mut target = row();
-        target.decoy_pair_id = Some(4242);
+        target.decoy_group = Some(4242);
         let mut decoy = row();
         decoy.decoy = true;
-        decoy.decoy_pair_id = Some(4242);
+        decoy.decoy_group = Some(4242);
         let mut sink = MzSpecLibSink::new(Vec::new(), Path::new("out/lib.mzspeclib.txt"));
         sink.header(&provenance()).unwrap();
         sink.spectrum(&target).unwrap();
         sink.spectrum(&decoy).unwrap();
         let text = String::from_utf8(sink.writer).unwrap();
         assert_eq!(
-            text.matches("MS:1003275|other attribute name=msspeculator:decoy_pair_id")
+            text.matches("MS:1003275|other attribute name=msspeculator:decoy_group")
                 .count(),
             2
         );
